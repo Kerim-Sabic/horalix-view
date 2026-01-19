@@ -1,34 +1,51 @@
 """
 Authentication endpoints for Horalix View.
+
+Provides OAuth2 password flow authentication with JWT tokens,
+user management, and role-based access control.
 """
 
-from datetime import timedelta
+from datetime import datetime, timezone
 from typing import Annotated
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import SecurityManager, TokenData
+from app.core.security import SecurityManager, TokenData, PermissionChecker
 from app.core.logging import audit_logger
+from app.models.base import get_db
+from app.models.user import User
 
 router = APIRouter()
 
+# OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
-# Initialize security manager
-security_manager = SecurityManager(
+# Security manager instance
+security = SecurityManager(
     secret_key=settings.secret_key,
     algorithm=settings.algorithm,
     access_token_expire_minutes=settings.access_token_expire_minutes,
 )
 
 
+class Token(BaseModel):
+    """OAuth2 token response."""
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+
+
 class UserCreate(BaseModel):
     """User creation request."""
 
-    username: str = Field(..., min_length=3, max_length=50)
+    username: str = Field(..., min_length=3, max_length=64)
     email: EmailStr
     password: str = Field(..., min_length=8)
     full_name: str | None = None
@@ -38,66 +55,34 @@ class UserCreate(BaseModel):
 class UserResponse(BaseModel):
     """User response model."""
 
-    id: str
+    user_id: str
     username: str
     email: str
     full_name: str | None
     roles: list[str]
     is_active: bool
+    is_verified: bool
+    last_login: datetime | None
+
+    class Config:
+        from_attributes = True
 
 
-class Token(BaseModel):
-    """OAuth2 token response."""
+class PasswordChange(BaseModel):
+    """Password change request."""
 
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    user: UserResponse
-
-
-class TokenRefresh(BaseModel):
-    """Token refresh request."""
-
-    refresh_token: str
-
-
-# Simulated user database (replace with actual database in production)
-USERS_DB: dict[str, dict] = {
-    "admin": {
-        "id": "user_001",
-        "username": "admin",
-        "email": "admin@horalix.io",
-        "full_name": "System Administrator",
-        "hashed_password": security_manager.hash_password("admin123"),
-        "roles": ["admin"],
-        "is_active": True,
-    },
-    "radiologist": {
-        "id": "user_002",
-        "username": "radiologist",
-        "email": "radiologist@horalix.io",
-        "full_name": "Dr. Jane Smith",
-        "hashed_password": security_manager.hash_password("rad123"),
-        "roles": ["radiologist"],
-        "is_active": True,
-    },
-}
+    current_password: str
+    new_password: str = Field(..., min_length=8)
 
 
 async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenData:
     """
     Validate JWT token and return current user.
 
-    Args:
-        token: JWT token from Authorization header
-
-    Returns:
-        TokenData with user information
-
-    Raises:
-        HTTPException: If token is invalid or expired
+    Raises HTTPException if token is invalid or expired.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -105,8 +90,16 @@ async def get_current_user(
         headers={"WWW-Authenticate": "Bearer"},
     )
 
-    token_data = security_manager.decode_token(token)
-    if token_data is None:
+    token_data = security.decode_token(token)
+    if not token_data:
+        raise credentials_exception
+
+    # Verify user still exists and is active
+    query = select(User).where(User.user_id == token_data.user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user or not user.is_active:
         raise credentials_exception
 
     return token_data
@@ -116,73 +109,85 @@ async def get_current_active_user(
     current_user: Annotated[TokenData, Depends(get_current_user)],
 ) -> TokenData:
     """
-    Ensure current user is active.
+    Get current active user.
 
-    Args:
-        current_user: Current authenticated user
-
-    Returns:
-        TokenData if user is active
-
-    Raises:
-        HTTPException: If user is inactive
+    Returns the current user token data if valid.
     """
-    # In production, check database for user status
-    user = USERS_DB.get(current_user.username)
-    if user and not user.get("is_active", False):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
-        )
     return current_user
 
 
-def require_roles(*required_roles: str):
+def require_roles(*roles: str):
     """
-    Dependency factory for role-based access control.
+    Dependency factory that requires specific roles.
 
-    Args:
-        required_roles: Roles required for access
-
-    Returns:
-        Dependency function that validates user roles
+    Usage:
+        @router.get("/admin", dependencies=[Depends(require_roles("admin"))])
+        async def admin_endpoint():
+            pass
     """
-
     async def role_checker(
         current_user: Annotated[TokenData, Depends(get_current_active_user)],
     ) -> TokenData:
-        if not any(role in current_user.roles for role in required_roles):
+        if not any(role in current_user.roles for role in roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires one of roles: {', '.join(required_roles)}",
+                detail="Insufficient permissions",
             )
         return current_user
 
     return role_checker
 
 
+def require_permissions(*permissions: str):
+    """
+    Dependency factory that requires specific permissions.
+
+    Usage:
+        @router.get("/view", dependencies=[Depends(require_permissions("view:studies"))])
+        async def view_endpoint():
+            pass
+    """
+    async def permission_checker(
+        current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    ) -> TokenData:
+        checker = PermissionChecker(current_user.roles, current_user.permissions)
+        if not checker.has_all_permissions(list(permissions)):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Insufficient permissions",
+            )
+        return current_user
+
+    return permission_checker
+
+
 @router.post("/token", response_model=Token)
 async def login(
     request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Token:
     """
-    OAuth2 compatible token login.
+    OAuth2 password grant authentication.
 
-    Authenticates user with username/password and returns JWT token.
+    Returns a JWT access token on successful authentication.
     """
-    user = USERS_DB.get(form_data.username)
-    client_ip = request.client.host if request.client else None
+    # Find user by username
+    query = select(User).where(User.username == form_data.username)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
 
-    if not user or not security_manager.verify_password(
-        form_data.password, user["hashed_password"]
-    ):
+    # Get client IP for audit logging
+    client_ip = request.client.host if request.client else "unknown"
+
+    if not user:
+        # Log failed attempt
         audit_logger.log_authentication(
             user_id=None,
             username=form_data.username,
             success=False,
             ip_address=client_ip,
-            failure_reason="Invalid username or password",
+            failure_reason="user_not_found",
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -190,66 +195,228 @@ async def login(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    if not user.get("is_active", False):
+    # Check if account is locked
+    if user.is_locked:
+        if user.locked_until and user.locked_until > datetime.now(timezone.utc):
+            audit_logger.log_authentication(
+                user_id=user.user_id,
+                username=form_data.username,
+                success=False,
+                ip_address=client_ip,
+                failure_reason="account_locked",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Account is temporarily locked",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        else:
+            # Unlock if lock period expired
+            user.is_locked = False
+            user.locked_until = None
+            user.failed_login_attempts = 0
+
+    # Verify password
+    if not security.verify_password(form_data.password, user.hashed_password):
+        # Increment failed attempts
+        user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+
+        # Lock account after 5 failed attempts
+        if user.failed_login_attempts >= 5:
+            user.is_locked = True
+            from datetime import timedelta
+            user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=30)
+
+        await db.commit()
+
         audit_logger.log_authentication(
-            user_id=user["id"],
+            user_id=user.user_id,
             username=form_data.username,
             success=False,
             ip_address=client_ip,
-            failure_reason="Account inactive",
+            failure_reason="invalid_password",
         )
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="User account is inactive",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Check if user is active
+    if not user.is_active:
+        audit_logger.log_authentication(
+            user_id=user.user_id,
+            username=form_data.username,
+            success=False,
+            ip_address=client_ip,
+            failure_reason="account_inactive",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Account is inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # Reset failed attempts and update last login
+    user.failed_login_attempts = 0
+    user.last_login = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Get permissions for roles
+    checker = PermissionChecker(user.roles_list)
+
     # Create access token
-    access_token = security_manager.create_access_token(
+    access_token = security.create_access_token(
         data={
-            "sub": user["id"],
-            "username": user["username"],
-            "roles": user["roles"],
+            "sub": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "roles": user.roles_list,
+            "permissions": checker.user_permissions,
         }
     )
 
     audit_logger.log_authentication(
-        user_id=user["id"],
-        username=form_data.username,
+        user_id=user.user_id,
+        username=user.username,
         success=True,
         ip_address=client_ip,
     )
 
     return Token(
         access_token=access_token,
+        token_type="bearer",
         expires_in=settings.access_token_expire_minutes * 60,
-        user=UserResponse(
-            id=user["id"],
-            username=user["username"],
-            email=user["email"],
-            full_name=user.get("full_name"),
-            roles=user["roles"],
-            is_active=user["is_active"],
-        ),
     )
 
 
+@router.get("/me", response_model=UserResponse)
+async def get_current_user_info(
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserResponse:
+    """
+    Get current authenticated user information.
+    """
+    query = select(User).where(User.user_id == current_user.user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        roles=user.roles_list,
+        is_active=user.is_active,
+        is_verified=user.is_verified,
+        last_login=user.last_login,
+    )
+
+
+@router.post("/logout")
+async def logout(
+    request: Request,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+) -> dict:
+    """
+    Logout current user.
+
+    Note: With JWT tokens, actual token invalidation requires
+    a token blacklist or short expiration times.
+    """
+    client_ip = request.client.host if request.client else "unknown"
+
+    audit_logger.log_authentication(
+        user_id=current_user.user_id,
+        username=current_user.username,
+        success=True,
+        ip_address=client_ip,
+        method="logout",
+    )
+
+    return {"message": "Successfully logged out"}
+
+
+@router.post("/change-password")
+async def change_password(
+    request: Request,
+    password_data: PasswordChange,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """
+    Change current user's password.
+    """
+    query = select(User).where(User.user_id == current_user.user_id)
+    result = await db.execute(query)
+    user = result.scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Verify current password
+    if not security.verify_password(password_data.current_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+
+    # Update password
+    user.hashed_password = security.hash_password(password_data.new_password)
+    user.password_changed_at = datetime.now(timezone.utc)
+    user.must_change_password = False
+    await db.commit()
+
+    client_ip = request.client.host if request.client else "unknown"
+    audit_logger.log_authentication(
+        user_id=current_user.user_id,
+        username=current_user.username,
+        success=True,
+        ip_address=client_ip,
+        method="password_change",
+    )
+
+    return {"message": "Password changed successfully"}
+
+
 @router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def register(
+async def register_user(
     user_data: UserCreate,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserResponse:
     """
     Register a new user (admin only).
-
-    Creates a new user account with specified roles.
     """
-    if user_data.username in USERS_DB:
+    # Check if username already exists
+    query = select(User).where(User.username == user_data.username)
+    result = await db.execute(query)
+    if result.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Username already registered",
         )
 
-    # Check for valid roles
+    # Check if email already exists
+    query = select(User).where(User.email == user_data.email)
+    result = await db.execute(query)
+    if result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered",
+        )
+
+    # Validate roles
     valid_roles = {"admin", "radiologist", "technologist", "referring_physician", "researcher"}
     invalid_roles = set(user_data.roles) - valid_roles
     if invalid_roles:
@@ -258,97 +425,85 @@ async def register(
             detail=f"Invalid roles: {', '.join(invalid_roles)}",
         )
 
-    # Create user
-    user_id = f"user_{len(USERS_DB) + 1:03d}"
-    new_user = {
-        "id": user_id,
-        "username": user_data.username,
-        "email": user_data.email,
-        "full_name": user_data.full_name,
-        "hashed_password": security_manager.hash_password(user_data.password),
-        "roles": user_data.roles,
-        "is_active": True,
-    }
-    USERS_DB[user_data.username] = new_user
-
-    return UserResponse(
-        id=new_user["id"],
-        username=new_user["username"],
-        email=new_user["email"],
-        full_name=new_user.get("full_name"),
-        roles=new_user["roles"],
-        is_active=new_user["is_active"],
+    # Create new user
+    user = User(
+        user_id=f"user_{uuid.uuid4().hex[:12]}",
+        username=user_data.username,
+        email=user_data.email,
+        hashed_password=security.hash_password(user_data.password),
+        full_name=user_data.full_name,
+        roles=",".join(user_data.roles),
+        is_active=True,
+        is_verified=False,
     )
+    db.add(user)
+    await db.commit()
 
-
-@router.get("/me", response_model=UserResponse)
-async def get_current_user_info(
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
-) -> UserResponse:
-    """Get current authenticated user information."""
-    user = USERS_DB.get(current_user.username)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
-
-    return UserResponse(
-        id=user["id"],
-        username=user["username"],
-        email=user["email"],
-        full_name=user.get("full_name"),
-        roles=user["roles"],
-        is_active=user["is_active"],
-    )
-
-
-@router.post("/logout")
-async def logout(
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
-) -> dict:
-    """
-    Logout current user.
-
-    Note: With JWT tokens, logout is primarily client-side.
-    This endpoint can be used for audit logging and token blacklisting.
-    """
-    audit_logger.log_authentication(
+    audit_logger.log_access(
         user_id=current_user.user_id,
-        username=current_user.username,
-        success=True,
-        method="logout",
+        resource_type="user",
+        resource_id=user.user_id,
+        action="CREATE",
+        details={"username": user.username},
     )
-    return {"message": "Successfully logged out"}
+
+    return UserResponse(
+        user_id=user.user_id,
+        username=user.username,
+        email=user.email,
+        full_name=user.full_name,
+        roles=user.roles_list,
+        is_active=user.is_active,
+        is_verified=user.is_verified,
+        last_login=user.last_login,
+    )
 
 
-@router.post("/change-password")
-async def change_password(
-    current_password: str,
-    new_password: str,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
-) -> dict:
-    """Change current user's password."""
-    user = USERS_DB.get(current_user.username)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="User not found",
-        )
+async def init_default_users(db: AsyncSession) -> None:
+    """Create default users if none exist."""
+    query = select(User).limit(1)
+    result = await db.execute(query)
+    if result.scalar_one_or_none() is not None:
+        return  # Users already exist
 
-    if not security_manager.verify_password(current_password, user["hashed_password"]):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Current password is incorrect",
-        )
+    # Create default admin user
+    admin = User(
+        user_id="user_admin001",
+        username="admin",
+        email="admin@horalix.local",
+        hashed_password=security.hash_password("admin123"),
+        full_name="System Administrator",
+        roles="admin",
+        is_active=True,
+        is_verified=True,
+    )
 
-    if len(new_password) < 8:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="New password must be at least 8 characters",
-        )
+    # Create default radiologist user
+    radiologist = User(
+        user_id="user_rad001",
+        username="radiologist",
+        email="radiologist@horalix.local",
+        hashed_password=security.hash_password("rad123"),
+        full_name="Dr. Radiology",
+        title="MD",
+        department="Radiology",
+        roles="radiologist",
+        is_active=True,
+        is_verified=True,
+    )
 
-    # Update password
-    user["hashed_password"] = security_manager.hash_password(new_password)
+    # Create default technologist user
+    technologist = User(
+        user_id="user_tech001",
+        username="technologist",
+        email="tech@horalix.local",
+        hashed_password=security.hash_password("tech123"),
+        full_name="Medical Technologist",
+        department="Imaging",
+        roles="technologist",
+        is_active=True,
+        is_verified=True,
+    )
 
-    return {"message": "Password changed successfully"}
+    db.add_all([admin, radiologist, technologist])
+    await db.commit()
