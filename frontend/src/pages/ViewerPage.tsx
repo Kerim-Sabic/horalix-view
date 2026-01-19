@@ -208,8 +208,32 @@ const ViewerPage: React.FC = () => {
 
   if (loading) {
     return (
-      <Box sx={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <CircularProgress />
+      <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#000' }}>
+        {/* Toolbar skeleton */}
+        <Paper sx={{ px: 2, py: 1, borderRadius: 0 }} elevation={0}>
+          <Skeleton variant="rectangular" width="100%" height={48} />
+        </Paper>
+
+        {/* Main content skeleton */}
+        <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+          {/* Series panel skeleton */}
+          <Paper sx={{ width: 250, borderRadius: 0, p: 2 }} elevation={0}>
+            <Skeleton variant="text" width="60%" height={24} sx={{ mb: 2 }} />
+            <Skeleton variant="rectangular" width="100%" height={80} sx={{ mb: 1 }} />
+            <Skeleton variant="rectangular" width="100%" height={80} sx={{ mb: 1 }} />
+            <Skeleton variant="rectangular" width="100%" height={80} />
+          </Paper>
+
+          {/* Viewport skeleton */}
+          <Box sx={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', bgcolor: '#000' }}>
+            <Skeleton variant="rectangular" width="60%" height="60%" sx={{ bgcolor: 'grey.900' }} />
+          </Box>
+        </Box>
+
+        {/* Bottom controls skeleton */}
+        <Paper sx={{ px: 2, py: 1, borderRadius: 0 }} elevation={0}>
+          <Skeleton variant="rectangular" width="100%" height={40} />
+        </Paper>
       </Box>
     );
   }
@@ -254,7 +278,13 @@ const ViewerPage: React.FC = () => {
         {tools.map((tool) => (
           <Tooltip key={tool.id} title={tool.label}>
             <IconButton
-              onClick={() => setActiveTool(tool.id)}
+              onClick={() => {
+                setActiveTool(tool.id);
+                // Reset zoom when switching away from zoom tool
+                if (tool.id === 'zoom' && activeTool !== 'zoom') {
+                  setZoom(1);
+                }
+              }}
               color={activeTool === tool.id ? 'primary' : 'default'}
             >
               {tool.icon}
