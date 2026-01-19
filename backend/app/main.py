@@ -48,6 +48,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         environment=settings.environment,
     )
 
+    # Initialize database
+    from app.models.base import engine, async_session_maker
+    app.state.db_engine = engine
+    app.state.db_session_maker = async_session_maker
+    logger.info("Database connection pool initialized")
+
     # Initialize services
     from app.services.dicom.storage import DicomStorageService
     from app.services.ai.model_registry import ModelRegistry
@@ -72,6 +78,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cleanup services
     if hasattr(app.state, "model_registry"):
         await app.state.model_registry.shutdown()
+
+    # Close database connections
+    if hasattr(app.state, "db_engine"):
+        await app.state.db_engine.dispose()
+        logger.info("Database connections closed")
 
     logger.info("Horalix View shutdown complete")
 
@@ -180,9 +191,20 @@ def create_application() -> FastAPI:
     async def readiness_check(request: Request):
         """Readiness check for Kubernetes deployments."""
         checks = {
+            "database": False,
             "dicom_storage": False,
             "model_registry": False,
         }
+
+        # Check database connectivity
+        if hasattr(request.app.state, "db_session_maker"):
+            try:
+                async with request.app.state.db_session_maker() as session:
+                    from sqlalchemy import text
+                    await session.execute(text("SELECT 1"))
+                    checks["database"] = True
+            except Exception:
+                checks["database"] = False
 
         if hasattr(request.app.state, "dicom_storage"):
             checks["dicom_storage"] = request.app.state.dicom_storage.is_ready()
