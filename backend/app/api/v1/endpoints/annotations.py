@@ -2,7 +2,7 @@
 Annotation endpoints for Horalix View.
 
 Provides CRUD operations for image annotations including measurements,
-ROIs, and text labels.
+ROIs, and text labels with full database persistence.
 """
 
 from datetime import datetime
@@ -12,10 +12,14 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_active_user
 from app.core.security import TokenData
 from app.core.logging import audit_logger
+from app.models import Annotation as AnnotationModel, AnnotationType as AnnotationTypeModel
+from app.models.base import get_db
 
 router = APIRouter()
 
@@ -73,7 +77,7 @@ class Measurement(BaseModel):
 class Annotation(BaseModel):
     """Complete annotation object."""
 
-    id: str = Field(default_factory=lambda: str(uuid4()))
+    id: str
     study_uid: str
     series_uid: str
     instance_uid: str
@@ -87,8 +91,11 @@ class Annotation(BaseModel):
     visible: bool = True
     locked: bool = False
     created_by: str
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
 
 
 class AnnotationCreate(BaseModel):
@@ -125,12 +132,31 @@ class AnnotationListResponse(BaseModel):
     annotations: list[Annotation]
 
 
-# Simulated annotations database
-ANNOTATIONS_DB: dict[str, dict] = {}
+def db_annotation_to_pydantic(db_ann: AnnotationModel) -> Annotation:
+    """Convert database annotation model to Pydantic model."""
+    return Annotation(
+        id=db_ann.annotation_uid,
+        study_uid=db_ann.study_uid,
+        series_uid=db_ann.series_uid,
+        instance_uid=db_ann.instance_uid,
+        frame_number=db_ann.frame_number,
+        annotation_type=AnnotationType(db_ann.annotation_type.value),
+        data=AnnotationData(**db_ann.geometry),
+        measurements=[Measurement(**m) for m in (db_ann.measurements or [])],
+        label=db_ann.label,
+        description=db_ann.description,
+        color=db_ann.color,
+        visible=db_ann.visible,
+        locked=db_ann.locked,
+        created_by=db_ann.created_by,
+        created_at=db_ann.created_at,
+        updated_at=db_ann.updated_at,
+    )
 
 
 @router.get("", response_model=AnnotationListResponse)
 async def list_annotations(
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     study_uid: str | None = Query(None),
     series_uid: str | None = Query(None),
@@ -140,96 +166,120 @@ async def list_annotations(
     """
     List annotations with filtering.
     """
-    filtered = []
-    for ann_data in ANNOTATIONS_DB.values():
-        if study_uid and ann_data.get("study_uid") != study_uid:
-            continue
-        if series_uid and ann_data.get("series_uid") != series_uid:
-            continue
-        if instance_uid and ann_data.get("instance_uid") != instance_uid:
-            continue
-        if annotation_type and ann_data.get("annotation_type") != annotation_type.value:
-            continue
-        filtered.append(Annotation(**ann_data))
+    query = select(AnnotationModel)
+
+    if study_uid:
+        query = query.where(AnnotationModel.study_uid == study_uid)
+    if series_uid:
+        query = query.where(AnnotationModel.series_uid == series_uid)
+    if instance_uid:
+        query = query.where(AnnotationModel.instance_uid == instance_uid)
+    if annotation_type:
+        query = query.where(
+            AnnotationModel.annotation_type == AnnotationTypeModel[annotation_type.value.upper()]
+        )
+
+    result = await db.execute(query)
+    db_annotations = result.scalars().all()
+
+    annotations = [db_annotation_to_pydantic(ann) for ann in db_annotations]
 
     return AnnotationListResponse(
-        total=len(filtered),
-        annotations=filtered,
+        total=len(annotations),
+        annotations=annotations,
     )
 
 
 @router.get("/{annotation_id}", response_model=Annotation)
 async def get_annotation(
     annotation_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
     """
     Get annotation by ID.
     """
-    if annotation_id not in ANNOTATIONS_DB:
+    query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
+    result = await db.execute(query)
+    db_annotation = result.scalar_one_or_none()
+
+    if not db_annotation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Annotation not found: {annotation_id}",
         )
 
-    return Annotation(**ANNOTATIONS_DB[annotation_id])
+    return db_annotation_to_pydantic(db_annotation)
 
 
 @router.post("", response_model=Annotation, status_code=status.HTTP_201_CREATED)
 async def create_annotation(
     annotation: AnnotationCreate,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
     """
     Create a new annotation.
     """
-    ann_id = str(uuid4())
-    new_annotation = Annotation(
-        id=ann_id,
+    ann_uid = str(uuid4())
+
+    # Convert AnnotationData to dict for JSON storage
+    geometry_dict = annotation.data.model_dump()
+
+    # Convert measurements to dict list
+    measurements_list = [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+
+    db_annotation = AnnotationModel(
+        annotation_uid=ann_uid,
         study_uid=annotation.study_uid,
         series_uid=annotation.series_uid,
         instance_uid=annotation.instance_uid,
         frame_number=annotation.frame_number,
-        annotation_type=annotation.annotation_type,
-        data=annotation.data,
-        measurements=annotation.measurements,
+        annotation_type=AnnotationTypeModel[annotation.annotation_type.value.upper()],
+        geometry=geometry_dict,
+        measurements=measurements_list,
         label=annotation.label,
         description=annotation.description,
         color=annotation.color,
         created_by=current_user.user_id,
     )
 
-    ANNOTATIONS_DB[ann_id] = new_annotation.model_dump()
+    db.add(db_annotation)
+    await db.commit()
+    await db.refresh(db_annotation)
 
     audit_logger.log_access(
         user_id=current_user.user_id,
         resource_type="annotation",
-        resource_id=ann_id,
+        resource_id=ann_uid,
         action="CREATE",
     )
 
-    return new_annotation
+    return db_annotation_to_pydantic(db_annotation)
 
 
 @router.put("/{annotation_id}", response_model=Annotation)
 async def update_annotation(
     annotation_id: str,
     update: AnnotationUpdate,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
     """
     Update an existing annotation.
     """
-    if annotation_id not in ANNOTATIONS_DB:
+    query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
+    result = await db.execute(query)
+    db_annotation = result.scalar_one_or_none()
+
+    if not db_annotation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Annotation not found: {annotation_id}",
         )
 
-    ann_data = ANNOTATIONS_DB[annotation_id]
-
     # Check if locked
-    if ann_data.get("locked") and current_user.user_id != ann_data.get("created_by"):
+    if db_annotation.locked and current_user.user_id != db_annotation.created_by:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Annotation is locked",
@@ -237,21 +287,22 @@ async def update_annotation(
 
     # Update fields
     if update.data is not None:
-        ann_data["data"] = update.data.model_dump()
+        db_annotation.geometry = update.data.model_dump()
     if update.measurements is not None:
-        ann_data["measurements"] = [m.model_dump() for m in update.measurements]
+        db_annotation.measurements = [m.model_dump() for m in update.measurements]
     if update.label is not None:
-        ann_data["label"] = update.label
+        db_annotation.label = update.label
     if update.description is not None:
-        ann_data["description"] = update.description
+        db_annotation.description = update.description
     if update.color is not None:
-        ann_data["color"] = update.color
+        db_annotation.color = update.color
     if update.visible is not None:
-        ann_data["visible"] = update.visible
+        db_annotation.visible = update.visible
     if update.locked is not None:
-        ann_data["locked"] = update.locked
+        db_annotation.locked = update.locked
 
-    ann_data["updated_at"] = datetime.now().isoformat()
+    await db.commit()
+    await db.refresh(db_annotation)
 
     audit_logger.log_access(
         user_id=current_user.user_id,
@@ -260,33 +311,37 @@ async def update_annotation(
         action="UPDATE",
     )
 
-    return Annotation(**ann_data)
+    return db_annotation_to_pydantic(db_annotation)
 
 
 @router.delete("/{annotation_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_annotation(
     annotation_id: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> None:
     """
     Delete an annotation.
     """
-    if annotation_id not in ANNOTATIONS_DB:
+    query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
+    result = await db.execute(query)
+    db_annotation = result.scalar_one_or_none()
+
+    if not db_annotation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Annotation not found: {annotation_id}",
         )
 
-    ann_data = ANNOTATIONS_DB[annotation_id]
-
     # Check if locked
-    if ann_data.get("locked") and current_user.user_id != ann_data.get("created_by"):
+    if db_annotation.locked and current_user.user_id != db_annotation.created_by:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Annotation is locked",
         )
 
-    del ANNOTATIONS_DB[annotation_id]
+    await db.delete(db_annotation)
+    await db.commit()
 
     audit_logger.log_access(
         user_id=current_user.user_id,
@@ -299,6 +354,7 @@ async def delete_annotation(
 @router.post("/batch", response_model=list[Annotation], status_code=status.HTTP_201_CREATED)
 async def create_annotations_batch(
     annotations: list[AnnotationCreate],
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> list[Annotation]:
     """
@@ -306,30 +362,42 @@ async def create_annotations_batch(
     """
     created = []
     for annotation in annotations:
-        ann_id = str(uuid4())
-        new_annotation = Annotation(
-            id=ann_id,
+        ann_uid = str(uuid4())
+
+        geometry_dict = annotation.data.model_dump()
+        measurements_list = [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+
+        db_annotation = AnnotationModel(
+            annotation_uid=ann_uid,
             study_uid=annotation.study_uid,
             series_uid=annotation.series_uid,
             instance_uid=annotation.instance_uid,
             frame_number=annotation.frame_number,
-            annotation_type=annotation.annotation_type,
-            data=annotation.data,
-            measurements=annotation.measurements,
+            annotation_type=AnnotationTypeModel[annotation.annotation_type.value.upper()],
+            geometry=geometry_dict,
+            measurements=measurements_list,
             label=annotation.label,
             description=annotation.description,
             color=annotation.color,
             created_by=current_user.user_id,
         )
-        ANNOTATIONS_DB[ann_id] = new_annotation.model_dump()
-        created.append(new_annotation)
 
-    return created
+        db.add(db_annotation)
+        created.append(db_annotation)
+
+    await db.commit()
+
+    # Refresh all created annotations
+    for db_ann in created:
+        await db.refresh(db_ann)
+
+    return [db_annotation_to_pydantic(ann) for ann in created]
 
 
 @router.get("/study/{study_uid}/export")
 async def export_study_annotations(
     study_uid: str,
+    db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     format: str = Query("json", enum=["json", "dicom-sr"]),
 ) -> dict:
@@ -338,10 +406,11 @@ async def export_study_annotations(
 
     Supports JSON and DICOM-SR formats.
     """
-    annotations = [
-        Annotation(**ann) for ann in ANNOTATIONS_DB.values()
-        if ann.get("study_uid") == study_uid
-    ]
+    query = select(AnnotationModel).where(AnnotationModel.study_uid == study_uid)
+    result = await db.execute(query)
+    db_annotations = result.scalars().all()
+
+    annotations = [db_annotation_to_pydantic(ann) for ann in db_annotations]
 
     audit_logger.log_data_export(
         user_id=current_user.user_id,

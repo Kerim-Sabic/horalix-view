@@ -66,7 +66,7 @@ const MainLayout: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
-  const { mode, setMode, isDarkMode } = useTheme();
+  const { setMode, isDarkMode } = useTheme();
   const isMobile = useMediaQuery(muiTheme.breakpoints.down('md'));
 
   const [mobileOpen, setMobileOpen] = useState(false);
