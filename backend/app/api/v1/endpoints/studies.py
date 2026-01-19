@@ -5,16 +5,25 @@ Provides CRUD operations for DICOM studies with support for
 filtering, pagination, and metadata retrieval.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, time as dt_time
 from typing import Annotated, Any
 from enum import Enum
+from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request, status
 from pydantic import BaseModel, Field
+from sqlalchemy import select, func, or_, and_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
 from app.core.security import TokenData
 from app.core.logging import audit_logger
+from app.models.base import get_db
+from app.models.study import Study, StudyStatus
+from app.models.series import Series
+from app.models.patient import Patient
+from app.models.instance import Instance
 
 router = APIRouter()
 
@@ -34,15 +43,6 @@ class Modality(str, Enum):
     SR = "SR"  # Structured Report
     SM = "SM"  # Slide Microscopy (Digital Pathology)
     OT = "OT"  # Other
-
-
-class StudyStatus(str, Enum):
-    """Study processing status."""
-
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETE = "complete"
-    ERROR = "error"
 
 
 class SeriesSummary(BaseModel):
@@ -72,9 +72,12 @@ class StudyMetadata(BaseModel):
     num_instances: int = Field(0, description="Total number of instances")
     patient_id: str | None = Field(None, description="Patient ID")
     patient_name: str | None = Field(None, description="Patient name")
-    status: StudyStatus = Field(StudyStatus.COMPLETE, description="Processing status")
+    status: str = Field("complete", description="Processing status")
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
+
+    class Config:
+        from_attributes = True
 
 
 class StudyListResponse(BaseModel):
@@ -95,46 +98,32 @@ class StudyDetailResponse(BaseModel):
     annotations_count: int = 0
 
 
-# Simulated study database
-STUDIES_DB: dict[str, dict[str, Any]] = {
-    "1.2.840.113619.2.55.3.123456789.1": {
-        "study_instance_uid": "1.2.840.113619.2.55.3.123456789.1",
-        "study_id": "STUDY001",
-        "study_date": date(2024, 1, 15),
-        "study_time": "10:30:00",
-        "study_description": "CT CHEST WITH CONTRAST",
-        "accession_number": "ACC001",
-        "referring_physician_name": "Dr. Smith",
-        "institution_name": "City Hospital",
-        "modalities_in_study": ["CT"],
-        "num_series": 3,
-        "num_instances": 450,
-        "patient_id": "PAT001",
-        "patient_name": "John Doe",
-        "status": StudyStatus.COMPLETE,
-    },
-    "1.2.840.113619.2.55.3.123456789.2": {
-        "study_instance_uid": "1.2.840.113619.2.55.3.123456789.2",
-        "study_id": "STUDY002",
-        "study_date": date(2024, 1, 16),
-        "study_time": "14:15:00",
-        "study_description": "MRI BRAIN WITHOUT CONTRAST",
-        "accession_number": "ACC002",
-        "referring_physician_name": "Dr. Johnson",
-        "institution_name": "City Hospital",
-        "modalities_in_study": ["MR"],
-        "num_series": 5,
-        "num_instances": 280,
-        "patient_id": "PAT002",
-        "patient_name": "Jane Smith",
-        "status": StudyStatus.COMPLETE,
-    },
-}
+def _study_to_metadata(study: Study, patient: Patient | None = None) -> StudyMetadata:
+    """Convert Study model to StudyMetadata response."""
+    return StudyMetadata(
+        study_instance_uid=study.study_instance_uid,
+        study_id=study.study_id,
+        study_date=study.study_date,
+        study_time=study.study_time.strftime("%H:%M:%S") if study.study_time else None,
+        study_description=study.study_description,
+        accession_number=study.accession_number,
+        referring_physician_name=study.referring_physician_name,
+        institution_name=study.institution_name,
+        modalities_in_study=study.modalities_list,
+        num_series=study.num_series,
+        num_instances=study.num_instances,
+        patient_id=patient.patient_id if patient else None,
+        patient_name=patient.patient_name if patient else None,
+        status=study.status.value,
+        created_at=study.created_at,
+        updated_at=study.updated_at,
+    )
 
 
 @router.get("", response_model=StudyListResponse)
 async def list_studies(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     patient_id: str | None = Query(None, description="Filter by patient ID"),
     patient_name: str | None = Query(None, description="Filter by patient name (partial match)"),
     study_date_from: date | None = Query(None, description="Study date from"),
@@ -151,41 +140,67 @@ async def list_studies(
     Supports filtering by patient, date range, modality, and other criteria.
     Results are paginated for efficient browsing.
     """
-    # Filter studies
-    filtered_studies = []
-    for study_data in STUDIES_DB.values():
-        # Apply filters
-        if patient_id and study_data.get("patient_id") != patient_id:
-            continue
-        if patient_name and patient_name.lower() not in study_data.get("patient_name", "").lower():
-            continue
-        if study_date_from and study_data.get("study_date") and study_data["study_date"] < study_date_from:
-            continue
-        if study_date_to and study_data.get("study_date") and study_data["study_date"] > study_date_to:
-            continue
-        if modality and modality.value not in study_data.get("modalities_in_study", []):
-            continue
-        if accession_number and study_data.get("accession_number") != accession_number:
-            continue
-        if study_description and study_description.lower() not in study_data.get("study_description", "").lower():
-            continue
+    # Build query with joins
+    query = (
+        select(Study)
+        .options(selectinload(Study.patient))
+        .order_by(Study.study_date.desc().nullslast(), Study.created_at.desc())
+    )
 
-        filtered_studies.append(StudyMetadata(**study_data))
+    # Apply filters
+    filters = []
 
-    # Sort by date (newest first)
-    filtered_studies.sort(key=lambda s: s.study_date or date.min, reverse=True)
+    if patient_id:
+        query = query.join(Patient, Study.patient_id_fk == Patient.id)
+        filters.append(Patient.patient_id == patient_id)
 
-    # Paginate
-    total = len(filtered_studies)
-    start = (page - 1) * page_size
-    end = start + page_size
-    paginated = filtered_studies[start:end]
+    if patient_name:
+        if not patient_id:  # Only join if not already joined
+            query = query.outerjoin(Patient, Study.patient_id_fk == Patient.id)
+        filters.append(Patient.patient_name.ilike(f"%{patient_name}%"))
+
+    if study_date_from:
+        filters.append(Study.study_date >= study_date_from)
+
+    if study_date_to:
+        filters.append(Study.study_date <= study_date_to)
+
+    if modality:
+        filters.append(Study.modalities_in_study.contains(modality.value))
+
+    if accession_number:
+        filters.append(Study.accession_number == accession_number)
+
+    if study_description:
+        filters.append(Study.study_description.ilike(f"%{study_description}%"))
+
+    if filters:
+        query = query.where(and_(*filters))
+
+    # Get total count
+    count_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(count_query)
+    total = total_result.scalar() or 0
+
+    # Apply pagination
+    offset = (page - 1) * page_size
+    query = query.offset(offset).limit(page_size)
+
+    # Execute query
+    result = await db.execute(query)
+    studies = result.scalars().all()
+
+    # Convert to response
+    study_list = [
+        _study_to_metadata(study, study.patient)
+        for study in studies
+    ]
 
     return StudyListResponse(
         total=total,
         page=page,
         page_size=page_size,
-        studies=paginated,
+        studies=study_list,
     )
 
 
@@ -193,6 +208,7 @@ async def list_studies(
 async def get_study(
     study_uid: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StudyDetailResponse:
     """
     Get detailed study information.
@@ -200,8 +216,20 @@ async def get_study(
     Returns study metadata along with series summaries and
     information about available AI results and annotations.
     """
-    study_data = STUDIES_DB.get(study_uid)
-    if not study_data:
+    # Query study with related data
+    query = (
+        select(Study)
+        .options(
+            selectinload(Study.patient),
+            selectinload(Study.series_list),
+            selectinload(Study.ai_jobs),
+        )
+        .where(Study.study_instance_uid == study_uid)
+    )
+    result = await db.execute(query)
+    study = result.scalar_one_or_none()
+
+    if not study:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Study not found: {study_uid}",
@@ -215,31 +243,38 @@ async def get_study(
         action="VIEW",
     )
 
-    # Simulate series data
+    # Build series summaries
     series_list = [
         SeriesSummary(
-            series_instance_uid=f"{study_uid}.1",
-            series_number=1,
-            series_description="Axial Images",
-            modality=study_data["modalities_in_study"][0] if study_data["modalities_in_study"] else "OT",
-            num_instances=study_data["num_instances"] // study_data["num_series"],
-            body_part="CHEST",
+            series_instance_uid=s.series_instance_uid,
+            series_number=s.series_number,
+            series_description=s.series_description,
+            modality=s.modality,
+            num_instances=s.num_instances,
+            body_part=s.body_part_examined,
         )
+        for s in study.series_list
     ]
 
+    # Check for completed AI jobs
+    ai_results_available = any(
+        job.status.value == "COMPLETED" for job in study.ai_jobs
+    )
+
     return StudyDetailResponse(
-        study=StudyMetadata(**study_data),
+        study=_study_to_metadata(study, study.patient),
         series=series_list,
-        ai_results_available=False,
-        annotations_count=0,
+        ai_results_available=ai_results_available,
+        annotations_count=0,  # TODO: Implement annotations count
     )
 
 
 @router.post("", response_model=StudyMetadata, status_code=status.HTTP_201_CREATED)
 async def upload_study(
     request: Request,
-    files: list[UploadFile] = File(..., description="DICOM files to upload"),
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    files: list[UploadFile] = File(..., description="DICOM files to upload"),
 ) -> StudyMetadata:
     """
     Upload a new DICOM study.
@@ -247,43 +282,166 @@ async def upload_study(
     Accepts multiple DICOM files and creates a new study entry.
     Files are parsed and stored in the configured storage location.
     """
+    import pydicom
+
     if not files:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No files provided",
         )
 
+    # Validate file types and sizes
+    MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB per file
+    for file in files:
+        if file.size and file.size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"File {file.filename} exceeds maximum size of 500MB",
+            )
+
     # Process DICOM files
     dicom_storage = request.app.state.dicom_storage
 
+    study_uid = None
+    patient_data = {}
+    study_data = {}
+    series_map = {}
+    instances = []
+
     try:
-        # Parse and store files
-        study_uid = None
         for file in files:
             content = await file.read()
-            result = await dicom_storage.store_instance(content)
+
+            # Parse DICOM to extract metadata
+            try:
+                ds = pydicom.dcmread(BytesIO(content), stop_before_pixels=True)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid DICOM file {file.filename}: {str(e)}",
+                )
+
+            # Extract UIDs
+            current_study_uid = str(ds.StudyInstanceUID)
+            series_uid = str(ds.SeriesInstanceUID)
+            instance_uid = str(ds.SOPInstanceUID)
+
+            # Ensure all files belong to the same study
             if study_uid is None:
-                study_uid = result.get("study_instance_uid")
+                study_uid = current_study_uid
+            elif study_uid != current_study_uid:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="All files must belong to the same study",
+                )
 
-        if study_uid is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Could not extract study UID from uploaded files",
+            # Extract patient data (from first file)
+            if not patient_data:
+                patient_data = {
+                    "patient_id": str(ds.get("PatientID", "UNKNOWN")),
+                    "patient_name": str(ds.get("PatientName", "")),
+                    "birth_date": _parse_dicom_date(ds.get("PatientBirthDate")),
+                    "sex": str(ds.get("PatientSex", "")),
+                }
+
+            # Extract study data (from first file)
+            if not study_data:
+                study_data = {
+                    "study_instance_uid": current_study_uid,
+                    "study_id": str(ds.get("StudyID", "")),
+                    "study_date": _parse_dicom_date(ds.get("StudyDate")),
+                    "study_time": _parse_dicom_time(ds.get("StudyTime")),
+                    "study_description": str(ds.get("StudyDescription", "")),
+                    "accession_number": str(ds.get("AccessionNumber", "")),
+                    "referring_physician_name": str(ds.get("ReferringPhysicianName", "")),
+                    "institution_name": str(ds.get("InstitutionName", "")),
+                }
+
+            # Extract series data
+            if series_uid not in series_map:
+                series_map[series_uid] = {
+                    "series_instance_uid": series_uid,
+                    "series_number": ds.get("SeriesNumber"),
+                    "series_description": str(ds.get("SeriesDescription", "")),
+                    "modality": str(ds.get("Modality", "OT")),
+                    "body_part_examined": str(ds.get("BodyPartExamined", "")),
+                    "patient_position": str(ds.get("PatientPosition", "")),
+                    "protocol_name": str(ds.get("ProtocolName", "")),
+                    "slice_thickness": float(ds.SliceThickness) if hasattr(ds, "SliceThickness") else None,
+                    "rows": ds.Rows if hasattr(ds, "Rows") else None,
+                    "columns": ds.Columns if hasattr(ds, "Columns") else None,
+                    "window_center": float(ds.WindowCenter[0]) if hasattr(ds, "WindowCenter") and ds.WindowCenter else None,
+                    "window_width": float(ds.WindowWidth[0]) if hasattr(ds, "WindowWidth") and ds.WindowWidth else None,
+                    "instances": [],
+                }
+
+            # Extract instance data
+            instance_data = {
+                "sop_instance_uid": instance_uid,
+                "sop_class_uid": str(ds.SOPClassUID),
+                "instance_number": ds.get("InstanceNumber"),
+                "rows": ds.Rows if hasattr(ds, "Rows") else None,
+                "columns": ds.Columns if hasattr(ds, "Columns") else None,
+                "bits_allocated": ds.BitsAllocated if hasattr(ds, "BitsAllocated") else None,
+                "bits_stored": ds.BitsStored if hasattr(ds, "BitsStored") else None,
+                "photometric_interpretation": str(ds.get("PhotometricInterpretation", "")),
+                "window_center": float(ds.WindowCenter[0]) if hasattr(ds, "WindowCenter") and ds.WindowCenter else None,
+                "window_width": float(ds.WindowWidth[0]) if hasattr(ds, "WindowWidth") and ds.WindowWidth else None,
+                "rescale_intercept": float(ds.RescaleIntercept) if hasattr(ds, "RescaleIntercept") else 0.0,
+                "rescale_slope": float(ds.RescaleSlope) if hasattr(ds, "RescaleSlope") else 1.0,
+                "slice_location": float(ds.SliceLocation) if hasattr(ds, "SliceLocation") else None,
+            }
+
+            series_map[series_uid]["instances"].append(instance_data)
+
+            # Store file
+            storage_result = await dicom_storage.store_instance(content)
+            instance_data["file_path"] = storage_result["file_path"]
+            instance_data["file_size"] = storage_result["file_size"]
+            instance_data["file_checksum"] = storage_result["checksum"]
+
+        # Create or get patient
+        patient_query = select(Patient).where(Patient.patient_id == patient_data["patient_id"])
+        patient_result = await db.execute(patient_query)
+        patient = patient_result.scalar_one_or_none()
+
+        if not patient:
+            patient = Patient(**patient_data)
+            db.add(patient)
+            await db.flush()
+
+        # Create study
+        modalities = list(set(s["modality"] for s in series_map.values()))
+        study = Study(
+            **study_data,
+            modalities_in_study=",".join(modalities),
+            num_series=len(series_map),
+            num_instances=sum(len(s["instances"]) for s in series_map.values()),
+            status=StudyStatus.COMPLETE,
+            patient_id_fk=patient.id,
+        )
+        db.add(study)
+        await db.flush()
+
+        # Create series and instances
+        for series_data in series_map.values():
+            instances_data = series_data.pop("instances")
+            series = Series(
+                **series_data,
+                study_instance_uid_fk=study.study_instance_uid,
+                num_instances=len(instances_data),
             )
+            db.add(series)
+            await db.flush()
 
-        # Create study entry
-        study_data = {
-            "study_instance_uid": study_uid,
-            "study_id": f"STUDY{len(STUDIES_DB) + 1:03d}",
-            "study_date": date.today(),
-            "study_time": datetime.now().strftime("%H:%M:%S"),
-            "study_description": "Uploaded Study",
-            "modalities_in_study": ["OT"],
-            "num_series": 1,
-            "num_instances": len(files),
-            "status": StudyStatus.PROCESSING,
-        }
-        STUDIES_DB[study_uid] = study_data
+            for inst_data in instances_data:
+                instance = Instance(
+                    **inst_data,
+                    series_instance_uid_fk=series.series_instance_uid,
+                )
+                db.add(instance)
+
+        await db.commit()
 
         audit_logger.log_access(
             user_id=current_user.user_id,
@@ -293,9 +451,12 @@ async def upload_study(
             details={"num_files": len(files)},
         )
 
-        return StudyMetadata(**study_data)
+        return _study_to_metadata(study, patient)
 
+    except HTTPException:
+        raise
     except Exception as e:
+        await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process uploaded files: {str(e)}",
@@ -305,7 +466,9 @@ async def upload_study(
 @router.delete("/{study_uid}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_study(
     study_uid: str,
+    request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
     """
     Delete a study (admin only).
@@ -313,13 +476,24 @@ async def delete_study(
     Permanently removes the study and all associated data.
     This action is logged for audit purposes.
     """
-    if study_uid not in STUDIES_DB:
+    # Find study
+    query = select(Study).where(Study.study_instance_uid == study_uid)
+    result = await db.execute(query)
+    study = result.scalar_one_or_none()
+
+    if not study:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Study not found: {study_uid}",
         )
 
-    del STUDIES_DB[study_uid]
+    # Delete files from storage
+    dicom_storage = request.app.state.dicom_storage
+    await dicom_storage.delete_study(study_uid)
+
+    # Delete from database (cascades to series, instances, jobs)
+    await db.delete(study)
+    await db.commit()
 
     audit_logger.log_access(
         user_id=current_user.user_id,
@@ -333,6 +507,7 @@ async def delete_study(
 async def get_study_thumbnail(
     study_uid: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
     size: int = Query(128, ge=32, le=512, description="Thumbnail size"),
 ) -> dict:
     """
@@ -340,13 +515,17 @@ async def get_study_thumbnail(
 
     Returns a representative thumbnail from the study's first series.
     """
-    if study_uid not in STUDIES_DB:
+    # Find study
+    query = select(Study).where(Study.study_instance_uid == study_uid)
+    result = await db.execute(query)
+    study = result.scalar_one_or_none()
+
+    if not study:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Study not found: {study_uid}",
         )
 
-    # In production, generate and return actual thumbnail
     return {
         "study_uid": study_uid,
         "thumbnail_url": f"/api/v1/studies/{study_uid}/thumbnail.png",
@@ -358,6 +537,7 @@ async def get_study_thumbnail(
 async def refresh_study_metadata(
     study_uid: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StudyMetadata:
     """
     Refresh study metadata from stored DICOM files.
@@ -365,14 +545,24 @@ async def refresh_study_metadata(
     Re-parses DICOM headers to update study information.
     Useful after manual file modifications or imports.
     """
-    if study_uid not in STUDIES_DB:
+    # Find study
+    query = (
+        select(Study)
+        .options(selectinload(Study.patient))
+        .where(Study.study_instance_uid == study_uid)
+    )
+    result = await db.execute(query)
+    study = result.scalar_one_or_none()
+
+    if not study:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Study not found: {study_uid}",
         )
 
-    study_data = STUDIES_DB[study_uid]
-    study_data["updated_at"] = datetime.now()
+    # Update timestamp
+    study.updated_at = datetime.now()
+    await db.commit()
 
     audit_logger.log_access(
         user_id=current_user.user_id,
@@ -381,4 +571,32 @@ async def refresh_study_metadata(
         action="REFRESH",
     )
 
-    return StudyMetadata(**study_data)
+    return _study_to_metadata(study, study.patient)
+
+
+def _parse_dicom_date(value: Any) -> date | None:
+    """Parse DICOM date format (YYYYMMDD)."""
+    if not value:
+        return None
+    try:
+        date_str = str(value)
+        if len(date_str) == 8:
+            return date(int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]))
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _parse_dicom_time(value: Any) -> dt_time | None:
+    """Parse DICOM time format (HHMMSS.FFFFFF)."""
+    if not value:
+        return None
+    try:
+        time_str = str(value).split(".")[0]  # Remove fractional seconds
+        if len(time_str) >= 6:
+            return dt_time(int(time_str[:2]), int(time_str[2:4]), int(time_str[4:6]))
+        elif len(time_str) >= 4:
+            return dt_time(int(time_str[:2]), int(time_str[2:4]))
+    except (ValueError, TypeError):
+        pass
+    return None

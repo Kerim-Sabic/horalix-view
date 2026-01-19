@@ -96,41 +96,55 @@ Horalix View is a production-ready, open-source DICOM viewer designed for modern
 ```
 horalix-view/
 ├── backend/                    # FastAPI Python backend
+│   ├── alembic/               # Database migrations
+│   │   └── versions/          # Migration scripts
 │   ├── app/
 │   │   ├── api/               # REST API endpoints
 │   │   │   └── v1/
-│   │   │       └── endpoints/ # Endpoint modules
+│   │   │       ├── endpoints/ # Endpoint modules
+│   │   │       │   ├── auth.py       # Authentication & users
+│   │   │       │   ├── studies.py    # DICOM study management
+│   │   │       │   ├── series.py     # Series & frame data
+│   │   │       │   ├── instances.py  # Instance pixel data
+│   │   │       │   └── ai.py         # AI job management
+│   │   │       └── router.py  # API router aggregation
 │   │   ├── core/              # Configuration, security, logging
+│   │   │   ├── config.py      # Settings with Pydantic
+│   │   │   ├── security.py    # JWT, password hashing, RBAC
+│   │   │   └── logging.py     # Structured logging & audit
+│   │   ├── models/            # SQLAlchemy ORM models
+│   │   │   ├── base.py        # Database engine & session
+│   │   │   ├── patient.py     # Patient model
+│   │   │   ├── study.py       # Study model with status
+│   │   │   ├── series.py      # Series model
+│   │   │   ├── instance.py    # Instance model
+│   │   │   ├── user.py        # User model with roles
+│   │   │   ├── job.py         # AI job model
+│   │   │   └── audit.py       # Audit log model
 │   │   ├── services/          # Business logic
-│   │   │   ├── dicom/         # DICOM parsing, storage, networking
-│   │   │   ├── ai/            # AI model management
-│   │   │   │   ├── segmentation/
-│   │   │   │   ├── detection/
-│   │   │   │   ├── classification/
-│   │   │   │   ├── enhancement/
-│   │   │   │   ├── pathology/
-│   │   │   │   └── cardiac/
-│   │   │   ├── imaging/       # Image processing
-│   │   │   ├── compliance/    # Audit, anonymization
-│   │   │   └── integration/   # PACS, EHR integration
-│   │   ├── models/            # Database models
-│   │   ├── schemas/           # Pydantic schemas
-│   │   └── plugins/           # Plugin interface
-│   └── tests/
+│   │   │   ├── dicom/         # DICOM parsing (pydicom), storage
+│   │   │   └── ai/            # AI model registry & inference
+│   │   └── main.py            # FastAPI app with lifespan
+│   └── pyproject.toml         # Python dependencies
 ├── frontend/                   # React TypeScript frontend
 │   ├── src/
 │   │   ├── components/        # UI components
-│   │   │   ├── viewer/        # DICOM viewer components
-│   │   │   ├── ai/            # AI visualization
 │   │   │   ├── common/        # Shared components
 │   │   │   └── layout/        # Layout components
+│   │   ├── contexts/          # React context providers
 │   │   ├── pages/             # Page components
-│   │   ├── hooks/             # Custom React hooks
+│   │   │   ├── DashboardPage.tsx    # Dashboard with stats
+│   │   │   ├── StudyListPage.tsx    # Study browser & upload
+│   │   │   ├── ViewerPage.tsx       # DICOM viewer
+│   │   │   ├── PatientListPage.tsx  # Patient browser
+│   │   │   └── AIModelsPage.tsx     # AI model management
 │   │   ├── services/          # API services
-│   │   ├── stores/            # Zustand state management
+│   │   │   ├── api.ts         # Centralized typed API client
+│   │   │   ├── apiClient.ts   # Axios instance with auth
+│   │   │   └── authService.ts # Authentication service
 │   │   ├── themes/            # Material-UI theming
 │   │   └── utils/             # Utilities
-│   └── tests/
+│   └── package.json           # Node dependencies
 ├── docs/                       # Documentation
 ├── config/                     # Configuration files
 ├── docker/                     # Docker configurations
@@ -191,11 +205,41 @@ pip install -e ".[ai,dev]"
 cp .env.example .env
 # Edit .env with your configuration
 
-# Initialize database
+# Initialize database with Alembic migrations
 alembic upgrade head
+
+# Create default users (optional - happens automatically on first startup)
+python -c "from app.api.v1.endpoints.auth import init_default_users; import asyncio; asyncio.run(init_default_users())"
 
 # Start the server
 uvicorn app.main:app --reload --port 8000
+```
+
+#### Database Schema
+
+The application uses PostgreSQL with SQLAlchemy async ORM. Key models:
+
+| Model | Description |
+|-------|-------------|
+| **Patient** | DICOM patient demographics (patient_id, name, birth_date, sex) |
+| **Study** | DICOM study records with status tracking (pending, processing, complete, error) |
+| **Series** | DICOM series with imaging parameters (modality, spacing, window/level) |
+| **Instance** | Individual DICOM SOP instances with file storage references |
+| **User** | User accounts with roles and authentication (admin, radiologist, technologist) |
+| **AIJob** | AI inference job tracking with status, progress, and results |
+| **AuditLog** | Immutable audit trail for HIPAA compliance |
+
+Migrations are managed with Alembic:
+
+```bash
+# Create a new migration
+alembic revision --autogenerate -m "description"
+
+# Apply migrations
+alembic upgrade head
+
+# Rollback one migration
+alembic downgrade -1
 ```
 
 #### Frontend Setup
