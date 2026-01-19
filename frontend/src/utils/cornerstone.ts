@@ -19,20 +19,20 @@ export const loadImage = async (imageId: string): Promise<any> => {
   return Promise.resolve({ imageId });
 };
 
-export const displayImage = (element: HTMLElement, image: any): void => {
+export const displayImage = (_element: HTMLElement, _image: any): void => {
   // Display image in viewport
   // In production, this would use cornerstone.displayImage()
 };
 
 export const setWindowLevel = (
-  element: HTMLElement,
-  windowCenter: number,
-  windowWidth: number
+  _element: HTMLElement,
+  _windowCenter: number,
+  _windowWidth: number
 ): void => {
   // Set window/level
   // In production, this would update viewport VOI
 };
 
-export const resetViewport = (element: HTMLElement): void => {
+export const resetViewport = (_element: HTMLElement): void => {
   // Reset viewport to default state
 };

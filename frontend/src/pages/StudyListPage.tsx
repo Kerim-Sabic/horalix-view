@@ -151,7 +151,7 @@ const StudyListPage: React.FC = () => {
         }))
       );
 
-      const result = await api.studies.upload(fileArray, setUploadProgress);
+      await api.studies.upload(fileArray, setUploadProgress);
 
       // Update progress to complete
       setUploadProgress((prev) =>

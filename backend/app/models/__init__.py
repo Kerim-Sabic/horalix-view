@@ -13,6 +13,7 @@ from app.models.user import User
 from app.models.job import AIJob
 from app.models.audit import AuditLog, AuditBase
 from app.models.job import ModelType, TaskType, JobStatus
+from app.models.annotation import Annotation, AnnotationType
 
 __all__ = [
     "Base",
@@ -27,7 +28,9 @@ __all__ = [
     "User",
     "AIJob",
     "AuditLog",
+    "Annotation",
     "ModelType",
     "TaskType",
     "JobStatus",
+    "AnnotationType",
 ]

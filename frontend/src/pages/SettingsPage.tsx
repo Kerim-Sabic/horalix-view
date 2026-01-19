@@ -3,11 +3,11 @@
  */
 
 import React from 'react';
-import { Box, Typography, Card, CardContent, Switch, FormControlLabel, Divider } from '@mui/material';
+import { Box, Typography, Card, CardContent, Switch, FormControlLabel } from '@mui/material';
 import { useTheme } from '@/themes/ThemeProvider';
 
 const SettingsPage: React.FC = () => {
-  const { mode, setMode, isDarkMode } = useTheme();
+  const { setMode, isDarkMode } = useTheme();
 
   return (
     <Box>
