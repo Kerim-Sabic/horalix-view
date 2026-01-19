@@ -24,6 +24,7 @@ from app.models.study import Study, StudyStatus
 from app.models.series import Series
 from app.models.patient import Patient
 from app.models.instance import Instance
+from app.models.annotation import Annotation
 
 router = APIRouter()
 
@@ -261,11 +262,18 @@ async def get_study(
         job.status.value == "COMPLETED" for job in study.ai_jobs
     )
 
+    # Query annotations count for this study
+    annotation_count_query = select(func.count()).select_from(Annotation).where(
+        Annotation.study_uid == study_uid
+    )
+    annotation_count_result = await db.execute(annotation_count_query)
+    annotations_count = annotation_count_result.scalar() or 0
+
     return StudyDetailResponse(
         study=_study_to_metadata(study, study.patient),
         series=series_list,
         ai_results_available=ai_results_available,
-        annotations_count=0,  # TODO: Implement annotations count
+        annotations_count=annotations_count,
     )
 
 
