@@ -2,18 +2,31 @@
 AI Model Registry for Horalix View.
 
 Manages registration, loading, and lifecycle of AI models.
-Provides a centralized interface for model discovery and inference.
+Provides real inference - NO PLACEHOLDERS OR SIMULATED OUTPUTS.
 """
 
 import asyncio
 from pathlib import Path
-from typing import Any, Type
+from typing import Any, Callable
 
 from app.core.config import AIModelSettings
 from app.core.logging import get_logger
 from app.services.ai.base import BaseAIModel, ModelMetadata, ModelType
 
 logger = get_logger(__name__)
+
+
+class ModelNotAvailableError(Exception):
+    """Raised when a model's weights are not available."""
+
+    def __init__(self, model_name: str, weights_path: Path, instructions: str):
+        self.model_name = model_name
+        self.weights_path = weights_path
+        self.instructions = instructions
+        super().__init__(
+            f"Model '{model_name}' not available. Weights not found at: {weights_path}\n\n"
+            f"{instructions}"
+        )
 
 
 class ModelRegistry:
@@ -25,6 +38,9 @@ class ModelRegistry:
     - Loading/unloading models on demand
     - Memory management
     - Model discovery and querying
+
+    IMPORTANT: This registry only supports REAL model implementations.
+    No placeholder or simulated outputs are allowed.
     """
 
     def __init__(self, settings: AIModelSettings):
@@ -38,9 +54,11 @@ class ModelRegistry:
         self.models_dir = Path(settings.models_dir)
         self.cache_dir = Path(settings.cache_dir)
 
-        self._registered_models: dict[str, Type[BaseAIModel]] = {}
+        # Model factory functions: name -> callable that creates model instance
+        self._model_factories: dict[str, Callable[[], BaseAIModel]] = {}
         self._loaded_models: dict[str, BaseAIModel] = {}
         self._model_metadata: dict[str, ModelMetadata] = {}
+        self._model_enabled: dict[str, bool] = {}
         self._ready = False
 
     async def initialize(self) -> None:
@@ -49,15 +67,40 @@ class ModelRegistry:
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Register built-in models
-        await self._register_builtin_models()
+        # Register real model implementations
+        await self._register_real_models()
 
         self._ready = True
         logger.info(
             "Model registry initialized",
             models_dir=str(self.models_dir),
-            registered_models=len(self._registered_models),
+            registered_models=len(self._model_factories),
+            available_models=self._get_available_model_names(),
         )
+
+    def _get_available_model_names(self) -> list[str]:
+        """Get names of models that have weights available."""
+        available = []
+        for name in self._model_factories.keys():
+            weights_path = self._get_weights_path(name)
+            if self._weights_exist(weights_path):
+                available.append(name)
+        return available
+
+    def _get_weights_path(self, model_name: str) -> Path:
+        """Get the expected weights path for a model."""
+        return self.models_dir / model_name
+
+    def _weights_exist(self, weights_path: Path) -> bool:
+        """Check if weights exist at path (file or directory with weights)."""
+        if weights_path.is_file():
+            return True
+        if weights_path.is_dir():
+            # Check for common weight files
+            for pattern in ["*.pt", "*.pth", "*.ckpt", "*.bin", "model.*"]:
+                if list(weights_path.glob(pattern)):
+                    return True
+        return False
 
     def is_ready(self) -> bool:
         """Check if registry is ready."""
@@ -65,7 +108,6 @@ class ModelRegistry:
 
     async def shutdown(self) -> None:
         """Shutdown registry and unload all models."""
-        # Unload all loaded models
         for model_name in list(self._loaded_models.keys()):
             await self.unload_model(model_name)
 
@@ -75,46 +117,42 @@ class ModelRegistry:
     def register_model(
         self,
         model_name: str,
-        model_class: Type[BaseAIModel],
+        factory: Callable[[], BaseAIModel],
         metadata: ModelMetadata,
+        enabled: bool = True,
     ) -> None:
         """
-        Register a model class.
+        Register a model factory.
 
         Args:
             model_name: Unique identifier for the model
-            model_class: Model class (must inherit from BaseAIModel)
+            factory: Factory function that creates model instance
             metadata: Model metadata
+            enabled: Whether this model is enabled
         """
-        if model_name in self._registered_models:
+        if model_name in self._model_factories:
             logger.warning(f"Overwriting registered model: {model_name}")
 
-        self._registered_models[model_name] = model_class
+        self._model_factories[model_name] = factory
         self._model_metadata[model_name] = metadata
+        self._model_enabled[model_name] = enabled
 
-        logger.info(
+        logger.debug(
             "Registered model",
             model_name=model_name,
             model_type=metadata.model_type.value,
+            enabled=enabled,
         )
 
     def unregister_model(self, model_name: str) -> bool:
-        """
-        Unregister a model.
-
-        Args:
-            model_name: Model identifier
-
-        Returns:
-            True if unregistered, False if not found
-        """
-        if model_name in self._registered_models:
-            # Unload if loaded
+        """Unregister a model."""
+        if model_name in self._model_factories:
             if model_name in self._loaded_models:
                 asyncio.create_task(self.unload_model(model_name))
 
-            del self._registered_models[model_name]
+            del self._model_factories[model_name]
             del self._model_metadata[model_name]
+            del self._model_enabled[model_name]
             return True
         return False
 
@@ -140,6 +178,30 @@ class ModelRegistry:
             if modality in meta.supported_modalities
         ]
 
+    def is_model_available(self, model_name: str) -> bool:
+        """Check if a model has weights available for inference."""
+        if model_name not in self._model_factories:
+            return False
+        if not self._model_enabled.get(model_name, False):
+            return False
+        weights_path = self._get_weights_path(model_name)
+        return self._weights_exist(weights_path)
+
+    def get_model_availability(self) -> dict[str, dict[str, Any]]:
+        """Get availability status for all registered models."""
+        result = {}
+        for name, metadata in self._model_metadata.items():
+            weights_path = self._get_weights_path(name)
+            result[name] = {
+                "registered": True,
+                "enabled": self._model_enabled.get(name, False),
+                "weights_available": self._weights_exist(weights_path),
+                "weights_path": str(weights_path),
+                "loaded": name in self._loaded_models,
+                "model_type": metadata.model_type.value,
+            }
+        return result
+
     async def load_model(
         self,
         model_name: str,
@@ -157,48 +219,65 @@ class ModelRegistry:
 
         Raises:
             KeyError: If model not registered
+            ModelNotAvailableError: If weights not found
+            RuntimeError: If loading fails
         """
         if model_name in self._loaded_models:
             return self._loaded_models[model_name]
 
-        if model_name not in self._registered_models:
+        if model_name not in self._model_factories:
             raise KeyError(f"Model not registered: {model_name}")
 
-        model_class = self._registered_models[model_name]
+        if not self._model_enabled.get(model_name, False):
+            raise RuntimeError(
+                f"Model '{model_name}' is disabled. Enable it in settings."
+            )
+
+        weights_path = self._get_weights_path(model_name)
         device = device or self.settings.device
 
-        try:
-            # Instantiate model
-            weights_path = self.models_dir / model_name
-            model = model_class(weights_path=weights_path)
+        # Create model instance using factory
+        factory = self._model_factories[model_name]
 
-            # Load weights
+        try:
+            model = factory()
+        except Exception as e:
+            logger.error(f"Failed to create model instance: {model_name}", error=str(e))
+            raise RuntimeError(f"Failed to create model: {e}") from e
+
+        try:
+            # Load weights - this will raise FileNotFoundError if weights missing
             await model.load(device=device)
 
             self._loaded_models[model_name] = model
 
             logger.info(
-                "Loaded model",
+                "Loaded model successfully",
                 model_name=model_name,
                 device=device,
             )
 
             return model
 
-        except Exception as e:
-            logger.error(f"Failed to load model {model_name}", error=str(e))
+        except FileNotFoundError as e:
+            # Re-raise with helpful instructions
+            logger.error(
+                f"Model weights not found: {model_name}",
+                weights_path=str(weights_path),
+            )
             raise
+        except ImportError as e:
+            logger.error(
+                f"Missing dependency for model: {model_name}",
+                error=str(e),
+            )
+            raise
+        except Exception as e:
+            logger.error(f"Failed to load model: {model_name}", error=str(e))
+            raise RuntimeError(f"Failed to load model: {e}") from e
 
     async def unload_model(self, model_name: str) -> bool:
-        """
-        Unload a model from memory.
-
-        Args:
-            model_name: Model identifier
-
-        Returns:
-            True if unloaded, False if not loaded
-        """
+        """Unload a model from memory."""
         if model_name not in self._loaded_models:
             return False
 
@@ -207,10 +286,8 @@ class ModelRegistry:
         try:
             await model.unload()
             del self._loaded_models[model_name]
-
             logger.info("Unloaded model", model_name=model_name)
             return True
-
         except Exception as e:
             logger.error(f"Error unloading model {model_name}", error=str(e))
             return False
@@ -244,7 +321,11 @@ class ModelRegistry:
             **kwargs: Additional model parameters
 
         Returns:
-            Inference result
+            Inference result (real inference, never simulated)
+
+        Raises:
+            RuntimeError: If model not available
+            FileNotFoundError: If weights not found
         """
         model = self._loaded_models.get(model_name)
 
@@ -256,49 +337,74 @@ class ModelRegistry:
 
         return await model.predict(image, **kwargs)
 
-    async def _register_builtin_models(self) -> None:
-        """Register built-in model stubs."""
-        # These are placeholder registrations - actual implementations
-        # would be loaded from the models directory
+    async def run_interactive_segmentation(
+        self,
+        model_name: str,
+        image: Any,
+        point_coords: list[list[int]] | None = None,
+        point_labels: list[int] | None = None,
+        box: list[int] | None = None,
+        mask_input: Any = None,
+        auto_load: bool = True,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Run interactive segmentation with prompts.
 
-        builtin_models = [
-            ModelMetadata(
-                name="nnunet",
-                version="2.3.0",
-                model_type=ModelType.SEGMENTATION,
-                description="nnU-Net: Self-configuring deep learning for medical image segmentation",
-                supported_modalities=["CT", "MR", "PT"],
-                performance_metrics={"dice": 0.92, "hd95": 3.2},
-                reference="Isensee et al., Nature Methods 2021",
+        Args:
+            model_name: Model identifier (must be interactive segmentation model)
+            image: Input image
+            point_coords: Point prompts [[x, y], ...]
+            point_labels: Point labels (1=foreground, 0=background)
+            box: Box prompt [x1, y1, x2, y2]
+            mask_input: Previous mask for refinement
+            auto_load: Automatically load model if not loaded
+
+        Returns:
+            Segmentation result with mask
+        """
+        from app.services.ai.base import InteractiveSegmentationModel
+
+        model = self._loaded_models.get(model_name)
+
+        if model is None:
+            if auto_load:
+                model = await self.load_model(model_name)
+            else:
+                raise RuntimeError(f"Model not loaded: {model_name}")
+
+        if not isinstance(model, InteractiveSegmentationModel):
+            raise TypeError(
+                f"Model '{model_name}' does not support interactive segmentation. "
+                f"Use a model like 'medsam' instead."
+            )
+
+        return await model.predict_with_prompts(
+            image,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            box=box,
+            mask_input=mask_input,
+            **kwargs,
+        )
+
+    async def _register_real_models(self) -> None:
+        """Register real model implementations."""
+        from app.services.ai.models import (
+            YoloV8Detector,
+            MonaiSegmentationModel,
+            MedSAMModel,
+        )
+
+        # YOLOv8 Detection
+        self.register_model(
+            model_name="yolov8",
+            factory=lambda: YoloV8Detector(
+                weights_path=self.models_dir / "yolov8",
+                confidence_threshold=0.25,
+                iou_threshold=0.45,
             ),
-            ModelMetadata(
-                name="medunet",
-                version="1.0.0",
-                model_type=ModelType.SEGMENTATION,
-                description="MedUNeXt: Next-generation U-Net with ConvNeXt blocks",
-                supported_modalities=["CT", "MR"],
-                performance_metrics={"dice": 0.93, "hd95": 2.8},
-                reference="Roy et al., 2023",
-            ),
-            ModelMetadata(
-                name="medsam",
-                version="1.0.0",
-                model_type=ModelType.SEGMENTATION,
-                description="MedSAM: Universal medical image segmentation foundation model",
-                supported_modalities=["CT", "MR", "US", "XA", "DX", "MG", "PT", "NM", "SM"],
-                performance_metrics={"dice": 0.89},
-                reference="Ma et al., Nature Communications 2024",
-            ),
-            ModelMetadata(
-                name="swinunet",
-                version="1.0.0",
-                model_type=ModelType.SEGMENTATION,
-                description="SwinUNet: Transformer-based U-Net with Swin Transformer blocks",
-                supported_modalities=["CT", "MR"],
-                performance_metrics={"dice": 0.91},
-                reference="Cao et al., ECCV 2022",
-            ),
-            ModelMetadata(
+            metadata=ModelMetadata(
                 name="yolov8",
                 version="8.1.0",
                 model_type=ModelType.DETECTION,
@@ -307,79 +413,96 @@ class ModelRegistry:
                 performance_metrics={"mAP": 0.85, "fps": 45},
                 reference="Ultralytics 2023",
             ),
-            ModelMetadata(
-                name="vit_classifier",
-                version="1.0.0",
-                model_type=ModelType.CLASSIFICATION,
-                description="Vision Transformer for medical image classification",
-                supported_modalities=["DX", "CR", "CT", "MR", "SM"],
-                performance_metrics={"auroc": 0.94, "accuracy": 0.91},
-                reference="Dosovitskiy et al., ICLR 2021",
+            enabled=self.settings.yolov8_enabled,
+        )
+
+        # MONAI Segmentation (general purpose)
+        self.register_model(
+            model_name="monai_segmentation",
+            factory=lambda: MonaiSegmentationModel(
+                model_path=self.models_dir / "monai_segmentation",
+                class_names=["background", "organ"],  # Override based on actual model
+                spatial_size=(96, 96, 96),
             ),
-            ModelMetadata(
-                name="unimie",
-                version="1.0.0",
-                model_type=ModelType.ENHANCEMENT,
-                description="UniMIE: Training-free diffusion model for universal medical image enhancement",
-                supported_modalities=["CT", "MR", "DX", "CR", "US", "XA", "MG", "PT", "NM"],
-                performance_metrics={"psnr": 32.5, "ssim": 0.95},
-                reference="UniMIE 2024",
+            metadata=ModelMetadata(
+                name="monai_segmentation",
+                version="1.3.0",
+                model_type=ModelType.SEGMENTATION,
+                description="MONAI-based volumetric medical image segmentation",
+                supported_modalities=["CT", "MR", "PT"],
+                performance_metrics={"dice": 0.85},
+                reference="MONAI Consortium 2024",
             ),
-            ModelMetadata(
-                name="gigapath",
-                version="1.0.0",
-                model_type=ModelType.PATHOLOGY,
-                description="Prov-GigaPath: Whole-slide foundation model for pathology",
-                supported_modalities=["SM"],
-                performance_metrics={"slide_classification_auroc": 0.94},
-                reference="Microsoft Research 2024",
+            enabled=self.settings.nnunet_enabled,  # Use nnunet flag for now
+        )
+
+        # MedSAM Interactive Segmentation
+        self.register_model(
+            model_name="medsam",
+            factory=lambda: MedSAMModel(
+                checkpoint_path=self.models_dir / "medsam",
+                model_type="vit_b",
             ),
-            ModelMetadata(
-                name="cardiac_3d",
+            metadata=ModelMetadata(
+                name="medsam",
                 version="1.0.0",
-                model_type=ModelType.CARDIAC,
-                description="3D cardiac segmentation network for chamber quantification",
-                supported_modalities=["CT", "MR", "US"],
-                performance_metrics={"lv_dice": 0.93, "rv_dice": 0.89},
-                reference="Cardiac Networks 2024",
+                model_type=ModelType.SEGMENTATION,
+                description="MedSAM: Interactive medical image segmentation with SAM",
+                supported_modalities=["CT", "MR", "US", "XA", "DX", "MG", "PT", "NM", "SM"],
+                performance_metrics={"dice": 0.89},
+                reference="Ma et al., Nature Communications 2024",
             ),
-        ]
+            enabled=self.settings.medsam_enabled,
+        )
 
-        # Create placeholder model class
-        class PlaceholderModel(BaseAIModel):
-            def __init__(self, weights_path: Path, meta: ModelMetadata):
-                super().__init__()
-                self._metadata = meta
-                self.weights_path = weights_path
+        # Register additional model stubs that clearly fail when not available
+        # These use the same real model classes but with different configs
 
-            @property
-            def metadata(self) -> ModelMetadata:
-                return self._metadata
+        # Liver segmentation (MONAI-based)
+        self.register_model(
+            model_name="liver_segmentation",
+            factory=lambda: MonaiSegmentationModel(
+                model_path=self.models_dir / "liver_segmentation",
+                class_names=["background", "liver", "tumor"],
+                spatial_size=(128, 128, 128),
+            ),
+            metadata=ModelMetadata(
+                name="liver_segmentation",
+                version="1.0.0",
+                model_type=ModelType.SEGMENTATION,
+                description="MONAI liver and tumor segmentation",
+                supported_modalities=["CT"],
+                performance_metrics={"dice": 0.92},
+                reference="MONAI Model Zoo",
+                class_names=["background", "liver", "tumor"],
+            ),
+            enabled=self.settings.nnunet_enabled,
+        )
 
-            async def load(self, device: str = "cuda") -> None:
-                self._device = device
-                self._loaded = True
-                logger.info(f"Placeholder load for {self._metadata.name}")
+        # Spleen segmentation (MONAI bundle)
+        self.register_model(
+            model_name="spleen_segmentation",
+            factory=lambda: MonaiSegmentationModel(
+                model_path=self.models_dir / "spleen_segmentation",
+                class_names=["background", "spleen"],
+                spatial_size=(96, 96, 96),
+            ),
+            metadata=ModelMetadata(
+                name="spleen_segmentation",
+                version="1.0.0",
+                model_type=ModelType.SEGMENTATION,
+                description="MONAI spleen CT segmentation bundle",
+                supported_modalities=["CT"],
+                performance_metrics={"dice": 0.96},
+                reference="MONAI Model Zoo - spleen_ct_segmentation",
+                class_names=["background", "spleen"],
+            ),
+            enabled=self.settings.nnunet_enabled,
+        )
 
-            async def unload(self) -> None:
-                self._loaded = False
-
-            async def predict(self, image: Any, **kwargs: Any) -> Any:
-                raise NotImplementedError(
-                    f"Model {self._metadata.name} requires actual implementation"
-                )
-
-        # Register all models
-        for meta in builtin_models:
-            # Create a factory that captures the metadata
-            def make_model_class(m: ModelMetadata) -> Type[BaseAIModel]:
-                class SpecificPlaceholder(PlaceholderModel):
-                    def __init__(self, weights_path: Path):
-                        super().__init__(weights_path, m)
-                return SpecificPlaceholder
-
-            self.register_model(
-                model_name=meta.name,
-                model_class=make_model_class(meta),
-                metadata=meta,
-            )
+        logger.info(
+            "Registered real model implementations",
+            total_models=len(self._model_factories),
+            detection_models=len(self.get_models_by_type(ModelType.DETECTION)),
+            segmentation_models=len(self.get_models_by_type(ModelType.SEGMENTATION)),
+        )

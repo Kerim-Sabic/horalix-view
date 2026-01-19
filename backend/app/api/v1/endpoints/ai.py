@@ -1,83 +1,50 @@
 """
 AI inference endpoints for Horalix View.
 
-Provides endpoints for running various AI models including:
-- Segmentation (nnU-Net, MedUNeXt, MedSAM, SwinUNet)
-- Detection (YOLOv8, Faster R-CNN)
-- Classification (ViT, MedViT, EchoCLR)
-- Enhancement (UniMIE, GANs)
-- Digital Pathology (GigaPath, HIPT, CTransPath, CHIEF)
-- Cardiac Analysis (3D segmentation, EF calculation)
+IMPORTANT: This module performs REAL AI inference only.
+NO simulated, placeholder, or fake outputs are permitted.
+If a model is not available, endpoints return clear error messages.
 """
 
+import asyncio
+import gzip
+import hashlib
+import json
+import time
+import traceback
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Annotated, Any
 from uuid import uuid4
 
+import numpy as np
 from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request, status
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
+from app.core.config import get_settings
 from app.core.security import TokenData
-from app.core.logging import audit_logger
+from app.core.logging import audit_logger, get_logger
 from app.models.base import get_db
 from app.models.job import AIJob, ModelType, TaskType, JobStatus
 from app.models.study import Study
 from app.models.series import Series
 
+logger = get_logger(__name__)
 router = APIRouter()
+settings = get_settings()
 
 
-class BoundingBox(BaseModel):
-    """Detection bounding box."""
-
-    x: float
-    y: float
-    width: float
-    height: float
-    confidence: float
-    class_name: str
-    class_id: int
-
-
-class SegmentationResult(BaseModel):
-    """Segmentation result."""
-
-    mask_url: str
-    class_name: str
-    class_id: int
-    dice_score: float | None = None
-    volume_mm3: float | None = None
-    surface_area_mm2: float | None = None
-
-
-class ClassificationResult(BaseModel):
-    """Classification result."""
-
-    class_name: str
-    class_id: int
-    confidence: float
-    probabilities: dict[str, float] = {}
-
-
-class CardiacMeasurement(BaseModel):
-    """Cardiac measurement result."""
-
-    measurement_name: str
-    value: float
-    unit: str
-    normal_range: tuple[float, float] | None = None
-    is_abnormal: bool = False
-
-
+# Request/Response Models
 class InferenceRequest(BaseModel):
     """AI inference request."""
 
     study_uid: str = Field(..., description="Study to analyze")
     series_uid: str | None = Field(None, description="Specific series (optional)")
-    model_type: ModelType = Field(..., description="AI model to use")
+    model_type: str = Field(..., description="AI model to use (e.g., 'yolov8', 'medsam')")
     task_type: TaskType = Field(..., description="Type of analysis")
     parameters: dict[str, Any] = Field(default_factory=dict, description="Model parameters")
     priority: int = Field(5, ge=1, le=10, description="Job priority (1=highest)")
@@ -98,6 +65,7 @@ class InferenceJobResponse(BaseModel):
     completed_at: datetime | None = None
     error_message: str | None = None
     results: dict[str, Any] | None = None
+    result_files: dict[str, str] | None = None
 
     class Config:
         from_attributes = True
@@ -106,194 +74,45 @@ class InferenceJobResponse(BaseModel):
 class ModelInfo(BaseModel):
     """AI model information."""
 
-    model_type: str
     name: str
-    description: str
     version: str
-    task_type: str
+    model_type: str
+    description: str
     supported_modalities: list[str]
-    is_loaded: bool
     performance_metrics: dict[str, float] = {}
     reference: str | None = None
+    available: bool = False
+    enabled: bool = False
+    weights_path: str | None = None
+
+
+class ModelAvailabilityResponse(BaseModel):
+    """Model availability status."""
+
+    models: list[ModelInfo]
+    total_registered: int
+    total_available: int
+    message: str
 
 
 class SAMPrompt(BaseModel):
     """Interactive prompt for SAM/MedSAM."""
 
-    points: list[tuple[float, float]] = Field(default_factory=list)
-    point_labels: list[int] = Field(default_factory=list)  # 1=foreground, 0=background
-    box: tuple[float, float, float, float] | None = None  # x1, y1, x2, y2
-    mask_input: str | None = None  # Base64 encoded mask
+    points: list[list[int]] = Field(default_factory=list, description="[[x,y], ...] point coordinates")
+    point_labels: list[int] = Field(default_factory=list, description="1=foreground, 0=background")
+    box: list[int] | None = Field(None, description="[x1, y1, x2, y2] bounding box")
 
 
-# Available models registry
-MODELS_REGISTRY: dict[str, ModelInfo] = {
-    ModelType.NNUNET.value: ModelInfo(
-        model_type=ModelType.NNUNET.value,
-        name="nnU-Net",
-        description="Self-configuring deep learning framework for medical image segmentation",
-        version="2.3.0",
-        task_type=TaskType.SEGMENTATION.value,
-        supported_modalities=["CT", "MR", "PT"],
-        is_loaded=False,
-        performance_metrics={"dice": 0.92, "hd95": 3.2},
-        reference="Isensee et al., Nature Methods 2021",
-    ),
-    ModelType.MEDUNET.value: ModelInfo(
-        model_type=ModelType.MEDUNET.value,
-        name="MedUNeXt",
-        description="Next-generation U-Net with ConvNeXt blocks for medical imaging",
-        version="1.0.0",
-        task_type=TaskType.SEGMENTATION.value,
-        supported_modalities=["CT", "MR"],
-        is_loaded=False,
-        performance_metrics={"dice": 0.93, "hd95": 2.8},
-        reference="Roy et al., 2023",
-    ),
-    ModelType.MEDSAM.value: ModelInfo(
-        model_type=ModelType.MEDSAM.value,
-        name="MedSAM",
-        description="Foundation model for universal medical image segmentation trained on 1.57M image-mask pairs",
-        version="1.0.0",
-        task_type=TaskType.SEGMENTATION.value,
-        supported_modalities=["CT", "MR", "US", "XA", "DX", "MG", "PT", "NM", "SM"],
-        is_loaded=False,
-        performance_metrics={"dice": 0.89},
-        reference="Ma et al., Nature Communications 2024",
-    ),
-    ModelType.SWINUNET.value: ModelInfo(
-        model_type=ModelType.SWINUNET.value,
-        name="SwinUNet",
-        description="Transformer-based U-Net with Swin Transformer blocks",
-        version="1.0.0",
-        task_type=TaskType.SEGMENTATION.value,
-        supported_modalities=["CT", "MR"],
-        is_loaded=False,
-        performance_metrics={"dice": 0.91},
-        reference="Cao et al., ECCV 2022",
-    ),
-    ModelType.YOLOV8.value: ModelInfo(
-        model_type=ModelType.YOLOV8.value,
-        name="YOLOv8 Medical",
-        description="Real-time object detection for medical imaging with single-stage pipeline",
-        version="8.1.0",
-        task_type=TaskType.DETECTION.value,
-        supported_modalities=["DX", "CR", "CT", "MR", "US"],
-        is_loaded=False,
-        performance_metrics={"mAP": 0.85, "fps": 45},
-        reference="Ultralytics 2023",
-    ),
-    ModelType.FASTER_RCNN.value: ModelInfo(
-        model_type=ModelType.FASTER_RCNN.value,
-        name="Faster R-CNN Medical",
-        description="Two-stage detector for high-precision medical abnormality detection",
-        version="1.0.0",
-        task_type=TaskType.DETECTION.value,
-        supported_modalities=["DX", "CR", "CT", "MR"],
-        is_loaded=False,
-        performance_metrics={"mAP": 0.88, "fps": 12},
-        reference="Ren et al., NeurIPS 2015",
-    ),
-    ModelType.VIT.value: ModelInfo(
-        model_type=ModelType.VIT.value,
-        name="Vision Transformer",
-        description="ViT for medical image classification with global attention",
-        version="1.0.0",
-        task_type=TaskType.CLASSIFICATION.value,
-        supported_modalities=["DX", "CR", "CT", "MR", "SM"],
-        is_loaded=False,
-        performance_metrics={"auroc": 0.94, "accuracy": 0.91},
-        reference="Dosovitskiy et al., ICLR 2021",
-    ),
-    ModelType.MEDVIT.value: ModelInfo(
-        model_type=ModelType.MEDVIT.value,
-        name="MedViT",
-        description="Medical-domain pretrained Vision Transformer for radiology",
-        version="1.0.0",
-        task_type=TaskType.CLASSIFICATION.value,
-        supported_modalities=["DX", "CR", "CT", "MR"],
-        is_loaded=False,
-        performance_metrics={"auroc": 0.96, "accuracy": 0.93},
-        reference="2025 Review",
-    ),
-    ModelType.ECHOCLR.value: ModelInfo(
-        model_type=ModelType.ECHOCLR.value,
-        name="EchoCLR",
-        description="Self-supervised learning for echocardiography analysis",
-        version="1.0.0",
-        task_type=TaskType.CARDIAC.value,
-        supported_modalities=["US"],
-        is_loaded=False,
-        performance_metrics={"lvh_auroc": 0.89, "as_auroc": 0.92},
-        reference="Self-supervised echocardiogram representation learning",
-    ),
-    ModelType.UNIMIE.value: ModelInfo(
-        model_type=ModelType.UNIMIE.value,
-        name="UniMIE",
-        description="Training-free diffusion model for universal medical image enhancement",
-        version="1.0.0",
-        task_type=TaskType.ENHANCEMENT.value,
-        supported_modalities=["CT", "MR", "DX", "CR", "US", "XA", "MG", "PT", "NM"],
-        is_loaded=False,
-        performance_metrics={"psnr": 32.5, "ssim": 0.95},
-        reference="UniMIE 2024",
-    ),
-    ModelType.GIGAPATH.value: ModelInfo(
-        model_type=ModelType.GIGAPATH.value,
-        name="Prov-GigaPath",
-        description="Whole-slide foundation model achieving SOTA on 25/26 pathology tasks",
-        version="1.0.0",
-        task_type=TaskType.PATHOLOGY.value,
-        supported_modalities=["SM"],
-        is_loaded=False,
-        performance_metrics={"slide_classification_auroc": 0.94},
-        reference="Microsoft Research 2024",
-    ),
-    ModelType.HIPT.value: ModelInfo(
-        model_type=ModelType.HIPT.value,
-        name="HIPT",
-        description="Hierarchical Image Pyramid Transformer for whole-slide analysis",
-        version="1.0.0",
-        task_type=TaskType.PATHOLOGY.value,
-        supported_modalities=["SM"],
-        is_loaded=False,
-        performance_metrics={"slide_classification_auroc": 0.91},
-        reference="Chen et al., CVPR 2022",
-    ),
-    ModelType.CTRANSPATH.value: ModelInfo(
-        model_type=ModelType.CTRANSPATH.value,
-        name="CTransPath",
-        description="Contrastive learning for pathology representation",
-        version="1.0.0",
-        task_type=TaskType.PATHOLOGY.value,
-        supported_modalities=["SM"],
-        is_loaded=False,
-        performance_metrics={"tile_classification_accuracy": 0.92},
-        reference="Wang et al., 2022",
-    ),
-    ModelType.CHIEF.value: ModelInfo(
-        model_type=ModelType.CHIEF.value,
-        name="CHIEF",
-        description="Clinical Histopathology Image Evaluation Foundation model",
-        version="1.0.0",
-        task_type=TaskType.PATHOLOGY.value,
-        supported_modalities=["SM"],
-        is_loaded=False,
-        performance_metrics={"biomarker_prediction_auroc": 0.88},
-        reference="CHIEF 2024",
-    ),
-    ModelType.CARDIAC_3D.value: ModelInfo(
-        model_type=ModelType.CARDIAC_3D.value,
-        name="Cardiac 3D Segmentation",
-        description="3D U-Net/MedNeXt for cardiac chamber segmentation",
-        version="1.0.0",
-        task_type=TaskType.CARDIAC.value,
-        supported_modalities=["CT", "MR", "US"],
-        is_loaded=False,
-        performance_metrics={"lv_dice": 0.93, "rv_dice": 0.89},
-        reference="3D Cardiac Networks 2024",
-    ),
-}
+class InteractiveSegmentationResponse(BaseModel):
+    """Response from interactive segmentation."""
+
+    instance_uid: str
+    mask_shape: list[int]
+    mask_url: str
+    confidence: float
+    inference_time_ms: float
+    model_name: str
+    model_version: str
 
 
 def _job_to_response(job: AIJob) -> InferenceJobResponse:
@@ -302,7 +121,7 @@ def _job_to_response(job: AIJob) -> InferenceJobResponse:
         job_id=job.job_id,
         study_uid=job.study_instance_uid,
         series_uid=job.series_instance_uid,
-        model_type=job.model_type.value,
+        model_type=job.model_type.value if hasattr(job.model_type, 'value') else str(job.model_type),
         task_type=job.task_type.value,
         status=job.status.value,
         progress=job.progress or 0.0,
@@ -311,51 +130,106 @@ def _job_to_response(job: AIJob) -> InferenceJobResponse:
         completed_at=job.completed_at,
         error_message=job.error_message,
         results=job.results,
+        result_files=job.result_files,
     )
 
 
-@router.get("/models", response_model=list[ModelInfo])
+@router.get("/models", response_model=ModelAvailabilityResponse)
 async def list_models(
+    http_request: Request,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     task_type: TaskType | None = Query(None, description="Filter by task type"),
     modality: str | None = Query(None, description="Filter by supported modality"),
-) -> list[ModelInfo]:
+) -> ModelAvailabilityResponse:
     """
-    List available AI models.
+    List available AI models with their availability status.
 
-    Returns information about all registered AI models with their
-    capabilities and performance metrics.
+    Returns information about all registered AI models, including whether
+    their weights are available for inference.
     """
-    models = list(MODELS_REGISTRY.values())
+    model_registry = http_request.app.state.model_registry
 
-    if task_type:
-        models = [m for m in models if m.task_type == task_type.value]
+    # Get all registered models and their availability
+    availability = model_registry.get_model_availability()
+    registered_metadata = model_registry.get_registered_models()
 
-    if modality:
-        models = [m for m in models if modality in m.supported_modalities]
+    models = []
+    for meta in registered_metadata:
+        avail = availability.get(meta.name, {})
 
-    return models
+        # Filter by task type if specified
+        if task_type and meta.model_type.value != task_type.value:
+            continue
+
+        # Filter by modality if specified
+        if modality and modality not in meta.supported_modalities:
+            continue
+
+        models.append(ModelInfo(
+            name=meta.name,
+            version=meta.version,
+            model_type=meta.model_type.value,
+            description=meta.description,
+            supported_modalities=meta.supported_modalities,
+            performance_metrics=meta.performance_metrics or {},
+            reference=meta.reference,
+            available=avail.get("weights_available", False),
+            enabled=avail.get("enabled", False),
+            weights_path=avail.get("weights_path"),
+        ))
+
+    total_available = sum(1 for m in models if m.available)
+
+    if total_available == 0:
+        message = (
+            "No AI models available. Place model weights in the models directory. "
+            f"Models directory: {settings.ai.models_dir}"
+        )
+    else:
+        message = f"{total_available} model(s) ready for inference"
+
+    return ModelAvailabilityResponse(
+        models=models,
+        total_registered=len(models),
+        total_available=total_available,
+        message=message,
+    )
 
 
-@router.get("/models/{model_type}", response_model=ModelInfo)
+@router.get("/models/{model_name}", response_model=ModelInfo)
 async def get_model_info(
-    model_type: ModelType,
+    model_name: str,
+    http_request: Request,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> ModelInfo:
-    """
-    Get detailed information about a specific model.
-    """
-    if model_type.value not in MODELS_REGISTRY:
+    """Get detailed information about a specific model."""
+    model_registry = http_request.app.state.model_registry
+
+    metadata = model_registry.get_model_metadata(model_name)
+    if not metadata:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_type}",
+            detail=f"Model not found: {model_name}",
         )
 
-    return MODELS_REGISTRY[model_type.value]
+    availability = model_registry.get_model_availability().get(model_name, {})
+
+    return ModelInfo(
+        name=metadata.name,
+        version=metadata.version,
+        model_type=metadata.model_type.value,
+        description=metadata.description,
+        supported_modalities=metadata.supported_modalities,
+        performance_metrics=metadata.performance_metrics or {},
+        reference=metadata.reference,
+        available=availability.get("weights_available", False),
+        enabled=availability.get("enabled", False),
+        weights_path=availability.get("weights_path"),
+    )
 
 
 @router.post("/infer", response_model=InferenceJobResponse, status_code=status.HTTP_202_ACCEPTED)
-async def run_inference(
+async def submit_inference(
     request: InferenceRequest,
     background_tasks: BackgroundTasks,
     http_request: Request,
@@ -367,12 +241,37 @@ async def run_inference(
 
     Creates a new inference task that runs in the background.
     Returns immediately with a job ID for status tracking.
+
+    IMPORTANT: This endpoint performs REAL inference only.
+    If model weights are not available, the job will fail with
+    a clear error message explaining how to set up the model.
     """
-    # Validate model
-    if request.model_type.value not in MODELS_REGISTRY:
+    model_registry = http_request.app.state.model_registry
+
+    # Validate model exists
+    metadata = model_registry.get_model_metadata(request.model_type)
+    if not metadata:
+        available = list(model_registry._model_metadata.keys())
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unknown model: {request.model_type}",
+            detail=f"Unknown model: {request.model_type}. Available models: {available}",
+        )
+
+    # Check if model is available (weights exist)
+    if not model_registry.is_model_available(request.model_type):
+        availability = model_registry.get_model_availability().get(request.model_type, {})
+        weights_path = availability.get("weights_path", "unknown")
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=(
+                f"Model '{request.model_type}' weights not available.\n"
+                f"Expected weights at: {weights_path}\n\n"
+                f"To enable this model:\n"
+                f"1. Download or train model weights\n"
+                f"2. Place weights at the path above\n"
+                f"3. Restart the service\n\n"
+                f"See README AI Setup section for detailed instructions."
+            ),
         )
 
     # Verify study exists
@@ -398,15 +297,26 @@ async def run_inference(
 
     # Create job in database
     job_id = str(uuid4())
+
+    # Map string model_type to enum if needed
+    try:
+        model_type_enum = ModelType(request.model_type)
+    except ValueError:
+        # If not in enum, store as custom string
+        model_type_enum = ModelType.NNUNET  # Default, but we'll use the string
+
     job = AIJob(
         job_id=job_id,
         study_instance_uid=request.study_uid,
         series_instance_uid=request.series_uid,
-        model_type=request.model_type,
+        model_type=model_type_enum,
         task_type=request.task_type,
-        status=JobStatus.PENDING,
+        status=JobStatus.QUEUED,
         priority=request.priority,
-        parameters=request.parameters,
+        parameters={
+            **request.parameters,
+            "_model_name": request.model_type,  # Store actual model name
+        },
         submitted_by=current_user.user_id,
     )
 
@@ -417,7 +327,7 @@ async def run_inference(
     # Log the inference request
     audit_logger.log_ai_inference(
         user_id=current_user.user_id,
-        model_name=request.model_type.value,
+        model_name=request.model_type,
         study_id=request.study_uid,
         inference_type=request.task_type.value,
         duration_ms=0,
@@ -426,9 +336,17 @@ async def run_inference(
 
     # Add background task for actual inference
     background_tasks.add_task(
-        run_model_inference,
+        run_real_inference,
         job_id,
+        request.model_type,
         http_request.app.state,
+    )
+
+    logger.info(
+        "Inference job submitted",
+        job_id=job_id,
+        model=request.model_type,
+        study_uid=request.study_uid,
     )
 
     return _job_to_response(job)
@@ -458,6 +376,44 @@ async def get_job_status(
     return _job_to_response(job)
 
 
+@router.get("/jobs/{job_id}/result")
+async def get_job_result(
+    job_id: str,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """
+    Get detailed results for a completed job.
+
+    Returns the full inference results including paths to result files.
+    """
+    query = select(AIJob).where(AIJob.job_id == job_id)
+    result = await db.execute(query)
+    job = result.scalar_one_or_none()
+
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    if job.status != JobStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Job not completed. Current status: {job.status.value}",
+        )
+
+    return {
+        "job_id": job.job_id,
+        "model_type": job.model_type.value,
+        "task_type": job.task_type.value,
+        "results": job.results,
+        "result_files": job.result_files,
+        "inference_time_ms": job.inference_time_ms,
+        "quality_metrics": job.quality_metrics,
+    }
+
+
 @router.get("/jobs", response_model=list[InferenceJobResponse])
 async def list_jobs(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
@@ -466,9 +422,7 @@ async def list_jobs(
     status_filter: JobStatus | None = Query(None, alias="status"),
     limit: int = Query(50, ge=1, le=100),
 ) -> list[InferenceJobResponse]:
-    """
-    List inference jobs with filtering.
-    """
+    """List inference jobs with filtering."""
     query = select(AIJob).order_by(AIJob.created_at.desc())
 
     if study_uid:
@@ -491,9 +445,7 @@ async def cancel_job(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """
-    Cancel a pending or running inference job.
-    """
+    """Cancel a pending or running inference job."""
     query = select(AIJob).where(AIJob.job_id == job_id)
     result = await db.execute(query)
     job = result.scalar_one_or_none()
@@ -514,7 +466,7 @@ async def cancel_job(
     await db.commit()
 
 
-@router.post("/interactive/medsam", response_model=dict)
+@router.post("/interactive/medsam", response_model=InteractiveSegmentationResponse)
 async def interactive_medsam(
     study_uid: str,
     series_uid: str,
@@ -523,13 +475,39 @@ async def interactive_medsam(
     http_request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "radiologist"))],
     db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict:
+) -> InteractiveSegmentationResponse:
     """
     Interactive MedSAM segmentation with prompts.
 
-    Allows clinicians to provide point prompts or bounding boxes
-    to guide segmentation interactively.
+    Performs REAL inference using the MedSAM model.
+    If the model is not available, returns HTTP 424 with setup instructions.
+
+    Args:
+        study_uid: Study Instance UID
+        series_uid: Series Instance UID
+        instance_uid: Instance to segment
+        prompt: Interactive prompts (points or box)
     """
+    model_registry = http_request.app.state.model_registry
+    dicom_storage = http_request.app.state.dicom_storage
+
+    # Check if MedSAM is available
+    if not model_registry.is_model_available("medsam"):
+        availability = model_registry.get_model_availability().get("medsam", {})
+        weights_path = availability.get("weights_path", "models/medsam")
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=(
+                f"MedSAM model not available.\n\n"
+                f"Expected weights at: {weights_path}\n\n"
+                f"To set up MedSAM:\n"
+                f"1. Download MedSAM weights from: https://github.com/bowang-lab/MedSAM\n"
+                f"2. Place checkpoint (medsam_vit_b.pth) in: {weights_path}/\n"
+                f"3. Restart the service\n\n"
+                f"Note: MedSAM requires ~375MB for vit_b variant."
+            ),
+        )
+
     # Verify study exists
     study_query = select(Study).where(Study.study_instance_uid == study_uid)
     study_result = await db.execute(study_query)
@@ -539,26 +517,64 @@ async def interactive_medsam(
             detail=f"Study not found: {study_uid}",
         )
 
-    # Run interactive segmentation
-    model_registry = http_request.app.state.model_registry
+    # Load the DICOM instance
+    from app.services.ai.dicom_loader import DicomLoader
+
+    loader = DicomLoader(dicom_storage)
 
     try:
-        result = await model_registry.run_interactive_sam(
+        volume = await loader.load_instance(
+            study_uid=study_uid,
+            series_uid=series_uid,
             instance_uid=instance_uid,
-            points=prompt.points,
-            point_labels=prompt.point_labels,
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+    # Prepare image for inference
+    image = loader.prepare_for_inference(
+        volume,
+        normalize=True,
+        convert_to_rgb=True,
+    )
+
+    # Run interactive segmentation
+    try:
+        result = await model_registry.run_interactive_segmentation(
+            model_name="medsam",
+            image=image,
+            point_coords=prompt.points if prompt.points else None,
+            point_labels=prompt.point_labels if prompt.point_labels else None,
             box=prompt.box,
         )
-        return result
-    except Exception:
-        # Return placeholder if model not available
-        return {
-            "instance_uid": instance_uid,
-            "mask_url": f"/api/v1/ai/results/{study_uid}/masks/medsam_interactive.nii.gz",
-            "prompt_used": prompt.model_dump(),
-            "confidence": 0.92,
-            "message": "Model inference pending - placeholder result returned",
-        }
+    except Exception as e:
+        logger.error(f"MedSAM inference failed: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Inference failed: {e}",
+        )
+
+    # Save mask result
+    mask = result.output.mask
+    results_dir = Path(settings.ai.models_dir).parent / "results" / study_uid
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    mask_filename = f"medsam_interactive_{instance_uid}_{uuid4().hex[:8]}.npz"
+    mask_path = results_dir / mask_filename
+    np.savez_compressed(mask_path, mask=mask)
+
+    return InteractiveSegmentationResponse(
+        instance_uid=instance_uid,
+        mask_shape=list(mask.shape),
+        mask_url=f"/api/v1/ai/results/{study_uid}/masks/{mask_filename}",
+        confidence=result.confidence or 0.0,
+        inference_time_ms=result.inference_time_ms,
+        model_name=result.model_name,
+        model_version=result.model_version,
+    )
 
 
 @router.get("/results/{study_uid}")
@@ -568,11 +584,7 @@ async def get_study_results(
     db: Annotated[AsyncSession, Depends(get_db)],
     task_type: TaskType | None = Query(None),
 ) -> dict:
-    """
-    Get all AI results for a study.
-
-    Returns aggregated results from all completed inference jobs.
-    """
+    """Get all AI results for a study."""
     query = (
         select(AIJob)
         .where(AIJob.study_instance_uid == study_uid)
@@ -591,11 +603,21 @@ async def get_study_results(
         "segmentations": [],
         "detections": [],
         "classifications": [],
-        "cardiac_measurements": [],
-        "enhancements": [],
+        "jobs": [],
     }
 
     for job in jobs:
+        job_info = {
+            "job_id": job.job_id,
+            "model_type": job.model_type.value,
+            "task_type": job.task_type.value,
+            "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+            "inference_time_ms": job.inference_time_ms,
+            "results": job.results,
+            "result_files": job.result_files,
+        }
+        results["jobs"].append(job_info)
+
         if job.results:
             if job.task_type == TaskType.SEGMENTATION:
                 results["segmentations"].append(job.results)
@@ -603,23 +625,52 @@ async def get_study_results(
                 results["detections"].append(job.results)
             elif job.task_type == TaskType.CLASSIFICATION:
                 results["classifications"].append(job.results)
-            elif job.task_type == TaskType.CARDIAC:
-                results["cardiac_measurements"].append(job.results)
-            elif job.task_type == TaskType.ENHANCEMENT:
-                results["enhancements"].append(job.results)
 
     return results
 
 
-async def run_model_inference(job_id: str, app_state: Any) -> None:
-    """
-    Run actual model inference in background.
+@router.get("/results/{study_uid}/masks/{filename}")
+async def get_mask_file(
+    study_uid: str,
+    filename: str,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+) -> Response:
+    """Download a mask result file."""
+    results_dir = Path(settings.ai.models_dir).parent / "results" / study_uid
+    file_path = results_dir / filename
 
-    This function loads the appropriate model and runs inference
-    on the specified study/series data.
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Result file not found: {filename}",
+        )
+
+    # Determine content type
+    if filename.endswith(".npz"):
+        media_type = "application/x-npz"
+    elif filename.endswith(".nii.gz"):
+        media_type = "application/gzip"
+    elif filename.endswith(".nii"):
+        media_type = "application/octet-stream"
+    else:
+        media_type = "application/octet-stream"
+
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type=media_type,
+    )
+
+
+async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> None:
     """
-    import asyncio
+    Run REAL model inference in background.
+
+    This function performs actual inference using loaded models.
+    NO simulated or placeholder outputs are generated.
+    """
     from app.models.base import async_session_maker
+    from app.services.ai.dicom_loader import DicomLoader
 
     async with async_session_maker() as db:
         # Get job from database
@@ -628,7 +679,11 @@ async def run_model_inference(job_id: str, app_state: Any) -> None:
         job = result.scalar_one_or_none()
 
         if not job:
+            logger.error(f"Job not found: {job_id}")
             return
+
+        model_registry = app_state.model_registry
+        dicom_storage = app_state.dicom_storage
 
         try:
             # Update status to running
@@ -636,172 +691,227 @@ async def run_model_inference(job_id: str, app_state: Any) -> None:
             job.started_at = datetime.now(timezone.utc)
             await db.commit()
 
-            # Get model registry from app state
-            model_registry = app_state.model_registry
-            dicom_storage = app_state.dicom_storage
+            # Load DICOM data
+            loader = DicomLoader(dicom_storage)
 
-            # Simulate processing time with progress updates
-            for i in range(5):
-                await asyncio.sleep(0.5)
-                job.progress = (i + 1) * 10
-                await db.commit()
+            series_uid = job.series_instance_uid
+            if not series_uid:
+                # Get first series from study
+                series_query = select(Series).where(
+                    Series.study_instance_uid == job.study_instance_uid
+                ).limit(1)
+                series_result = await db.execute(series_query)
+                series = series_result.scalar_one_or_none()
+                if series:
+                    series_uid = series.series_instance_uid
+                else:
+                    raise ValueError("No series found for study")
+
+            job.progress = 10
+            await db.commit()
+
+            # Load the series
+            try:
+                volume = await loader.load_series(
+                    study_uid=job.study_instance_uid,
+                    series_uid=series_uid,
+                    apply_rescale=True,
+                )
+            except FileNotFoundError as e:
+                raise ValueError(f"DICOM data not found: {e}")
+
+            job.progress = 30
+            await db.commit()
+
+            # Get actual model name from parameters
+            actual_model_name = job.parameters.get("_model_name", model_name)
 
             # Run inference based on task type
-            if job.task_type == TaskType.SEGMENTATION:
-                results = await run_segmentation(job, model_registry, dicom_storage)
-            elif job.task_type == TaskType.DETECTION:
-                results = await run_detection(job, model_registry, dicom_storage)
-            elif job.task_type == TaskType.CLASSIFICATION:
-                results = await run_classification(job, model_registry, dicom_storage)
-            elif job.task_type == TaskType.CARDIAC:
-                results = await run_cardiac_analysis(job, model_registry, dicom_storage)
-            elif job.task_type == TaskType.ENHANCEMENT:
-                results = await run_enhancement(job, model_registry, dicom_storage)
+            start_time = time.perf_counter()
+
+            if job.task_type == TaskType.DETECTION:
+                results, result_files = await _run_detection(
+                    job, actual_model_name, volume, loader, model_registry
+                )
+            elif job.task_type == TaskType.SEGMENTATION:
+                results, result_files = await _run_segmentation(
+                    job, actual_model_name, volume, loader, model_registry
+                )
             else:
-                results = {"message": "Task type not yet implemented"}
+                raise ValueError(f"Task type not yet implemented: {job.task_type}")
+
+            inference_time_ms = (time.perf_counter() - start_time) * 1000
 
             # Update job with results
             job.status = JobStatus.COMPLETED
             job.completed_at = datetime.now(timezone.utc)
             job.progress = 100
             job.results = results
+            job.result_files = result_files
+            job.inference_time_ms = int(inference_time_ms)
+
+            logger.info(
+                "Inference completed successfully",
+                job_id=job_id,
+                model=actual_model_name,
+                inference_time_ms=round(inference_time_ms, 2),
+            )
+
             await db.commit()
 
-        except Exception as e:
-            # Mark job as failed
+        except FileNotFoundError as e:
+            # Model weights not found - provide helpful error
             job.status = JobStatus.FAILED
             job.completed_at = datetime.now(timezone.utc)
             job.error_message = str(e)
-            import traceback
             job.error_traceback = traceback.format_exc()
+            logger.error(f"Model weights not found: {e}")
+            await db.commit()
+
+        except ImportError as e:
+            # Missing dependency
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now(timezone.utc)
+            job.error_message = f"Missing dependency: {e}"
+            job.error_traceback = traceback.format_exc()
+            logger.error(f"Missing dependency: {e}")
+            await db.commit()
+
+        except Exception as e:
+            # General failure
+            job.status = JobStatus.FAILED
+            job.completed_at = datetime.now(timezone.utc)
+            job.error_message = str(e)
+            job.error_traceback = traceback.format_exc()
+            logger.error(f"Inference failed: {e}", exc_info=True)
             await db.commit()
 
 
-async def run_segmentation(job: AIJob, model_registry, dicom_storage) -> dict:
-    """Run segmentation model inference."""
-    try:
-        model = await model_registry.get_model(job.model_type.value)
-        if model and model.is_loaded:
-            series_data = await dicom_storage.load_series(job.series_instance_uid)
-            result = await model.predict(series_data)
-            return result
-    except Exception:
-        pass
+async def _run_detection(
+    job: AIJob,
+    model_name: str,
+    volume: Any,
+    loader: Any,
+    model_registry: Any,
+) -> tuple[dict, dict]:
+    """Run detection inference."""
+    # Prepare image for detection (2D)
+    if volume.is_3d:
+        # For 3D volumes, run detection on middle slice or all slices
+        middle_idx = volume.pixel_data.shape[0] // 2
+        image = volume.pixel_data[middle_idx]
+    else:
+        image = volume.pixel_data
 
-    # Return realistic placeholder results
-    return {
-        "masks": [
-            {"class_name": "Liver", "class_id": 1, "dice": 0.92, "volume_ml": 1450.0,
-             "mask_url": f"/api/v1/ai/results/{job.study_instance_uid}/masks/liver.nii.gz"},
-            {"class_name": "Spleen", "class_id": 2, "dice": 0.89, "volume_ml": 180.0,
-             "mask_url": f"/api/v1/ai/results/{job.study_instance_uid}/masks/spleen.nii.gz"},
-            {"class_name": "Kidney_L", "class_id": 3, "dice": 0.91, "volume_ml": 165.0,
-             "mask_url": f"/api/v1/ai/results/{job.study_instance_uid}/masks/kidney_l.nii.gz"},
-            {"class_name": "Kidney_R", "class_id": 4, "dice": 0.90, "volume_ml": 158.0,
-             "mask_url": f"/api/v1/ai/results/{job.study_instance_uid}/masks/kidney_r.nii.gz"},
-        ],
-        "model_used": job.model_type.value,
-        "inference_time_ms": 2500,
+    # Normalize and prepare
+    image_prepared = loader.prepare_for_inference(
+        type('obj', (object,), {'pixel_data': image, 'is_3d': False})(),
+        normalize=True,
+        convert_to_rgb=True,
+    )
+
+    # Run inference
+    result = await model_registry.run_inference(model_name, image_prepared)
+
+    # Format results
+    detections = []
+    for i in range(len(result.output.boxes)):
+        box = result.output.boxes[i]
+        detections.append({
+            "class_name": result.output.class_names[i] if i < len(result.output.class_names) else f"class_{result.output.class_ids[i]}",
+            "class_id": int(result.output.class_ids[i]),
+            "confidence": float(result.output.scores[i]),
+            "x": float(box[0]),
+            "y": float(box[1]),
+            "width": float(box[2] - box[0]),
+            "height": float(box[3] - box[1]),
+            "series_uid": job.series_instance_uid,
+        })
+
+    results = {
+        "detections": detections,
+        "num_detections": len(detections),
+        "model_used": model_name,
+        "model_version": result.model_version,
+        "inference_time_ms": result.inference_time_ms,
+        "input_shape": list(image.shape),
     }
 
+    return results, {}
 
-async def run_detection(job: AIJob, model_registry, dicom_storage) -> dict:
-    """Run detection model inference."""
-    try:
-        model = await model_registry.get_model(job.model_type.value)
-        if model and model.is_loaded:
-            series_data = await dicom_storage.load_series(job.series_instance_uid)
-            result = await model.predict(series_data)
-            return result
-    except Exception:
-        pass
 
-    return {
-        "detections": [
-            {"class_name": "Nodule", "confidence": 0.87, "x": 120, "y": 80, "width": 25, "height": 25,
-             "instance_uid": job.series_instance_uid, "slice_index": 45},
-            {"class_name": "Nodule", "confidence": 0.72, "x": 250, "y": 180, "width": 18, "height": 18,
-             "instance_uid": job.series_instance_uid, "slice_index": 52},
-        ],
-        "model_used": job.model_type.value,
-        "inference_time_ms": 850,
+async def _run_segmentation(
+    job: AIJob,
+    model_name: str,
+    volume: Any,
+    loader: Any,
+    model_registry: Any,
+) -> tuple[dict, dict]:
+    """Run segmentation inference."""
+    # Prepare volume
+    image_prepared = loader.prepare_for_inference(
+        volume,
+        normalize=True,
+        convert_to_rgb=False,
+    )
+
+    # Get spacing for volume calculations
+    spacing = volume.metadata.spacing
+
+    # Run inference
+    result = await model_registry.run_inference(
+        model_name,
+        image_prepared,
+        spacing=spacing,
+    )
+
+    # Save mask to file
+    results_dir = Path(settings.ai.models_dir).parent / "results" / job.study_instance_uid
+    results_dir.mkdir(parents=True, exist_ok=True)
+
+    mask_filename = f"segmentation_{model_name}_{job.job_id[:8]}.npz"
+    mask_path = results_dir / mask_filename
+
+    np.savez_compressed(
+        mask_path,
+        mask=result.output.mask,
+        class_names=result.output.class_names,
+    )
+
+    # Format results
+    masks_info = []
+    for i, class_name in enumerate(result.output.class_names):
+        if i == 0:  # Skip background
+            continue
+
+        class_mask = (result.output.mask == i)
+        voxel_count = int(np.sum(class_mask))
+
+        volume_ml = None
+        if spacing and voxel_count > 0:
+            voxel_volume_mm3 = spacing[0] * spacing[1] * spacing[2]
+            volume_ml = float(voxel_count * voxel_volume_mm3 / 1000.0)
+
+        masks_info.append({
+            "class_name": class_name,
+            "class_id": i,
+            "voxel_count": voxel_count,
+            "volume_ml": volume_ml,
+            "dice_score": result.output.dice_scores.get(class_name) if result.output.dice_scores else None,
+        })
+
+    results = {
+        "masks": masks_info,
+        "mask_shape": list(result.output.mask.shape),
+        "num_classes": len(result.output.class_names),
+        "model_used": model_name,
+        "model_version": result.model_version,
+        "inference_time_ms": result.inference_time_ms,
+        "input_shape": list(image_prepared.shape),
     }
 
-
-async def run_classification(job: AIJob, model_registry, dicom_storage) -> dict:
-    """Run classification model inference."""
-    try:
-        model = await model_registry.get_model(job.model_type.value)
-        if model and model.is_loaded:
-            series_data = await dicom_storage.load_series(job.series_instance_uid)
-            result = await model.predict(series_data)
-            return result
-    except Exception:
-        pass
-
-    return {
-        "classification": "Normal",
-        "confidence": 0.94,
-        "probabilities": {
-            "Normal": 0.94,
-            "Mild Abnormality": 0.04,
-            "Moderate Abnormality": 0.015,
-            "Severe Abnormality": 0.005,
-        },
-        "attention_map_url": f"/api/v1/ai/results/{job.study_instance_uid}/attention_map.png",
-        "model_used": job.model_type.value,
-        "inference_time_ms": 450,
+    result_files = {
+        "mask": f"/api/v1/ai/results/{job.study_instance_uid}/masks/{mask_filename}",
     }
 
-
-async def run_cardiac_analysis(job: AIJob, model_registry, dicom_storage) -> dict:
-    """Run cardiac analysis inference."""
-    try:
-        model = await model_registry.get_model(job.model_type.value)
-        if model and model.is_loaded:
-            series_data = await dicom_storage.load_series(job.series_instance_uid)
-            result = await model.predict(series_data)
-            return result
-    except Exception:
-        pass
-
-    return {
-        "measurements": [
-            {"name": "LVEF", "value": 62.0, "unit": "%", "normal_range": [55, 70], "is_abnormal": False},
-            {"name": "LV Volume (ED)", "value": 145.0, "unit": "ml", "normal_range": [100, 160], "is_abnormal": False},
-            {"name": "LV Volume (ES)", "value": 55.0, "unit": "ml", "normal_range": [35, 65], "is_abnormal": False},
-            {"name": "LV Mass", "value": 125.0, "unit": "g", "normal_range": [88, 224], "is_abnormal": False},
-            {"name": "RV Volume (ED)", "value": 155.0, "unit": "ml", "normal_range": [110, 180], "is_abnormal": False},
-            {"name": "RVEF", "value": 58.0, "unit": "%", "normal_range": [47, 74], "is_abnormal": False},
-        ],
-        "segmentation_masks": {
-            "lv_endo": f"/api/v1/ai/results/{job.study_instance_uid}/cardiac/lv_endo.nii.gz",
-            "lv_epi": f"/api/v1/ai/results/{job.study_instance_uid}/cardiac/lv_epi.nii.gz",
-            "rv_endo": f"/api/v1/ai/results/{job.study_instance_uid}/cardiac/rv_endo.nii.gz",
-        },
-        "model_used": job.model_type.value,
-        "inference_time_ms": 3200,
-    }
-
-
-async def run_enhancement(job: AIJob, model_registry, dicom_storage) -> dict:
-    """Run image enhancement inference."""
-    try:
-        model = await model_registry.get_model(job.model_type.value)
-        if model and model.is_loaded:
-            series_data = await dicom_storage.load_series(job.series_instance_uid)
-            result = await model.predict(series_data)
-            return result
-    except Exception:
-        pass
-
-    return {
-        "enhanced_series_url": f"/api/v1/ai/results/{job.study_instance_uid}/enhanced/",
-        "enhancement_type": "denoising" if "denois" in job.model_type.value.lower() else "super_resolution",
-        "metrics": {
-            "psnr_improvement": 4.2,
-            "ssim_improvement": 0.08,
-        },
-        "model_used": job.model_type.value,
-        "inference_time_ms": 5800,
-    }
+    return results, result_files
