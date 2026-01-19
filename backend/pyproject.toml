@@ -59,7 +59,32 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# AI dependencies - install with: pip install -e ".[ai]"
+# NOTE: For CUDA support, install PyTorch separately first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# For CPU only:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ai = [
+    # Core ML frameworks
+    "torch>=2.2.0",
+    "torchvision>=0.17.0",
+
+    # Detection - YOLOv8
+    "ultralytics>=8.1.0",
+
+    # Segmentation - MONAI
+    "monai>=1.3.0",
+
+    # Interactive Segmentation - SAM/MedSAM
+    "segment-anything>=1.0",
+
+    # Supporting libraries
+    "einops>=0.7.0",
+    "scikit-learn>=1.4.0",
+]
+
+# Extended AI dependencies for additional models
+ai-full = [
     "torch>=2.2.0",
     "torchvision>=0.17.0",
     "timm>=0.9.12",

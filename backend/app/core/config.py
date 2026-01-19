@@ -14,18 +14,34 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class AIModelSettings(BaseSettings):
-    """Configuration for AI model settings."""
+    """
+    Configuration for AI model settings.
+
+    IMPORTANT: This configuration controls REAL AI inference.
+    Models will only work if weights are available at the specified paths.
+    If weights are missing, inference will fail with a helpful error message.
+    """
 
     model_config = SettingsConfigDict(env_prefix="AI_")
 
     # Model paths and configurations
-    models_dir: Path = Field(default=Path("./models"), description="Directory for AI model weights")
-    cache_dir: Path = Field(default=Path("./cache/models"), description="Model cache directory")
+    models_dir: Path = Field(
+        default=Path("./models"),
+        description="Directory for AI model weights. Create subdirectories per model."
+    )
+    cache_dir: Path = Field(
+        default=Path("./cache/models"),
+        description="Model cache directory for downloaded weights"
+    )
+    results_dir: Path = Field(
+        default=Path("./results"),
+        description="Directory for storing inference results (masks, etc.)"
+    )
 
     # Segmentation models
-    nnunet_enabled: bool = Field(default=True, description="Enable nnU-Net segmentation")
+    nnunet_enabled: bool = Field(default=True, description="Enable MONAI/nnU-Net segmentation")
     medunet_enabled: bool = Field(default=True, description="Enable MedUNeXt segmentation")
-    medsam_enabled: bool = Field(default=True, description="Enable MedSAM segmentation")
+    medsam_enabled: bool = Field(default=True, description="Enable MedSAM interactive segmentation")
     swinunet_enabled: bool = Field(default=True, description="Enable SwinUNet segmentation")
 
     # Detection models
@@ -48,10 +64,68 @@ class AIModelSettings(BaseSettings):
     chief_enabled: bool = Field(default=True, description="Enable CHIEF")
 
     # Inference settings
-    device: str = Field(default="cuda", description="Device for inference (cuda/cpu)")
+    device: str = Field(
+        default="cuda",
+        description="Device for inference: 'cuda', 'cuda:0', 'cuda:1', or 'cpu'"
+    )
     batch_size: int = Field(default=4, ge=1, le=64, description="Batch size for inference")
     num_workers: int = Field(default=4, ge=0, le=16, description="Number of data loader workers")
-    mixed_precision: bool = Field(default=True, description="Enable mixed precision inference")
+    mixed_precision: bool = Field(default=True, description="Enable mixed precision (FP16) inference")
+
+    # Reproducibility settings
+    deterministic: bool = Field(
+        default=False,
+        description="Enable deterministic mode for reproducible results (slower)"
+    )
+    seed: int = Field(default=42, description="Random seed for reproducibility")
+
+    # YOLOv8 specific settings
+    yolov8_confidence: float = Field(
+        default=0.25, ge=0.0, le=1.0,
+        description="YOLOv8 detection confidence threshold"
+    )
+    yolov8_iou: float = Field(
+        default=0.45, ge=0.0, le=1.0,
+        description="YOLOv8 NMS IoU threshold"
+    )
+    yolov8_weights: str = Field(
+        default="model.pt",
+        description="YOLOv8 weights filename (relative to models_dir/yolov8/)"
+    )
+
+    # MedSAM specific settings
+    medsam_model_type: str = Field(
+        default="vit_b",
+        description="MedSAM model type: 'vit_b', 'vit_l', or 'vit_h'"
+    )
+    medsam_checkpoint: str = Field(
+        default="medsam_vit_b.pth",
+        description="MedSAM checkpoint filename (relative to models_dir/medsam/)"
+    )
+
+    # MONAI specific settings
+    monai_spatial_size: tuple[int, int, int] = Field(
+        default=(96, 96, 96),
+        description="MONAI sliding window spatial size for volumetric inference"
+    )
+    monai_sw_batch_size: int = Field(
+        default=4, ge=1,
+        description="MONAI sliding window batch size"
+    )
+    monai_overlap: float = Field(
+        default=0.25, ge=0.0, le=0.9,
+        description="MONAI sliding window overlap ratio"
+    )
+
+    # Logging settings
+    log_inference_metrics: bool = Field(
+        default=True,
+        description="Log detailed inference metrics (time, memory, etc.)"
+    )
+    log_weights_hash: bool = Field(
+        default=True,
+        description="Log SHA256 hash of weights for reproducibility tracking"
+    )
 
 
 class DICOMSettings(BaseSettings):

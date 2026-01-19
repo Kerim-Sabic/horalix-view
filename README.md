@@ -372,6 +372,220 @@ python scripts/download_models.py --model yolov8
 
 ---
 
+## AI Setup
+
+> **IMPORTANT**: Horalix View performs **REAL AI inference only**. There are no simulated, placeholder, or fake outputs. If model weights are not available, endpoints will return clear error messages explaining how to set up the models.
+
+### Prerequisites for AI
+
+1. **Install AI dependencies**:
+   ```bash
+   cd backend
+
+   # For CUDA support (recommended for production)
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+   pip install -e ".[ai]"
+
+   # For CPU only
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+   pip install -e ".[ai]"
+   ```
+
+2. **Create models directory**:
+   ```bash
+   mkdir -p models/{yolov8,medsam,monai_segmentation,liver_segmentation,spleen_segmentation}
+   ```
+
+### Model Weights Setup
+
+#### YOLOv8 Detection
+
+```bash
+# Option 1: Use pretrained COCO weights (for testing)
+pip install ultralytics
+python -c "from ultralytics import YOLO; m = YOLO('yolov8n.pt'); m.save('models/yolov8/model.pt')"
+
+# Option 2: Fine-tune on medical data (recommended)
+# See: https://docs.ultralytics.com/modes/train/
+
+# Expected path: models/yolov8/model.pt
+```
+
+#### MedSAM Interactive Segmentation
+
+```bash
+# Download MedSAM weights (~375MB)
+# From: https://github.com/bowang-lab/MedSAM
+
+# Option 1: Download from official repo
+wget -P models/medsam/ https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
+mv models/medsam/sam_vit_b_01ec64.pth models/medsam/medsam_vit_b.pth
+
+# Option 2: Use MedSAM fine-tuned weights (better for medical images)
+# Download from: https://huggingface.co/bowang-lab/MedSAM
+# Place at: models/medsam/medsam_vit_b.pth
+
+# Expected path: models/medsam/medsam_vit_b.pth
+```
+
+#### MONAI Segmentation (e.g., Spleen CT)
+
+```bash
+# Download MONAI bundle
+pip install monai[bundle]
+python -c "from monai.bundle import download; download(name='spleen_ct_segmentation', bundle_dir='models/spleen_segmentation')"
+
+# For liver segmentation
+python -c "from monai.bundle import download; download(name='liver_and_tumor_ct_segmentation', bundle_dir='models/liver_segmentation')"
+
+# Expected structure:
+# models/spleen_segmentation/
+#   ├── model.pt (or configs/...)
+#   └── ...
+```
+
+### Verify Model Availability
+
+```bash
+# Check which models are available
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/ai/models | jq
+
+# Response shows availability status:
+# {
+#   "models": [
+#     {
+#       "name": "yolov8",
+#       "available": true,  # true if weights found
+#       "enabled": true,
+#       "weights_path": "models/yolov8"
+#     },
+#     ...
+#   ],
+#   "message": "2 model(s) ready for inference"
+# }
+```
+
+### Running Inference
+
+#### Detection with YOLOv8
+
+```bash
+# Submit detection job
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "study_uid": "1.2.3.4.5",
+    "series_uid": "1.2.3.4.5.6",
+    "model_type": "yolov8",
+    "task_type": "detection"
+  }' \
+  http://localhost:8000/api/v1/ai/infer
+
+# Check job status
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/ai/jobs/{job_id}
+
+# Get results
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8000/api/v1/ai/jobs/{job_id}/result
+```
+
+#### Interactive Segmentation with MedSAM
+
+```bash
+# Run interactive segmentation with point prompts
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "points": [[256, 256]],
+    "point_labels": [1],
+    "box": null
+  }' \
+  "http://localhost:8000/api/v1/ai/interactive/medsam?study_uid=1.2.3&series_uid=4.5.6&instance_uid=7.8.9"
+
+# Or with bounding box
+curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "points": [],
+    "point_labels": [],
+    "box": [100, 100, 300, 300]
+  }' \
+  "http://localhost:8000/api/v1/ai/interactive/medsam?study_uid=1.2.3&series_uid=4.5.6&instance_uid=7.8.9"
+```
+
+### Error Handling
+
+If weights are not available, you'll receive a clear error:
+
+```json
+{
+  "detail": "Model 'yolov8' weights not available.\nExpected weights at: models/yolov8\n\nTo enable this model:\n1. Download or train model weights\n2. Place weights at the path above\n3. Restart the service\n\nSee README AI Setup section for detailed instructions."
+}
+```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| `CUDA out of memory` | Set `AI_DEVICE=cpu` or reduce `AI_BATCH_SIZE` |
+| `Model weights not found` | Check `models/` directory structure matches expected paths |
+| `ImportError: torch` | Install with `pip install -e ".[ai]"` |
+| `No module named 'ultralytics'` | Run `pip install ultralytics>=8.1.0` |
+| `No module named 'segment_anything'` | Run `pip install segment-anything>=1.0` |
+| `No module named 'monai'` | Run `pip install monai>=1.3.0` |
+
+### Environment Variables
+
+```env
+# AI Configuration
+AI_DEVICE=cuda          # 'cuda', 'cuda:0', 'cuda:1', or 'cpu'
+AI_MODELS_DIR=./models  # Directory containing model weights
+AI_BATCH_SIZE=4         # Batch size for inference
+AI_MIXED_PRECISION=true # Enable FP16 inference (faster on GPU)
+AI_DETERMINISTIC=false  # Enable for reproducible results (slower)
+
+# Model-specific settings
+AI_YOLOV8_ENABLED=true
+AI_YOLOV8_CONFIDENCE=0.25
+AI_YOLOV8_IOU=0.45
+AI_MEDSAM_ENABLED=true
+AI_MEDSAM_MODEL_TYPE=vit_b
+AI_NNUNET_ENABLED=true
+```
+
+### Directory Structure
+
+```
+models/
+├── yolov8/
+│   └── model.pt              # YOLOv8 weights
+├── medsam/
+│   └── medsam_vit_b.pth      # MedSAM checkpoint
+├── monai_segmentation/
+│   └── model.pt              # General MONAI model
+├── liver_segmentation/
+│   └── model.pt              # MONAI liver bundle
+└── spleen_segmentation/
+    └── model.pt              # MONAI spleen bundle
+```
+
+### No Fake Outputs Policy
+
+This system **never** returns simulated or placeholder results:
+
+- If model weights are missing → HTTP 424 (Failed Dependency) with setup instructions
+- If inference fails → Job marked as FAILED with detailed error message
+- If dependencies missing → ImportError with installation instructions
+
+All results are from **real model inference** or clearly indicate failure.
+
+---
+
 ## API Documentation
 
 ### REST API
