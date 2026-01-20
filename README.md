@@ -107,11 +107,13 @@ Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference
 
 ### Required Software
 
-- **Docker** 24.0+ and **Docker Compose** 2.0+
+- **Docker** 24.0+ and **Docker Compose** 2.0+ (recommended for all platforms)
 - **Python** 3.10, 3.11, or 3.12 (for local development)
 - **Node.js** 18+ and **npm** 9+ (for frontend development)
 - **PostgreSQL** 14+ (if running without Docker)
 - **Redis** 7+ (if running without Docker)
+
+> **Windows Users:** Redis requires WSL2, Memurai, or Docker. See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for details.
 
 ### Hardware Requirements
 
@@ -179,6 +181,8 @@ docker-compose exec backend python -m app.cli create-admin \
 
 ## 💻 Development Setup
 
+> **Windows Users:** See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for detailed Windows-specific instructions, including PostgreSQL, Redis, and troubleshooting.
+
 ### Backend Development
 
 1. **Create virtual environment:**
@@ -186,7 +190,15 @@ docker-compose exec backend python -m app.cli create-admin \
 ```bash
 cd backend
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Linux/macOS:
+source venv/bin/activate
+
+# Windows (PowerShell):
+venv\Scripts\Activate.ps1
+
+# Windows (cmd.exe):
+venv\Scripts\activate.bat
 ```
 
 2. **Install dependencies:**
@@ -212,12 +224,32 @@ cp .env.example .env
 4. **Start PostgreSQL and Redis:**
 
 ```bash
-# Using Docker
+# Using Docker (Linux/macOS/Windows)
 docker-compose up -d postgres redis
+
+# Or on Windows, ensure services are running:
+# - PostgreSQL service in Services (services.msc)
+# - Redis/Memurai service or WSL Redis
 ```
 
-5. **Run migrations:**
+5. **Setup database and run migrations:**
 
+**Linux/macOS:**
+```bash
+./setup.sh
+```
+
+**Windows (PowerShell):**
+```powershell
+.\setup.ps1
+```
+
+**Windows (cmd.exe):**
+```batch
+setup.bat
+```
+
+**Or manually:**
 ```bash
 alembic upgrade head
 ```
