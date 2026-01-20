@@ -10,10 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for PyTorch, MONAI, OpenCV, and Pydicom
+# Install system dependencies for PyTorch, MONAI, OpenCV, Pydicom, and PostgreSQL client
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    postgresql-client \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
@@ -24,28 +25,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY pyproject.toml ./
+COPY backend/pyproject.toml ./
 
 # Install Python dependencies
 RUN pip install -e "."
 
 # Copy application code
-COPY app/ ./app/
+COPY backend/app/ ./app/
 
-# Create non-root user
+# Copy alembic configuration and migrations
+COPY backend/alembic.ini ./
+COPY backend/alembic/ ./alembic/
+
+# Copy entrypoint script
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Create storage directories (as root before switching user)
+RUN mkdir -p /app/storage/dicom /app/models /app/cache
+
+# Create non-root user and set ownership
 RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
-USER appuser
+    chown -R appuser:appuser /app && \
+    chown appuser:appuser /entrypoint.sh
 
-# Create storage directories
-RUN mkdir -p storage/dicom models cache
+USER appuser
 
 # Expose port
 EXPOSE 8000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+
+# Set entrypoint
+ENTRYPOINT ["/entrypoint.sh"]
 
 # Run the application
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

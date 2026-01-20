@@ -170,6 +170,19 @@ psql -U postgres -d horalix_view -c "GRANT ALL PRIVILEGES ON SCHEMA public TO ho
 
 ### 4. Run Database Migrations
 
+**Important:** Before running migrations, ensure the database `horalix_view` exists. If you get a "database does not exist" error, the database was not created in step 3. Verify with:
+
+```bash
+# Linux/macOS:
+sudo -u postgres psql -l | grep horalix_view
+
+# Windows:
+psql -U postgres -l | findstr horalix_view
+```
+
+If the database doesn't exist, create it following step 3 above.
+
+Run migrations:
 ```bash
 alembic upgrade head
 ```
