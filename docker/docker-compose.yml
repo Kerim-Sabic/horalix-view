@@ -1,12 +1,12 @@
 services:
   backend:
     build:
-      context: ../backend
-      dockerfile: ../docker/Dockerfile.backend
+      context: ..
+      dockerfile: docker/Dockerfile.backend
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql+asyncpg://horalix:horalix@postgres:5432/horalix
+      - DATABASE_URL=postgresql+asyncpg://horalix:horalix@postgres:5432/horalix_view
       - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
       - AI_DEVICE=cpu
@@ -16,14 +16,16 @@ services:
       - dicom-storage:/app/storage
       - model-cache:/app/models
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     restart: unless-stopped
 
   frontend:
     build:
-      context: ../frontend
-      dockerfile: ../docker/Dockerfile.frontend
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
     ports:
       - "3000:80"
     depends_on:
@@ -35,9 +37,14 @@ services:
     environment:
       - POSTGRES_USER=horalix
       - POSTGRES_PASSWORD=horalix
-      - POSTGRES_DB=horalix
+      - POSTGRES_DB=horalix_view
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U horalix -d horalix_view"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:

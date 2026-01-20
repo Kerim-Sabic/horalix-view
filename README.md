@@ -156,13 +156,9 @@ cd ../docker
 docker-compose up -d
 ```
 
-4. **Run database migrations:**
+The backend will automatically run database migrations on startup. Wait for the containers to be healthy (30-60 seconds).
 
-```bash
-docker-compose exec backend alembic upgrade head
-```
-
-5. **Create admin user:**
+4. **Create admin user:**
 
 ```bash
 docker-compose exec backend python -m app.cli create-admin \
@@ -171,7 +167,7 @@ docker-compose exec backend python -m app.cli create-admin \
   --password your-secure-password
 ```
 
-6. **Access the application:**
+5. **Access the application:**
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
@@ -403,6 +399,8 @@ alembic upgrade head
 ```
 
 **Production (Docker):**
+
+Migrations run automatically when the backend container starts. To manually run migrations:
 
 ```bash
 docker-compose exec backend alembic upgrade head
