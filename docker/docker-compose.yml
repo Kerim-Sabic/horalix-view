@@ -5,13 +5,34 @@ services:
       dockerfile: docker/Dockerfile.backend
     ports:
       - "8000:8000"
+    # Load environment from .env file (supports both repo root and docker/ locations)
+    # Priority: explicit environment > env_file values
+    env_file:
+      - path: ../.env
+        required: false
+      - path: .env
+        required: false
     environment:
+      # Database - always use internal Docker network hostname
       - DATABASE_URL=postgresql+asyncpg://horalix:horalix@postgres:5432/horalix_view
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=horalix
+      - DB_PASSWORD=horalix
+      - DB_NAME=horalix_view
+      # Redis - always use internal Docker network hostname
       - REDIS_URL=redis://redis:6379/0
-      - SECRET_KEY=${SECRET_KEY:-change-this-in-production}
-      - AI_DEVICE=cpu
-      - DICOM_AE_TITLE=HORALIX_VIEW
-      - DICOM_PORT=11112
+      - REDIS_HOST=redis
+      # Security - MUST be set in .env or will use insecure default (dev only)
+      - SECRET_KEY=${SECRET_KEY:-}
+      # AI settings
+      - AI_DEVICE=${AI_DEVICE:-cpu}
+      # DICOM settings
+      - DICOM_AE_TITLE=${DICOM_AE_TITLE:-HORALIX_VIEW}
+      - DICOM_PORT=${DICOM_PORT:-11112}
+      # Environment
+      - ENVIRONMENT=${ENVIRONMENT:-development}
+      - DEBUG=${DEBUG:-true}
     volumes:
       - dicom-storage:/app/storage
       - model-cache:/app/models
@@ -19,7 +40,13 @@ services:
       postgres:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   frontend:
@@ -51,6 +78,11 @@ services:
     image: redis:7-alpine
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
 volumes:

@@ -144,34 +144,69 @@ cd horalix-view
 2. **Configure environment:**
 
 ```bash
-cd backend
+# Copy the environment template to the repo root
 cp .env.example .env
-# Edit .env and set a strong SECRET_KEY (generate with: openssl rand -hex 32)
+
+# Generate a secure SECRET_KEY
+# Linux/macOS:
+openssl rand -hex 32
+# Windows PowerShell:
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# Edit .env and paste the generated key into SECRET_KEY=...
 ```
 
 3. **Build and start services:**
 
 ```bash
-cd ../docker
-docker-compose up -d
+# From the repo root (recommended):
+docker compose -f docker/docker-compose.yml up -d
+
+# OR from the docker/ directory:
+cd docker
+docker compose up -d
 ```
 
-The backend will automatically run database migrations on startup. Wait for the containers to be healthy (30-60 seconds).
+The backend will automatically:
+- Wait for PostgreSQL to be ready
+- Run database migrations
+- Create default users (admin/admin123, radiologist/rad123, technologist/tech123)
 
-4. **Create admin user:**
+Wait for containers to be healthy (30-60 seconds):
 
 ```bash
-docker-compose exec backend python -m app.cli create-admin \
-  --username admin \
-  --email admin@example.com \
-  --password your-secure-password
+docker compose -f docker/docker-compose.yml ps
 ```
 
-5. **Access the application:**
+4. **Access the application:**
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
+
+5. **Login with default credentials:**
+
+- Username: `admin`, Password: `admin123` (admin role)
+- Username: `radiologist`, Password: `rad123` (radiologist role)
+- Username: `technologist`, Password: `tech123` (technologist role)
+
+**Important:** Change these passwords immediately in production!
+
+6. **Create additional admin users (optional):**
+
+```bash
+# From repo root:
+docker compose -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
+  --username myadmin \
+  --email myadmin@example.com \
+  --password your-secure-password
+
+# OR from docker/ directory:
+docker compose exec backend python -m app.cli create-admin \
+  --username myadmin \
+  --email myadmin@example.com \
+  --password your-secure-password
+```
 
 ---
 
@@ -534,23 +569,30 @@ services:
 3. **Build and start:**
 
 ```bash
-cd docker
-docker-compose build
-docker-compose up -d
+# From repo root (recommended):
+docker compose -f docker/docker-compose.yml build
+docker compose -f docker/docker-compose.yml up -d
+
+# The entrypoint script automatically:
+# - Waits for PostgreSQL
+# - Runs database migrations
+# - Creates default users (if none exist)
 ```
 
-4. **Initialize database:**
+4. **Verify services:**
 
 ```bash
-docker-compose exec backend alembic upgrade head
-docker-compose exec backend python -m app.cli create-admin
+docker compose -f docker/docker-compose.yml ps
+docker compose -f docker/docker-compose.yml logs -f backend
 ```
 
-5. **Verify services:**
+5. **Create additional admin users (optional):**
 
 ```bash
-docker-compose ps
-docker-compose logs -f
+docker compose -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
+  --username myadmin \
+  --email myadmin@example.com \
+  --password your-secure-password
 ```
 
 ### Reverse Proxy with HTTPS
@@ -659,6 +701,47 @@ docker cp $(docker-compose ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backu
 - `PUT /api/v1/annotations/{id}` - Update annotation
 - `DELETE /api/v1/annotations/{id}` - Delete annotation
 - `GET /api/v1/annotations/study/{uid}/export` - Export annotations
+
+---
+
+## 🔍 Smoke Testing
+
+After deploying Horalix View, run the smoke test to verify all services are working:
+
+**Linux/macOS:**
+
+```bash
+./scripts/smoke-test.sh
+./scripts/smoke-test.sh --verbose  # For detailed output
+```
+
+**Windows (PowerShell):**
+
+```powershell
+.\scripts\smoke-test.ps1
+.\scripts\smoke-test.ps1 -Verbose  # For detailed output
+```
+
+**Manual smoke test with curl:**
+
+```bash
+# 1. Check backend health
+curl http://localhost:8000/health
+
+# 2. Check backend readiness (database, services)
+curl http://localhost:8000/ready
+
+# 3. Login and get a token
+TOKEN=$(curl -s -X POST http://localhost:8000/api/v1/auth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "username=admin&password=admin123" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+# 4. Test authenticated endpoint
+curl -H "Authorization: Bearer $TOKEN" http://localhost:8000/api/v1/auth/me
+
+# 5. Check frontend
+curl -I http://localhost:3000
+```
 
 ---
 

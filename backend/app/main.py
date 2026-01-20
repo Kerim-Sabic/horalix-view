@@ -54,6 +54,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_session_maker = async_session_maker
     logger.info("Database connection pool initialized")
 
+    # Initialize default users (only in development or if no users exist)
+    try:
+        from app.api.v1.endpoints.auth import init_default_users
+        async with async_session_maker() as session:
+            await init_default_users(session)
+            logger.info("Default users initialized (or already exist)")
+    except Exception as e:
+        # Log but don't fail startup - users may be created later via CLI
+        logger.warning(f"Could not initialize default users: {e}")
+
     # Initialize services
     from app.services.dicom.storage import DicomStorageService
     from app.services.ai.model_registry import ModelRegistry
