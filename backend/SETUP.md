@@ -1,24 +1,43 @@
 # Horalix View Backend - Setup Guide
 
-This guide will help you set up and run the Horalix View backend.
+This guide will help you set up and run the Horalix View backend on Linux, macOS, and Windows.
 
 ## Prerequisites
 
 - Python 3.10 or higher
 - PostgreSQL 12 or higher
+- Redis 7+ (for caching and job queue)
 - pip (Python package installer)
+
+> **Windows Users:** For detailed Windows-specific setup instructions, including PostgreSQL and Redis installation, see [../WINDOWS_SETUP.md](../WINDOWS_SETUP.md).
 
 ## Quick Setup
 
-We provide an automated setup script that handles database creation and migrations:
+We provide automated setup scripts for all platforms:
+
+### Linux/macOS
 
 ```bash
 cd backend
 ./setup.sh
 ```
 
-This script will:
-1. Start PostgreSQL if not running
+### Windows (PowerShell)
+
+```powershell
+cd backend
+.\setup.ps1
+```
+
+### Windows (Command Prompt)
+
+```batch
+cd backend
+setup.bat
+```
+
+These scripts will:
+1. Check if PostgreSQL is running
 2. Create the database user and database
 3. Grant necessary permissions
 4. Install Python dependencies
@@ -30,36 +49,92 @@ If you prefer to set up manually or need to customize the process:
 
 ### 1. Install Dependencies
 
+**Linux/macOS:**
 ```bash
 cd backend
 pip3 install -e .
 ```
 
+**Windows:**
+```powershell
+cd backend
+pip install -e .
+```
+
 For AI features (optional):
 ```bash
+# Linux/macOS
 pip3 install -e ".[ai]"
+
+# Windows
+pip install -e ".[ai]"
+```
+
+**Note for Windows GPU users:** For CUDA support, install PyTorch separately first:
+```powershell
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+pip install -e ".[ai]"
 ```
 
 ### 2. Configure Environment
 
 Copy the example environment file:
+
+**Linux/macOS:**
 ```bash
 cp .env.example .env
 ```
 
+**Windows (PowerShell):**
+```powershell
+copy .env.example .env
+```
+
+**Windows (cmd.exe):**
+```batch
+copy .env.example .env
+```
+
 Edit `.env` and configure your settings. Key variables:
 - `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` - Database connection
-- `SECRET_KEY` - Generate with `openssl rand -hex 32`
+- `REDIS_HOST`, `REDIS_PORT` - Redis connection
+- `SECRET_KEY` - Generate with `openssl rand -hex 32` (or use Python's `secrets` module on Windows)
+- `AI_DEVICE` - Use `cuda` for GPU, `cpu` for CPU-only
 - `DEBUG` - Set to `false` in production
+
+**Windows-specific notes:**
+- Use `localhost` for `DB_HOST` and `REDIS_HOST` when running services locally
+- For AI features, set `AI_DEVICE=cpu` if you don't have an NVIDIA GPU
 
 ### 3. Setup PostgreSQL
 
-Start PostgreSQL:
+**Linux:**
 ```bash
-service postgresql start
+# Start PostgreSQL
+sudo service postgresql start
+
+# Or on systemd-based systems
+sudo systemctl start postgresql
+```
+
+**macOS:**
+```bash
+# If installed via Homebrew
+brew services start postgresql@15
+```
+
+**Windows:**
+```powershell
+# Check if PostgreSQL service is running
+Get-Service -Name "postgresql*"
+
+# Start the service if needed
+Start-Service postgresql-x64-15  # Adjust version number
 ```
 
 Create database and user:
+
+**Linux/macOS:**
 ```bash
 sudo -u postgres psql << EOF
 CREATE USER horalix WITH PASSWORD 'horalix';
@@ -69,6 +144,28 @@ GRANT ALL PRIVILEGES ON DATABASE horalix_view TO horalix;
 GRANT ALL PRIVILEGES ON SCHEMA public TO horalix;
 GRANT CREATE ON SCHEMA public TO horalix;
 EOF
+```
+
+**Windows:**
+```powershell
+# Connect as postgres superuser
+psql -U postgres
+
+# Then run these SQL commands:
+# CREATE USER horalix WITH PASSWORD 'horalix';
+# CREATE DATABASE horalix_view OWNER horalix;
+# GRANT ALL PRIVILEGES ON DATABASE horalix_view TO horalix;
+# \c horalix_view
+# GRANT ALL PRIVILEGES ON SCHEMA public TO horalix;
+# GRANT CREATE ON SCHEMA public TO horalix;
+# \q
+```
+
+Or use a one-liner in PowerShell:
+```powershell
+psql -U postgres -c "CREATE USER horalix WITH PASSWORD 'horalix';"
+psql -U postgres -c "CREATE DATABASE horalix_view OWNER horalix;"
+psql -U postgres -d horalix_view -c "GRANT ALL PRIVILEGES ON SCHEMA public TO horalix; GRANT CREATE ON SCHEMA public TO horalix;"
 ```
 
 ### 4. Run Database Migrations
@@ -85,19 +182,43 @@ alembic current
 ### 5. Start the Application
 
 Development mode (with auto-reload):
+
+**Linux/macOS:**
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
+**Windows:**
+```powershell
+# If using virtual environment, activate it first:
+.\venv\Scripts\Activate.ps1
+
+# Start server
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
 Production mode:
+
+**Linux/macOS:**
 ```bash
 python3 -m app.main
 ```
 
-Or with explicit uvicorn:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+**Windows:**
+```powershell
+python -m app.main
 ```
+
+Or with explicit uvicorn (production):
+```bash
+# Linux/macOS
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+
+# Windows (workers parameter is ignored on Windows, use single process)
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+```
+
+**Note:** Uvicorn's `--workers` parameter doesn't work on Windows. For production on Windows, use a process manager like NSSM or run multiple instances behind a load balancer.
 
 ## Verifying the Installation
 
