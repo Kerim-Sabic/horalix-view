@@ -6,6 +6,8 @@ supporting environment variables and .env files for different deployment environ
 """
 
 import os
+import secrets
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -20,6 +22,26 @@ ENV_FILE = BACKEND_DIR / ".env"
 
 # Load environment variables from .env file
 load_dotenv(ENV_FILE)
+
+
+def _generate_dev_secret_key() -> str:
+    """Generate a temporary secret key for development ONLY."""
+    return f"dev-only-insecure-{secrets.token_hex(24)}"
+
+
+def _is_insecure_key(key: str) -> bool:
+    """Check if the key is insecure (default placeholder or empty)."""
+    insecure_patterns = [
+        "change-this",
+        "your-secret",
+        "dev-only",
+        "changeme",
+        "secret-key-here",
+        "placeholder",
+    ]
+    if not key or len(key) < 32:
+        return True
+    return any(pattern in key.lower() for pattern in insecure_patterns)
 
 
 class AIModelSettings(BaseSettings):
@@ -256,8 +278,7 @@ class Settings(BaseSettings):
 
     # Security settings
     secret_key: str = Field(
-        default="change-this-in-production-use-openssl-rand-hex-32",
-        min_length=32,
+        default="",
         description="Secret key for JWT tokens",
     )
     access_token_expire_minutes: int = Field(default=60, ge=5, description="Token expiration")
@@ -281,27 +302,55 @@ class Settings(BaseSettings):
     fhir_server_url: str | None = Field(default=None, description="FHIR server URL")
     pacs_server_url: str | None = Field(default=None, description="PACS server URL")
 
-    @field_validator("secret_key")
-    @classmethod
-    def validate_secret_key(cls, v: str) -> str:
-        """Warn if using default secret key."""
-        if "change-this" in v:
-            import warnings
-            warnings.warn(
-                "Using default secret key! Set SECRET_KEY environment variable in production.",
-                UserWarning,
-                stacklevel=2,
-            )
-        return v
-
     @model_validator(mode="after")
     def validate_settings(self) -> "Settings":
         """Validate settings after initialization."""
+        # Handle SECRET_KEY based on environment
+        if _is_insecure_key(self.secret_key):
+            if self.environment == "production":
+                print(
+                    "\n"
+                    "=" * 70 + "\n"
+                    "FATAL ERROR: SECRET_KEY is not configured for production!\n"
+                    "=" * 70 + "\n"
+                    "\n"
+                    "A secure SECRET_KEY is required in production to protect:\n"
+                    "  - JWT authentication tokens\n"
+                    "  - Encrypted sensitive data\n"
+                    "  - Session security\n"
+                    "\n"
+                    "Generate a secure key with:\n"
+                    "  openssl rand -hex 32\n"
+                    "\n"
+                    "Then set it in your environment or .env file:\n"
+                    "  SECRET_KEY=<your-generated-key>\n"
+                    "=" * 70 + "\n",
+                    file=sys.stderr,
+                )
+                raise ValueError("SECRET_KEY must be set to a secure value in production")
+            else:
+                # Development mode - generate a temporary key and warn loudly
+                temp_key = _generate_dev_secret_key()
+                object.__setattr__(self, "secret_key", temp_key)
+                print(
+                    "\n"
+                    "!" * 70 + "\n"
+                    "WARNING: Using auto-generated temporary SECRET_KEY for development!\n"
+                    "!" * 70 + "\n"
+                    "\n"
+                    "This key is NOT secure and will change on every restart.\n"
+                    "For persistent development, add SECRET_KEY to your .env file.\n"
+                    "\n"
+                    "Generate a key with: openssl rand -hex 32\n"
+                    "!" * 70 + "\n",
+                    file=sys.stderr,
+                )
+
+        # Production-specific validations
         if self.environment == "production":
             if self.debug:
-                raise ValueError("Debug mode must be disabled in production")
-            if "change-this" in self.secret_key:
-                raise ValueError("Must set a secure SECRET_KEY in production")
+                raise ValueError("Debug mode must be disabled in production (DEBUG=false)")
+
         return self
 
 
