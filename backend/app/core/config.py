@@ -5,12 +5,21 @@ This module provides centralized configuration for the Horalix View backend,
 supporting environment variables and .env files for different deployment environments.
 """
 
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
 
+from dotenv import load_dotenv
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Get the backend directory (parent of app/ directory)
+BACKEND_DIR = Path(__file__).parent.parent.parent
+ENV_FILE = BACKEND_DIR / ".env"
+
+# Load environment variables from .env file
+load_dotenv(ENV_FILE)
 
 
 class AIModelSettings(BaseSettings):
@@ -226,7 +235,7 @@ class Settings(BaseSettings):
     """Main application settings."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(ENV_FILE),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
