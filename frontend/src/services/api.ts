@@ -485,30 +485,83 @@ export const api = {
   dashboard: {
     /**
      * Get dashboard statistics.
+     * Returns safe defaults if the API returns invalid data.
      */
     async getStats(): Promise<DashboardStats> {
-      const response = await apiClient.get<DashboardStats>('/dashboard/stats');
-      return response.data;
+      const defaultStats: DashboardStats = {
+        total_studies: 0,
+        total_patients: 0,
+        total_series: 0,
+        total_instances: 0,
+        ai_jobs_today: 0,
+        ai_jobs_running: 0,
+        storage_used_bytes: 0,
+        storage_total_bytes: 1, // Avoid division by zero
+      };
+
+      try {
+        const response = await apiClient.get<DashboardStats>('/dashboard/stats');
+        const data = response.data;
+
+        // Validate and merge with defaults to ensure all fields exist
+        if (data && typeof data === 'object') {
+          return {
+            total_studies: typeof data.total_studies === 'number' ? data.total_studies : defaultStats.total_studies,
+            total_patients: typeof data.total_patients === 'number' ? data.total_patients : defaultStats.total_patients,
+            total_series: typeof data.total_series === 'number' ? data.total_series : defaultStats.total_series,
+            total_instances: typeof data.total_instances === 'number' ? data.total_instances : defaultStats.total_instances,
+            ai_jobs_today: typeof data.ai_jobs_today === 'number' ? data.ai_jobs_today : defaultStats.ai_jobs_today,
+            ai_jobs_running: typeof data.ai_jobs_running === 'number' ? data.ai_jobs_running : defaultStats.ai_jobs_running,
+            storage_used_bytes: typeof data.storage_used_bytes === 'number' ? data.storage_used_bytes : defaultStats.storage_used_bytes,
+            storage_total_bytes: typeof data.storage_total_bytes === 'number' && data.storage_total_bytes > 0
+              ? data.storage_total_bytes
+              : defaultStats.storage_total_bytes,
+          };
+        }
+
+        return defaultStats;
+      } catch (error) {
+        console.error('Failed to fetch dashboard stats:', error);
+        throw error; // Let caller handle error - don't silently return defaults
+      }
     },
 
     /**
      * Get recent studies for dashboard.
+     * Always returns an array, never undefined.
      */
     async getRecentStudies(limit = 5): Promise<Study[]> {
-      const response = await apiClient.get<StudyListResponse>('/studies', {
-        params: { page: 1, page_size: limit },
-      });
-      return response.data.studies;
+      try {
+        const response = await apiClient.get<StudyListResponse>('/studies', {
+          params: { page: 1, page_size: limit },
+        });
+
+        // Ensure we always return an array
+        const studies = response.data?.studies;
+        return Array.isArray(studies) ? studies : [];
+      } catch (error) {
+        console.error('Failed to fetch recent studies:', error);
+        throw error; // Let caller handle error - don't silently return empty array
+      }
     },
 
     /**
      * Get recent AI jobs for dashboard.
+     * Always returns an array, never undefined.
      */
     async getRecentJobs(limit = 5): Promise<AIJob[]> {
-      const response = await apiClient.get<AIJobListResponse>('/ai/jobs', {
-        params: { page: 1, page_size: limit },
-      });
-      return response.data.jobs;
+      try {
+        const response = await apiClient.get<AIJobListResponse>('/ai/jobs', {
+          params: { page: 1, page_size: limit },
+        });
+
+        // Ensure we always return an array
+        const jobs = response.data?.jobs;
+        return Array.isArray(jobs) ? jobs : [];
+      } catch (error) {
+        console.error('Failed to fetch recent jobs:', error);
+        throw error; // Let caller handle error - don't silently return empty array
+      }
     },
   },
 

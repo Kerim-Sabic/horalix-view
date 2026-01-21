@@ -361,6 +361,123 @@ check_dicom() {
     cd "$PROJECT_ROOT"
 }
 
+# Docker and API endpoint checks
+check_docker_api() {
+    log_header "DOCKER & API ENDPOINT CHECKS"
+
+    # Check if Docker is available
+    if ! command -v docker &> /dev/null; then
+        log_skip "Docker not installed - skipping container checks"
+        return 0
+    fi
+
+    if ! command -v docker-compose &> /dev/null && ! docker compose version &> /dev/null; then
+        log_skip "Docker Compose not installed - skipping container checks"
+        return 0
+    fi
+
+    cd "$PROJECT_ROOT"
+
+    # Check if containers are running
+    log_info "Checking Docker containers..."
+    if docker compose ps --filter "status=running" 2>/dev/null | grep -q "backend"; then
+        log_success "Backend container is running"
+        BACKEND_RUNNING=true
+    else
+        log_warning "Backend container is not running (start with: docker compose up -d)"
+        BACKEND_RUNNING=false
+    fi
+
+    if docker compose ps --filter "status=running" 2>/dev/null | grep -q "frontend"; then
+        log_success "Frontend container is running"
+        FRONTEND_RUNNING=true
+    else
+        log_warning "Frontend container is not running"
+        FRONTEND_RUNNING=false
+    fi
+
+    # If containers are running, check API endpoints
+    if [ "$BACKEND_RUNNING" = true ] && [ "$FRONTEND_RUNNING" = true ]; then
+        log_info "Checking API endpoints..."
+
+        # Check health endpoint
+        HEALTH_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/health 2>/dev/null || echo "000")
+        if [ "$HEALTH_RESPONSE" = "200" ]; then
+            log_success "Health endpoint: OK (200)"
+        else
+            log_error "Health endpoint: Failed (HTTP $HEALTH_RESPONSE)"
+        fi
+
+        # Check dashboard/stats endpoint (requires auth, so 401 is acceptable)
+        STATS_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/dashboard/stats 2>/dev/null || echo "000")
+        if [ "$STATS_RESPONSE" = "200" ] || [ "$STATS_RESPONSE" = "401" ]; then
+            log_success "Dashboard stats endpoint: Reachable (HTTP $STATS_RESPONSE)"
+        elif [ "$STATS_RESPONSE" = "404" ]; then
+            log_error "Dashboard stats endpoint: NOT FOUND (404) - REGRESSION DETECTED!"
+        else
+            log_warning "Dashboard stats endpoint: HTTP $STATS_RESPONSE"
+        fi
+
+        # Check auth endpoint
+        AUTH_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/api/v1/auth/me 2>/dev/null || echo "000")
+        if [ "$AUTH_RESPONSE" = "200" ] || [ "$AUTH_RESPONSE" = "401" ]; then
+            log_success "Auth endpoint: Reachable (HTTP $AUTH_RESPONSE)"
+        elif [ "$AUTH_RESPONSE" = "404" ]; then
+            log_error "Auth endpoint: NOT FOUND (404) - Check routing!"
+        else
+            log_warning "Auth endpoint: HTTP $AUTH_RESPONSE"
+        fi
+
+        # Check that nginx doesn't serve index.html for API routes
+        API_CONTENT_TYPE=$(curl -s -I http://localhost:3000/api/v1/dashboard/stats 2>/dev/null | grep -i "content-type" | head -1 || echo "")
+        if echo "$API_CONTENT_TYPE" | grep -qi "text/html"; then
+            log_error "API returning HTML instead of JSON - Check nginx config!"
+        else
+            log_success "API Content-Type is not HTML"
+        fi
+    else
+        log_skip "Containers not running - skipping API endpoint checks"
+    fi
+}
+
+# E2E tests
+check_e2e() {
+    log_header "E2E TESTS"
+
+    cd "$PROJECT_ROOT"
+
+    # Check if E2E tests exist
+    if [ ! -d "$PROJECT_ROOT/e2e" ]; then
+        log_skip "E2E tests not found at $PROJECT_ROOT/e2e"
+        return 0
+    fi
+
+    # Check if containers are running
+    if ! docker compose ps --filter "status=running" 2>/dev/null | grep -q "frontend"; then
+        log_skip "Containers not running - skipping E2E tests"
+        return 0
+    fi
+
+    cd "$PROJECT_ROOT/e2e"
+
+    # Install dependencies if needed
+    if [ ! -d "node_modules" ]; then
+        log_info "Installing E2E dependencies..."
+        npm ci --silent || npm install --silent
+        npx playwright install chromium --with-deps 2>/dev/null || true
+    fi
+
+    # Run E2E tests
+    log_info "Running E2E tests..."
+    if npm test 2>/dev/null; then
+        log_success "E2E tests: All passed"
+    else
+        log_error "E2E tests: Some failed"
+    fi
+
+    cd "$PROJECT_ROOT"
+}
+
 # Security checks
 check_security() {
     log_header "SECURITY CHECKS"
@@ -447,7 +564,9 @@ main() {
     if [ "$QUICK_MODE" = false ]; then
         check_ai_models
         check_dicom
+        check_docker_api
         check_security
+        check_e2e
     fi
 
     # Print summary and exit
