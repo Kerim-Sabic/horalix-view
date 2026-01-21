@@ -9,6 +9,7 @@ import { Box, CircularProgress } from '@mui/material';
 import { useAuth } from './contexts/AuthContext';
 import MainLayout from './components/layout/MainLayout';
 import ProtectedRoute from './components/common/ProtectedRoute';
+import ErrorBoundary from './components/common/ErrorBoundary';
 
 // Lazy load pages for better initial load performance
 const LoginPage = lazy(() => import('./pages/LoginPage'));
@@ -43,34 +44,36 @@ const App: React.FC = () => {
   }
 
   return (
-    <Suspense fallback={<PageLoader />}>
-      <Routes>
-        {/* Public routes */}
-        <Route
-          path="/login"
-          element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
-        />
+    <ErrorBoundary>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Public routes */}
+          <Route
+            path="/login"
+            element={isAuthenticated ? <Navigate to="/" replace /> : <LoginPage />}
+          />
 
-        {/* Protected routes */}
-        <Route element={<ProtectedRoute />}>
-          <Route element={<MainLayout />}>
-            <Route path="/" element={<DashboardPage />} />
-            <Route path="/studies" element={<StudyListPage />} />
-            <Route path="/patients" element={<PatientListPage />} />
-            <Route path="/ai-models" element={<AIModelsPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/admin" element={<AdminPage />} />
+          {/* Protected routes */}
+          <Route element={<ProtectedRoute />}>
+            <Route element={<MainLayout />}>
+              <Route path="/" element={<DashboardPage />} />
+              <Route path="/studies" element={<StudyListPage />} />
+              <Route path="/patients" element={<PatientListPage />} />
+              <Route path="/ai-models" element={<AIModelsPage />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/admin" element={<AdminPage />} />
+            </Route>
+
+            {/* Viewer has its own layout */}
+            <Route path="/viewer/:studyUid" element={<ViewerPage />} />
+            <Route path="/viewer/:studyUid/:seriesUid" element={<ViewerPage />} />
           </Route>
 
-          {/* Viewer has its own layout */}
-          <Route path="/viewer/:studyUid" element={<ViewerPage />} />
-          <Route path="/viewer/:studyUid/:seriesUid" element={<ViewerPage />} />
-        </Route>
-
-        {/* Catch all - redirect to dashboard */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </Suspense>
+          {/* Catch all - redirect to dashboard */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
   );
 };
 

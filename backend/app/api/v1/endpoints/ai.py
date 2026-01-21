@@ -16,7 +16,7 @@ import numpy as np
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
@@ -110,6 +110,15 @@ class InteractiveSegmentationResponse(BaseModel):
     inference_time_ms: float
     model_name: str
     model_version: str
+
+
+class JobListResponse(BaseModel):
+    """Paginated list of jobs."""
+
+    total: int
+    page: int
+    page_size: int
+    jobs: list[InferenceJobResponse]
 
 
 def _job_to_response(job: AIJob) -> InferenceJobResponse:
@@ -413,29 +422,42 @@ async def get_job_result(
     }
 
 
-@router.get("/jobs", response_model=list[InferenceJobResponse])
+@router.get("/jobs", response_model=JobListResponse)
 async def list_jobs(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
     study_uid: str | None = Query(None),
     status_filter: JobStatus | None = Query(None, alias="status"),
-    limit: int = Query(50, ge=1, le=100),
-) -> list[InferenceJobResponse]:
-    """List inference jobs with filtering."""
-    query = select(AIJob).order_by(AIJob.created_at.desc())
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(20, ge=1, le=100, description="Items per page"),
+) -> JobListResponse:
+    """List inference jobs with filtering and pagination."""
+    # Build base query
+    base_query = select(AIJob)
 
     if study_uid:
-        query = query.where(AIJob.study_instance_uid == study_uid)
+        base_query = base_query.where(AIJob.study_instance_uid == study_uid)
 
     if status_filter:
-        query = query.where(AIJob.status == status_filter)
+        base_query = base_query.where(AIJob.status == status_filter)
 
-    query = query.limit(limit)
+    # Get total count
+    count_query = select(func.count()).select_from(base_query.subquery())
+    total = await db.scalar(count_query) or 0
+
+    # Get paginated results
+    offset = (page - 1) * page_size
+    query = base_query.order_by(AIJob.created_at.desc()).offset(offset).limit(page_size)
 
     result = await db.execute(query)
     jobs = result.scalars().all()
 
-    return [_job_to_response(job) for job in jobs]
+    return JobListResponse(
+        total=total,
+        page=page,
+        page_size=page_size,
+        jobs=[_job_to_response(job) for job in jobs],
+    )
 
 
 @router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)

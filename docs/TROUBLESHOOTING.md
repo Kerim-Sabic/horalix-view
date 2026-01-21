@@ -251,6 +251,38 @@ ACCESS_TOKEN_EXPIRE_MINUTES=480  # 8 hours
 
 ## Frontend Issues
 
+### Blank Screen After Login
+
+**Symptom:** After logging in successfully, the dashboard briefly appears then goes blank (white screen).
+
+**Cause:** Multiple potential causes:
+1. Missing `/dashboard/stats` backend endpoint returning 404
+2. Hard page redirect on 401 errors losing React state
+3. No error boundary to catch rendering errors
+4. API response format mismatch between frontend/backend
+
+**Fix:**
+1. Ensure dashboard endpoint exists:
+```bash
+curl -X GET http://localhost:8000/api/v1/dashboard/stats \
+  -H "Authorization: Bearer <your-token>"
+```
+
+2. Check browser console for JavaScript errors
+3. Check network tab for failed API calls (404, 401 errors)
+4. Verify the frontend build is up to date:
+```bash
+cd frontend
+npm run build
+```
+
+5. If using development mode, restart the dev server:
+```bash
+npm run dev
+```
+
+**Detailed Analysis:** See [BLANK_SCREEN_ROOT_CAUSE.md](./BLANK_SCREEN_ROOT_CAUSE.md) for complete root cause analysis.
+
 ### "Module not found" errors during build
 
 **Symptom:** Vite build fails with missing module.

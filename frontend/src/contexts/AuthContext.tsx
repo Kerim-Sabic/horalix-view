@@ -5,7 +5,9 @@
  */
 
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { authService, User, LoginCredentials } from '@/services/authService';
+import { AUTH_EVENTS } from '@/services/apiClient';
 
 interface AuthContextType {
   user: User | null;
@@ -35,6 +37,31 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  // Handle unauthorized events from API client
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      // Clear user state
+      setUser(null);
+      localStorage.removeItem('access_token');
+
+      // Only redirect if not already on login page
+      if (location.pathname !== '/login') {
+        navigate('/login', { replace: true });
+      }
+    };
+
+    // Listen for auth events
+    window.addEventListener(AUTH_EVENTS.UNAUTHORIZED, handleUnauthorized);
+    window.addEventListener(AUTH_EVENTS.SESSION_EXPIRED, handleUnauthorized);
+
+    return () => {
+      window.removeEventListener(AUTH_EVENTS.UNAUTHORIZED, handleUnauthorized);
+      window.removeEventListener(AUTH_EVENTS.SESSION_EXPIRED, handleUnauthorized);
+    };
+  }, [navigate, location.pathname]);
 
   // Check for existing session on mount
   useEffect(() => {
@@ -46,8 +73,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
           setUser(userData);
         }
       } catch (err) {
-        // Token invalid or expired
+        // Token invalid or expired - clear state but don't show error
+        // (user just needs to log in again)
         localStorage.removeItem('access_token');
+        setUser(null);
+        console.warn('Session check failed, user needs to re-authenticate');
       } finally {
         setIsLoading(false);
       }
