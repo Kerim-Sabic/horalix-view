@@ -7,6 +7,7 @@ from app.api.v1.endpoints import (
     ai,
     annotations,
     auth,
+    dashboard,
     dicomweb,
     export,
     instances,
@@ -85,4 +86,11 @@ api_router.include_router(
     admin.router,
     prefix="/admin",
     tags=["Administration"],
+)
+
+# Dashboard endpoints
+api_router.include_router(
+    dashboard.router,
+    prefix="/dashboard",
+    tags=["Dashboard"],
 )

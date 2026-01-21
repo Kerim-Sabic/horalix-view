@@ -856,6 +856,46 @@ This script runs: environment check, frontend lint/typecheck/build/tests, backen
 
 ---
 
+## 🔧 Troubleshooting
+
+### Common Issues
+
+**Blank Screen After Login**
+
+If you see a blank/white screen after logging in:
+
+1. Open browser Developer Tools (F12) and check the Console for errors
+2. Check the Network tab for failed API requests (404, 401 errors)
+3. Ensure the backend is running and accessible:
+   ```bash
+   curl http://localhost:8000/api/v1/dashboard/stats
+   ```
+4. Rebuild the frontend:
+   ```bash
+   cd frontend && npm run build
+   ```
+
+For detailed root cause analysis, see [docs/BLANK_SCREEN_ROOT_CAUSE.md](docs/BLANK_SCREEN_ROOT_CAUSE.md).
+
+**Login Fails**
+
+1. Verify default users exist (admin/admin123, radiologist/rad123)
+2. Check if account is locked (5 failed attempts triggers 30-minute lockout)
+3. Verify backend is running: `curl http://localhost:8000/health`
+
+**API Returns 401/403**
+
+1. Token may have expired (default: 60 minutes)
+2. User may lack required role for the endpoint
+3. Clear localStorage and re-login
+
+**For more troubleshooting help:**
+- See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for comprehensive guide
+- Run `./scripts/doctor.sh --all` to diagnose issues
+- Check [GitHub Issues](https://github.com/horalix/horalix-view/issues)
+
+---
+
 ## 📄 License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
