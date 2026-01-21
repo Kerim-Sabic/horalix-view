@@ -1,15 +1,14 @@
-"""
-Instance management endpoints for Horalix View.
+"""Instance management endpoints for Horalix View.
 
 Handles individual DICOM instances (images) including pixel data retrieval,
 metadata access, and image manipulation.
 """
 
-from typing import Annotated
 from io import BytesIO
 from pathlib import Path
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -37,11 +36,15 @@ class InstanceMetadata(BaseModel):
     columns: int | None = Field(None, description="Image columns")
     bits_allocated: int | None = Field(16, description="Bits allocated per pixel")
     bits_stored: int | None = Field(12, description="Bits stored per pixel")
-    photometric_interpretation: str | None = Field("MONOCHROME2", description="Photometric interpretation")
+    photometric_interpretation: str | None = Field(
+        "MONOCHROME2", description="Photometric interpretation"
+    )
     pixel_spacing: tuple[float, float] | None = Field(None, description="Pixel spacing (row, col)")
     slice_thickness: float | None = Field(None, description="Slice thickness in mm")
     slice_location: float | None = Field(None, description="Slice location")
-    image_position_patient: tuple[float, float, float] | None = Field(None, description="Image position")
+    image_position_patient: tuple[float, float, float] | None = Field(
+        None, description="Image position"
+    )
     window_center: float | None = Field(None, description="Window center")
     window_width: float | None = Field(None, description="Window width")
     rescale_intercept: float = Field(0.0, description="Rescale intercept")
@@ -95,8 +98,7 @@ async def get_instance(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InstanceMetadata:
-    """
-    Get instance metadata.
+    """Get instance metadata.
 
     Returns DICOM header information for the specified instance.
     """
@@ -128,8 +130,7 @@ async def get_pixel_data(
     window_center: float | None = Query(None, description="Override window center"),
     window_width: float | None = Query(None, description="Override window width"),
 ) -> Response:
-    """
-    Get instance pixel data.
+    """Get instance pixel data.
 
     Returns the image data in the requested format.
     Supports windowing parameters for display optimization.
@@ -188,27 +189,26 @@ async def get_pixel_data(
                 "X-Window-Width": str(ww),
             },
         )
+    # Apply window/level for display
+    min_val = wc - ww / 2
+    max_val = wc + ww / 2
+    display_data = np.clip(pixel_data, min_val, max_val)
+    display_data = ((display_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+
+    # Create PIL image
+    img = Image.fromarray(display_data, mode="L")
+
+    # Save to buffer
+    buffer = BytesIO()
+    if format == "png":
+        img.save(buffer, format="PNG")
+        media_type = "image/png"
     else:
-        # Apply window/level for display
-        min_val = wc - ww / 2
-        max_val = wc + ww / 2
-        display_data = np.clip(pixel_data, min_val, max_val)
-        display_data = ((display_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+        img.save(buffer, format="JPEG", quality=quality)
+        media_type = "image/jpeg"
 
-        # Create PIL image
-        img = Image.fromarray(display_data, mode="L")
-
-        # Save to buffer
-        buffer = BytesIO()
-        if format == "png":
-            img.save(buffer, format="PNG")
-            media_type = "image/png"
-        else:
-            img.save(buffer, format="JPEG", quality=quality)
-            media_type = "image/jpeg"
-
-        buffer.seek(0)
-        return StreamingResponse(buffer, media_type=media_type)
+    buffer.seek(0)
+    return StreamingResponse(buffer, media_type=media_type)
 
 
 @router.get("/{instance_uid}/thumbnail", response_class=Response)
@@ -219,8 +219,7 @@ async def get_thumbnail(
     db: Annotated[AsyncSession, Depends(get_db)],
     size: int = Query(128, ge=32, le=512, description="Thumbnail size"),
 ) -> Response:
-    """
-    Get instance thumbnail.
+    """Get instance thumbnail.
 
     Returns a small preview image for quick display in study browsers.
     """
@@ -280,8 +279,7 @@ async def get_pixel_info(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> PixelDataInfo:
-    """
-    Get pixel data information.
+    """Get pixel data information.
 
     Returns technical details about the pixel data format.
     """
@@ -300,9 +298,9 @@ async def get_pixel_info(
     if instance.transfer_syntax_uid:
         # Common uncompressed transfer syntaxes
         uncompressed = [
-            "1.2.840.10008.1.2",      # Implicit VR Little Endian
-            "1.2.840.10008.1.2.1",    # Explicit VR Little Endian
-            "1.2.840.10008.1.2.2",    # Explicit VR Big Endian
+            "1.2.840.10008.1.2",  # Implicit VR Little Endian
+            "1.2.840.10008.1.2.1",  # Explicit VR Little Endian
+            "1.2.840.10008.1.2.2",  # Explicit VR Big Endian
         ]
         is_compressed = instance.transfer_syntax_uid not in uncompressed
 
@@ -327,8 +325,7 @@ async def get_dicom_tags(
     db: Annotated[AsyncSession, Depends(get_db)],
     include_private: bool = Query(False, description="Include private tags"),
 ) -> dict:
-    """
-    Get all DICOM tags for an instance.
+    """Get all DICOM tags for an instance.
 
     Returns the complete DICOM header as a dictionary.
     """
@@ -369,17 +366,37 @@ async def get_dicom_tags(
     tags = {
         "(0008,0016)": {"vr": "UI", "name": "SOPClassUID", "value": instance.sop_class_uid},
         "(0008,0018)": {"vr": "UI", "name": "SOPInstanceUID", "value": instance_uid},
-        "(0020,000D)": {"vr": "UI", "name": "StudyInstanceUID", "value": instance.series.study_instance_uid_fk if instance.series else None},
-        "(0020,000E)": {"vr": "UI", "name": "SeriesInstanceUID", "value": instance.series_instance_uid_fk},
-        "(0020,0013)": {"vr": "IS", "name": "InstanceNumber", "value": str(instance.instance_number) if instance.instance_number else None},
+        "(0020,000D)": {
+            "vr": "UI",
+            "name": "StudyInstanceUID",
+            "value": instance.series.study_instance_uid_fk if instance.series else None,
+        },
+        "(0020,000E)": {
+            "vr": "UI",
+            "name": "SeriesInstanceUID",
+            "value": instance.series_instance_uid_fk,
+        },
+        "(0020,0013)": {
+            "vr": "IS",
+            "name": "InstanceNumber",
+            "value": str(instance.instance_number) if instance.instance_number else None,
+        },
         "(0028,0010)": {"vr": "US", "name": "Rows", "value": instance.rows},
         "(0028,0011)": {"vr": "US", "name": "Columns", "value": instance.columns},
         "(0028,0100)": {"vr": "US", "name": "BitsAllocated", "value": instance.bits_allocated},
         "(0028,0101)": {"vr": "US", "name": "BitsStored", "value": instance.bits_stored},
-        "(0028,0004)": {"vr": "CS", "name": "PhotometricInterpretation", "value": instance.photometric_interpretation},
+        "(0028,0004)": {
+            "vr": "CS",
+            "name": "PhotometricInterpretation",
+            "value": instance.photometric_interpretation,
+        },
         "(0028,1050)": {"vr": "DS", "name": "WindowCenter", "value": instance.window_center},
         "(0028,1051)": {"vr": "DS", "name": "WindowWidth", "value": instance.window_width},
-        "(0028,1052)": {"vr": "DS", "name": "RescaleIntercept", "value": instance.rescale_intercept or 0},
+        "(0028,1052)": {
+            "vr": "DS",
+            "name": "RescaleIntercept",
+            "value": instance.rescale_intercept or 0,
+        },
         "(0028,1053)": {"vr": "DS", "name": "RescaleSlope", "value": instance.rescale_slope or 1},
     }
 
@@ -393,8 +410,7 @@ async def get_dicom_file(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
-    """
-    Download the original DICOM file.
+    """Download the original DICOM file.
 
     Returns the complete DICOM file for the specified instance.
     """

@@ -1,5 +1,4 @@
-"""
-Horalix View CLI - Command Line Interface for administrative tasks.
+"""Horalix View CLI - Command Line Interface for administrative tasks.
 
 Usage:
     python -m app.cli <command> [options]
@@ -14,6 +13,7 @@ Examples:
     python -m app.cli create-admin --username admin --email admin@example.com --password secret123
     python -m app.cli init-db
     python -m app.cli check-db
+
 """
 
 import argparse
@@ -29,6 +29,7 @@ try:
 except ImportError:
     # When running from different directories, add the backend dir to path
     import os
+
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from app.core.config import settings
     from app.core.security import SecurityManager
@@ -60,6 +61,7 @@ def print_info(message: str) -> None:
 async def check_database() -> bool:
     """Check database connectivity."""
     from sqlalchemy import text
+
     from app.models.base import async_session_maker
 
     try:
@@ -81,7 +83,9 @@ async def create_admin_user(
 ) -> bool:
     """Create an admin user in the database."""
     import uuid
+
     from sqlalchemy import select
+
     from app.models.base import async_session_maker
     from app.models.user import User
 
@@ -124,7 +128,7 @@ async def create_admin_user(
             print_success(f"Admin user '{username}' created successfully")
             print_info(f"  User ID: {user.user_id}")
             print_info(f"  Email: {email}")
-            print_info(f"  Role: admin")
+            print_info("  Role: admin")
             return True
 
     except Exception as e:
@@ -135,9 +139,10 @@ async def create_admin_user(
 async def init_database() -> bool:
     """Initialize database with default users."""
     from sqlalchemy import select
+
+    from app.api.v1.endpoints.auth import init_default_users
     from app.models.base import async_session_maker
     from app.models.user import User
-    from app.api.v1.endpoints.auth import init_default_users
 
     try:
         # First check DB connectivity
@@ -215,12 +220,14 @@ def cmd_create_admin(args: argparse.Namespace) -> int:
         print_error("Invalid email format")
         return 1
 
-    result = asyncio.run(create_admin_user(
-        username=username,
-        email=email,
-        password=password,
-        full_name=args.full_name,
-    ))
+    result = asyncio.run(
+        create_admin_user(
+            username=username,
+            email=email,
+            password=password,
+            full_name=args.full_name,
+        )
+    )
     return 0 if result else 1
 
 
@@ -239,7 +246,8 @@ def main() -> NoReturn:
         epilog="For more information, see https://horalix.io/docs",
     )
     parser.add_argument(
-        "--version", "-V",
+        "--version",
+        "-V",
         action="version",
         version=f"Horalix View {settings.app_version}",
     )
@@ -277,22 +285,26 @@ def main() -> NoReturn:
         help="Create an admin user",
     )
     create_admin_parser.add_argument(
-        "--username", "-u",
+        "--username",
+        "-u",
         required=True,
         help="Username for the admin account",
     )
     create_admin_parser.add_argument(
-        "--email", "-e",
+        "--email",
+        "-e",
         required=True,
         help="Email address for the admin account",
     )
     create_admin_parser.add_argument(
-        "--password", "-p",
+        "--password",
+        "-p",
         required=False,
         help="Password (will prompt if not provided)",
     )
     create_admin_parser.add_argument(
-        "--full-name", "-n",
+        "--full-name",
+        "-n",
         required=False,
         help="Full name for the admin account",
     )

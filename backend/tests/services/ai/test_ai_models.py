@@ -1,5 +1,4 @@
-"""
-Tests for AI model implementations.
+"""Tests for AI model implementations.
 
 These tests verify:
 1. Model loading fails clearly when weights are missing
@@ -8,16 +7,15 @@ These tests verify:
 4. Job state transitions work correctly
 """
 
-import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
 from app.core.config import AIModelSettings
-from app.services.ai.model_registry import ModelRegistry, ModelNotAvailableError
 from app.services.ai.base import ModelType
+from app.services.ai.model_registry import ModelRegistry
 
 
 class TestYoloV8Detector:
@@ -387,9 +385,7 @@ class TestDicomLoader:
         )
         volume = LoadedVolume(pixel_data=pixel_data, metadata=metadata, is_3d=False)
 
-        processed = loader.prepare_for_inference(
-            volume, normalize=True, convert_to_rgb=True
-        )
+        processed = loader.prepare_for_inference(volume, normalize=True, convert_to_rgb=True)
 
         assert processed.ndim == 3
         assert processed.shape[2] == 3

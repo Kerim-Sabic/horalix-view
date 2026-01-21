@@ -1,15 +1,10 @@
-"""
-AI inference endpoints for Horalix View.
+"""AI inference endpoints for Horalix View.
 
 IMPORTANT: This module performs REAL AI inference only.
 NO simulated, placeholder, or fake outputs are permitted.
 If a model is not available, endpoints return clear error messages.
 """
 
-import asyncio
-import gzip
-import hashlib
-import json
 import time
 import traceback
 from datetime import datetime, timezone
@@ -18,7 +13,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -26,12 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
 from app.core.config import get_settings
-from app.core.security import TokenData
 from app.core.logging import audit_logger, get_logger
+from app.core.security import TokenData
 from app.models.base import get_db
-from app.models.job import AIJob, ModelType, TaskType, JobStatus
-from app.models.study import Study
+from app.models.job import AIJob, JobStatus, ModelType, TaskType
 from app.models.series import Series
+from app.models.study import Study
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -98,7 +93,9 @@ class ModelAvailabilityResponse(BaseModel):
 class SAMPrompt(BaseModel):
     """Interactive prompt for SAM/MedSAM."""
 
-    points: list[list[int]] = Field(default_factory=list, description="[[x,y], ...] point coordinates")
+    points: list[list[int]] = Field(
+        default_factory=list, description="[[x,y], ...] point coordinates"
+    )
     point_labels: list[int] = Field(default_factory=list, description="1=foreground, 0=background")
     box: list[int] | None = Field(None, description="[x1, y1, x2, y2] bounding box")
 
@@ -121,7 +118,9 @@ def _job_to_response(job: AIJob) -> InferenceJobResponse:
         job_id=job.job_id,
         study_uid=job.study_instance_uid,
         series_uid=job.series_instance_uid,
-        model_type=job.model_type.value if hasattr(job.model_type, 'value') else str(job.model_type),
+        model_type=(
+            job.model_type.value if hasattr(job.model_type, "value") else str(job.model_type)
+        ),
         task_type=job.task_type.value,
         status=job.status.value,
         progress=job.progress or 0.0,
@@ -141,8 +140,7 @@ async def list_models(
     task_type: TaskType | None = Query(None, description="Filter by task type"),
     modality: str | None = Query(None, description="Filter by supported modality"),
 ) -> ModelAvailabilityResponse:
-    """
-    List available AI models with their availability status.
+    """List available AI models with their availability status.
 
     Returns information about all registered AI models, including whether
     their weights are available for inference.
@@ -165,18 +163,20 @@ async def list_models(
         if modality and modality not in meta.supported_modalities:
             continue
 
-        models.append(ModelInfo(
-            name=meta.name,
-            version=meta.version,
-            model_type=meta.model_type.value,
-            description=meta.description,
-            supported_modalities=meta.supported_modalities,
-            performance_metrics=meta.performance_metrics or {},
-            reference=meta.reference,
-            available=avail.get("weights_available", False),
-            enabled=avail.get("enabled", False),
-            weights_path=avail.get("weights_path"),
-        ))
+        models.append(
+            ModelInfo(
+                name=meta.name,
+                version=meta.version,
+                model_type=meta.model_type.value,
+                description=meta.description,
+                supported_modalities=meta.supported_modalities,
+                performance_metrics=meta.performance_metrics or {},
+                reference=meta.reference,
+                available=avail.get("weights_available", False),
+                enabled=avail.get("enabled", False),
+                weights_path=avail.get("weights_path"),
+            )
+        )
 
     total_available = sum(1 for m in models if m.available)
 
@@ -233,11 +233,12 @@ async def submit_inference(
     request: InferenceRequest,
     background_tasks: BackgroundTasks,
     http_request: Request,
-    current_user: Annotated[TokenData, Depends(require_roles("admin", "radiologist", "researcher"))],
+    current_user: Annotated[
+        TokenData, Depends(require_roles("admin", "radiologist", "researcher"))
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InferenceJobResponse:
-    """
-    Submit an AI inference job.
+    """Submit an AI inference job.
 
     Creates a new inference task that runs in the background.
     Returns immediately with a job ID for status tracking.
@@ -358,8 +359,7 @@ async def get_job_status(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InferenceJobResponse:
-    """
-    Get inference job status.
+    """Get inference job status.
 
     Returns current status and results (if completed) for an inference job.
     """
@@ -382,8 +382,7 @@ async def get_job_result(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, Any]:
-    """
-    Get detailed results for a completed job.
+    """Get detailed results for a completed job.
 
     Returns the full inference results including paths to result files.
     """
@@ -476,8 +475,7 @@ async def interactive_medsam(
     current_user: Annotated[TokenData, Depends(require_roles("admin", "radiologist"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> InteractiveSegmentationResponse:
-    """
-    Interactive MedSAM segmentation with prompts.
+    """Interactive MedSAM segmentation with prompts.
 
     Performs REAL inference using the MedSAM model.
     If the model is not available, returns HTTP 424 with setup instructions.
@@ -487,6 +485,7 @@ async def interactive_medsam(
         series_uid: Series Instance UID
         instance_uid: Instance to segment
         prompt: Interactive prompts (points or box)
+
     """
     model_registry = http_request.app.state.model_registry
     dicom_storage = http_request.app.state.dicom_storage
@@ -663,8 +662,7 @@ async def get_mask_file(
 
 
 async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> None:
-    """
-    Run REAL model inference in background.
+    """Run REAL model inference in background.
 
     This function performs actual inference using loaded models.
     NO simulated or placeholder outputs are generated.
@@ -697,9 +695,11 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
             series_uid = job.series_instance_uid
             if not series_uid:
                 # Get first series from study
-                series_query = select(Series).where(
-                    Series.study_instance_uid == job.study_instance_uid
-                ).limit(1)
+                series_query = (
+                    select(Series)
+                    .where(Series.study_instance_uid == job.study_instance_uid)
+                    .limit(1)
+                )
                 series_result = await db.execute(series_query)
                 series = series_result.scalar_one_or_none()
                 if series:
@@ -805,7 +805,7 @@ async def _run_detection(
 
     # Normalize and prepare
     image_prepared = loader.prepare_for_inference(
-        type('obj', (object,), {'pixel_data': image, 'is_3d': False})(),
+        type("obj", (object,), {"pixel_data": image, "is_3d": False})(),
         normalize=True,
         convert_to_rgb=True,
     )
@@ -817,16 +817,22 @@ async def _run_detection(
     detections = []
     for i in range(len(result.output.boxes)):
         box = result.output.boxes[i]
-        detections.append({
-            "class_name": result.output.class_names[i] if i < len(result.output.class_names) else f"class_{result.output.class_ids[i]}",
-            "class_id": int(result.output.class_ids[i]),
-            "confidence": float(result.output.scores[i]),
-            "x": float(box[0]),
-            "y": float(box[1]),
-            "width": float(box[2] - box[0]),
-            "height": float(box[3] - box[1]),
-            "series_uid": job.series_instance_uid,
-        })
+        detections.append(
+            {
+                "class_name": (
+                    result.output.class_names[i]
+                    if i < len(result.output.class_names)
+                    else f"class_{result.output.class_ids[i]}"
+                ),
+                "class_id": int(result.output.class_ids[i]),
+                "confidence": float(result.output.scores[i]),
+                "x": float(box[0]),
+                "y": float(box[1]),
+                "width": float(box[2] - box[0]),
+                "height": float(box[3] - box[1]),
+                "series_uid": job.series_instance_uid,
+            }
+        )
 
     results = {
         "detections": detections,
@@ -884,7 +890,7 @@ async def _run_segmentation(
         if i == 0:  # Skip background
             continue
 
-        class_mask = (result.output.mask == i)
+        class_mask = result.output.mask == i
         voxel_count = int(np.sum(class_mask))
 
         volume_ml = None
@@ -892,13 +898,17 @@ async def _run_segmentation(
             voxel_volume_mm3 = spacing[0] * spacing[1] * spacing[2]
             volume_ml = float(voxel_count * voxel_volume_mm3 / 1000.0)
 
-        masks_info.append({
-            "class_name": class_name,
-            "class_id": i,
-            "voxel_count": voxel_count,
-            "volume_ml": volume_ml,
-            "dice_score": result.output.dice_scores.get(class_name) if result.output.dice_scores else None,
-        })
+        masks_info.append(
+            {
+                "class_name": class_name,
+                "class_id": i,
+                "voxel_count": voxel_count,
+                "volume_ml": volume_ml,
+                "dice_score": (
+                    result.output.dice_scores.get(class_name) if result.output.dice_scores else None
+                ),
+            }
+        )
 
     results = {
         "masks": masks_info,

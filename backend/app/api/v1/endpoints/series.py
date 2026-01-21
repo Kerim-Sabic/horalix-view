@@ -1,11 +1,9 @@
-"""
-Series management endpoints for Horalix View.
+"""Series management endpoints for Horalix View.
 
 Provides endpoints for retrieving and managing DICOM series.
 """
 
 from typing import Annotated
-from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -16,8 +14,8 @@ from sqlalchemy.orm import selectinload
 from app.api.v1.endpoints.auth import get_current_active_user
 from app.core.security import TokenData
 from app.models.base import get_db
-from app.models.series import Series
 from app.models.instance import Instance
+from app.models.series import Series
 
 router = APIRouter()
 
@@ -100,8 +98,7 @@ async def list_series(
     study_uid: str | None = Query(None, description="Filter by study UID"),
     modality: str | None = Query(None, description="Filter by modality"),
 ) -> SeriesListResponse:
-    """
-    List series with optional filtering.
+    """List series with optional filtering.
 
     Returns all series matching the specified criteria.
     """
@@ -128,8 +125,7 @@ async def get_series(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SeriesDetailResponse:
-    """
-    Get detailed series information.
+    """Get detailed series information.
 
     Returns series metadata and instance list.
     """
@@ -177,8 +173,7 @@ async def get_series_frames(
     start: int = Query(0, ge=0, description="Start frame index"),
     count: int = Query(10, ge=1, le=100, description="Number of frames"),
 ) -> dict:
-    """
-    Get frame information for a series.
+    """Get frame information for a series.
 
     Returns frame positions and metadata for efficient scrolling.
     """
@@ -206,12 +201,14 @@ async def get_series_frames(
 
     frames = []
     for i, inst in enumerate(instances):
-        frames.append({
-            "index": start + i,
-            "instance_uid": inst.sop_instance_uid,
-            "position": inst.slice_location or (start + i) * (series.slice_thickness or 1.0),
-            "slice_location": inst.slice_location,
-        })
+        frames.append(
+            {
+                "index": start + i,
+                "instance_uid": inst.sop_instance_uid,
+                "position": inst.slice_location or (start + i) * (series.slice_thickness or 1.0),
+                "slice_location": inst.slice_location,
+            }
+        )
 
     return {
         "series_uid": series_uid,
@@ -228,8 +225,7 @@ async def get_volume_info(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """
-    Get 3D volume information for a series.
+    """Get 3D volume information for a series.
 
     Returns spatial information needed for MPR and volume rendering.
     """
@@ -256,8 +252,7 @@ async def get_volume_info(
 
     # Get first instance for spatial information
     first_instance = next(
-        (i for i in sorted(series.instances, key=lambda x: x.instance_number or 0)),
-        None
+        (i for i in sorted(series.instances, key=lambda x: x.instance_number or 0)), None
     )
 
     # Parse pixel spacing

@@ -1,5 +1,4 @@
-"""
-Horalix View Backend - Advanced DICOM Viewer with AI Capabilities
+"""Horalix View Backend - Advanced DICOM Viewer with AI Capabilities
 
 This module provides the backend services for the Horalix View DICOM viewer,
 including DICOM ingestion, AI-powered analysis, image rendering, and

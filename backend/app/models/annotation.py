@@ -53,8 +53,7 @@ class Annotation(Base):
 
     # Unique annotation ID (UUID for external references)
     annotation_uid: Mapped[str] = mapped_column(
-        String(36), unique=True, nullable=False, index=True,
-        default=lambda: str(uuid4())
+        String(36), unique=True, nullable=False, index=True, default=lambda: str(uuid4())
     )
 
     # DICOM references
@@ -97,13 +96,9 @@ class Annotation(Base):
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
-    # Indexes for common queries
+    # Composite indexes for common queries
+    # Note: Single-column indexes are already created via index=True on columns
     __table_args__ = (
-        Index("ix_annotations_study_uid", "study_uid"),
-        Index("ix_annotations_series_uid", "series_uid"),
-        Index("ix_annotations_instance_uid", "instance_uid"),
-        Index("ix_annotations_annotation_type", "annotation_type"),
-        Index("ix_annotations_created_by", "created_by"),
         Index("ix_annotations_study_series", "study_uid", "series_uid"),
         Index("ix_annotations_created_at_desc", "created_at"),
     )

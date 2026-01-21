@@ -1,16 +1,14 @@
-"""
-DICOM Storage Service for Horalix View.
+"""DICOM Storage Service for Horalix View.
 
 Handles storage, retrieval, and management of DICOM files with support
 for hierarchical organization and caching.
 """
 
-import asyncio
 import hashlib
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any
 
 import aiofiles
 import aiofiles.os
@@ -21,8 +19,7 @@ logger = get_logger(__name__)
 
 
 class DicomStorageService:
-    """
-    Service for managing DICOM file storage.
+    """Service for managing DICOM file storage.
 
     Organizes files in a hierarchical structure:
     storage_dir/
@@ -37,11 +34,11 @@ class DicomStorageService:
     """
 
     def __init__(self, storage_dir: Path):
-        """
-        Initialize storage service.
+        """Initialize storage service.
 
         Args:
             storage_dir: Base directory for DICOM storage
+
         """
         self.storage_dir = Path(storage_dir)
         self.cache_dir = self.storage_dir / ".cache"
@@ -65,19 +62,20 @@ class DicomStorageService:
         return self._ready
 
     async def store_instance(self, data: bytes) -> dict[str, Any]:
-        """
-        Store a DICOM instance.
+        """Store a DICOM instance.
 
         Args:
             data: DICOM file bytes
 
         Returns:
             Dictionary with storage information
+
         """
         try:
             # Parse DICOM to extract UIDs
-            import pydicom
             from io import BytesIO
+
+            import pydicom
 
             ds = pydicom.dcmread(BytesIO(data), stop_before_pixels=True)
 
@@ -126,8 +124,7 @@ class DicomStorageService:
         instance_uid: str,
         patient_id: str | None = None,
     ) -> bytes | None:
-        """
-        Retrieve a DICOM instance.
+        """Retrieve a DICOM instance.
 
         Args:
             study_uid: Study Instance UID
@@ -137,15 +134,12 @@ class DicomStorageService:
 
         Returns:
             DICOM file bytes or None if not found
+
         """
         # Try direct path if patient_id is known
         if patient_id:
             file_path = (
-                self.storage_dir
-                / patient_id
-                / study_uid
-                / series_uid
-                / f"{instance_uid}.dcm"
+                self.storage_dir / patient_id / study_uid / series_uid / f"{instance_uid}.dcm"
             )
             if file_path.exists():
                 async with aiofiles.open(file_path, "rb") as f:
@@ -168,8 +162,7 @@ class DicomStorageService:
         series_uid: str,
         instance_uid: str,
     ) -> bool:
-        """
-        Delete a DICOM instance.
+        """Delete a DICOM instance.
 
         Args:
             study_uid: Study Instance UID
@@ -178,6 +171,7 @@ class DicomStorageService:
 
         Returns:
             True if deleted, False if not found
+
         """
         for patient_dir in self.storage_dir.iterdir():
             if patient_dir.name.startswith("."):
@@ -190,14 +184,14 @@ class DicomStorageService:
         return False
 
     async def delete_study(self, study_uid: str) -> int:
-        """
-        Delete all instances of a study.
+        """Delete all instances of a study.
 
         Args:
             study_uid: Study Instance UID
 
         Returns:
             Number of instances deleted
+
         """
         deleted_count = 0
         for patient_dir in self.storage_dir.iterdir():

@@ -1,5 +1,4 @@
-"""
-DICOM Parser Service for Horalix View.
+"""DICOM Parser Service for Horalix View.
 
 Provides utilities for parsing DICOM files, extracting metadata,
 and handling pixel data across different modalities.
@@ -87,8 +86,7 @@ class DicomMetadata:
 
 
 class DicomParser:
-    """
-    Parser for DICOM files.
+    """Parser for DICOM files.
 
     Handles parsing of DICOM headers, pixel data extraction,
     and modality-specific processing.
@@ -117,14 +115,14 @@ class DicomParser:
             logger.warning("pydicom not available, DICOM parsing disabled")
 
     def parse_file(self, file_path: Path | str) -> DicomMetadata:
-        """
-        Parse a DICOM file and extract metadata.
+        """Parse a DICOM file and extract metadata.
 
         Args:
             file_path: Path to DICOM file
 
         Returns:
             Parsed DicomMetadata object
+
         """
         if not self._pydicom_available:
             raise RuntimeError("pydicom is not installed")
@@ -135,14 +133,14 @@ class DicomParser:
         return self._extract_metadata(ds)
 
     def parse_bytes(self, data: bytes) -> DicomMetadata:
-        """
-        Parse DICOM data from bytes.
+        """Parse DICOM data from bytes.
 
         Args:
             data: DICOM file bytes
 
         Returns:
             Parsed DicomMetadata object
+
         """
         if not self._pydicom_available:
             raise RuntimeError("pydicom is not installed")
@@ -173,6 +171,7 @@ class DicomParser:
         if hasattr(ds, "PatientBirthDate") and ds.PatientBirthDate:
             try:
                 from datetime import datetime
+
                 metadata.patient_birth_date = datetime.strptime(
                     str(ds.PatientBirthDate), "%Y%m%d"
                 ).date()
@@ -190,6 +189,7 @@ class DicomParser:
         if hasattr(ds, "StudyDate") and ds.StudyDate:
             try:
                 from datetime import datetime
+
                 metadata.study_date = datetime.strptime(str(ds.StudyDate), "%Y%m%d").date()
             except ValueError:
                 pass
@@ -287,8 +287,7 @@ class DicomParser:
         data: bytes | None = None,
         apply_rescale: bool = True,
     ) -> np.ndarray:
-        """
-        Extract pixel array from DICOM file.
+        """Extract pixel array from DICOM file.
 
         Args:
             file_path: Path to DICOM file
@@ -297,6 +296,7 @@ class DicomParser:
 
         Returns:
             Numpy array of pixel data
+
         """
         if not self._pydicom_available:
             raise RuntimeError("pydicom is not installed")
@@ -326,8 +326,7 @@ class DicomParser:
         window_center: float,
         window_width: float,
     ) -> np.ndarray:
-        """
-        Apply window/level to pixel data.
+        """Apply window/level to pixel data.
 
         Args:
             pixel_array: Input pixel array
@@ -336,6 +335,7 @@ class DicomParser:
 
         Returns:
             Windowed array scaled to 0-255
+
         """
         min_val = window_center - window_width / 2
         max_val = window_center + window_width / 2

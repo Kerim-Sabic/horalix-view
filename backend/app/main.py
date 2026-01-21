@@ -1,11 +1,10 @@
-"""
-Horalix View - Advanced DICOM Viewer with AI Capabilities
+"""Horalix View - Advanced DICOM Viewer with AI Capabilities
 
 Main FastAPI application entry point.
 """
 
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,7 +14,7 @@ from prometheus_client import Counter, Histogram, make_asgi_app
 
 from app.api.v1.router import api_router
 from app.core.config import settings
-from app.core.logging import setup_logging, get_logger, audit_logger
+from app.core.logging import get_logger, setup_logging
 
 # Initialize logging
 setup_logging(
@@ -49,7 +48,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     # Initialize database
-    from app.models.base import engine, async_session_maker
+    from app.models.base import async_session_maker, engine
+
     app.state.db_engine = engine
     app.state.db_session_maker = async_session_maker
     logger.info("Database connection pool initialized")
@@ -57,6 +57,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Initialize default users (only in development or if no users exist)
     try:
         from app.api.v1.endpoints.auth import init_default_users
+
         async with async_session_maker() as session:
             await init_default_users(session)
             logger.info("Default users initialized (or already exist)")
@@ -65,8 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning(f"Could not initialize default users: {e}")
 
     # Initialize services
-    from app.services.dicom.storage import DicomStorageService
     from app.services.ai.model_registry import ModelRegistry
+    from app.services.dicom.storage import DicomStorageService
 
     # Initialize DICOM storage
     storage_service = DicomStorageService(settings.dicom.storage_dir)
@@ -211,6 +212,7 @@ def create_application() -> FastAPI:
             try:
                 async with request.app.state.db_session_maker() as session:
                     from sqlalchemy import text
+
                     await session.execute(text("SELECT 1"))
                     checks["database"] = True
             except Exception:

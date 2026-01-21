@@ -1,5 +1,4 @@
-"""
-Annotation endpoints for Horalix View.
+"""Annotation endpoints for Horalix View.
 
 Provides CRUD operations for image annotations including measurements,
 ROIs, and text labels with full database persistence.
@@ -12,13 +11,14 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.endpoints.auth import get_current_active_user
-from app.core.security import TokenData
 from app.core.logging import audit_logger
-from app.models import Annotation as AnnotationModel, AnnotationType as AnnotationTypeModel
+from app.core.security import TokenData
+from app.models import Annotation as AnnotationModel
+from app.models import AnnotationType as AnnotationTypeModel
 from app.models.base import get_db
 
 router = APIRouter()
@@ -163,9 +163,7 @@ async def list_annotations(
     instance_uid: str | None = Query(None),
     annotation_type: AnnotationType | None = Query(None),
 ) -> AnnotationListResponse:
-    """
-    List annotations with filtering.
-    """
+    """List annotations with filtering."""
     query = select(AnnotationModel)
 
     if study_uid:
@@ -196,9 +194,7 @@ async def get_annotation(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
-    """
-    Get annotation by ID.
-    """
+    """Get annotation by ID."""
     query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
     result = await db.execute(query)
     db_annotation = result.scalar_one_or_none()
@@ -218,16 +214,16 @@ async def create_annotation(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
-    """
-    Create a new annotation.
-    """
+    """Create a new annotation."""
     ann_uid = str(uuid4())
 
     # Convert AnnotationData to dict for JSON storage
     geometry_dict = annotation.data.model_dump()
 
     # Convert measurements to dict list
-    measurements_list = [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+    measurements_list = (
+        [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+    )
 
     db_annotation = AnnotationModel(
         annotation_uid=ann_uid,
@@ -265,9 +261,7 @@ async def update_annotation(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Annotation:
-    """
-    Update an existing annotation.
-    """
+    """Update an existing annotation."""
     query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
     result = await db.execute(query)
     db_annotation = result.scalar_one_or_none()
@@ -320,9 +314,7 @@ async def delete_annotation(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> None:
-    """
-    Delete an annotation.
-    """
+    """Delete an annotation."""
     query = select(AnnotationModel).where(AnnotationModel.annotation_uid == annotation_id)
     result = await db.execute(query)
     db_annotation = result.scalar_one_or_none()
@@ -357,15 +349,15 @@ async def create_annotations_batch(
     db: Annotated[AsyncSession, Depends(get_db)],
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> list[Annotation]:
-    """
-    Create multiple annotations in a batch.
-    """
+    """Create multiple annotations in a batch."""
     created = []
     for annotation in annotations:
         ann_uid = str(uuid4())
 
         geometry_dict = annotation.data.model_dump()
-        measurements_list = [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+        measurements_list = (
+            [m.model_dump() for m in annotation.measurements] if annotation.measurements else None
+        )
 
         db_annotation = AnnotationModel(
             annotation_uid=ann_uid,
@@ -401,8 +393,7 @@ async def export_study_annotations(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     format: str = Query("json", enum=["json", "dicom-sr"]),
 ) -> dict:
-    """
-    Export all annotations for a study.
+    """Export all annotations for a study.
 
     Supports JSON and DICOM-SR formats.
     """

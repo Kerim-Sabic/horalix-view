@@ -834,6 +834,26 @@ npm run format                # Prettier
 npm run type-check            # TypeScript
 ```
 
+### Doctor Script
+
+Use the doctor script to run all quality checks at once:
+
+```bash
+# Linux/macOS - Run all checks
+./scripts/doctor.sh --all
+
+# Quick checks only
+./scripts/doctor.sh --quick
+
+# Check environment only
+./scripts/doctor.sh --check-env
+
+# Windows PowerShell
+.\scripts\doctor.ps1 -All
+```
+
+This script runs: environment check, frontend lint/typecheck/build/tests, backend lint/typecheck/tests, and security checks.
+
 ---
 
 ## 📄 License

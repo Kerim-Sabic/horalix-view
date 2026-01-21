@@ -1,6 +1,4 @@
-"""
-Patient management endpoints for Horalix View.
-"""
+"""Patient management endpoints for Horalix View."""
 
 from datetime import date
 from typing import Annotated
@@ -9,8 +7,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
-from app.core.security import TokenData
 from app.core.logging import audit_logger
+from app.core.security import TokenData
 
 router = APIRouter()
 
@@ -95,18 +93,27 @@ async def list_patients(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ) -> PatientListResponse:
-    """
-    List patients with filtering and pagination.
-    """
+    """List patients with filtering and pagination."""
     filtered = []
     for patient_data in PATIENTS_DB.values():
         if patient_id and patient_data["patient_id"] != patient_id:
             continue
-        if patient_name and patient_name.lower() not in patient_data.get("patient_name", "").lower():
+        if (
+            patient_name
+            and patient_name.lower() not in patient_data.get("patient_name", "").lower()
+        ):
             continue
-        if birth_date_from and patient_data.get("birth_date") and patient_data["birth_date"] < birth_date_from:
+        if (
+            birth_date_from
+            and patient_data.get("birth_date")
+            and patient_data["birth_date"] < birth_date_from
+        ):
             continue
-        if birth_date_to and patient_data.get("birth_date") and patient_data["birth_date"] > birth_date_to:
+        if (
+            birth_date_to
+            and patient_data.get("birth_date")
+            and patient_data["birth_date"] > birth_date_to
+        ):
             continue
         filtered.append(PatientMetadata(**patient_data))
 
@@ -131,9 +138,7 @@ async def get_patient(
     patient_id: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> PatientMetadata:
-    """
-    Get patient information.
-    """
+    """Get patient information."""
     patient_data = PATIENTS_DB.get(patient_id)
     if not patient_data:
         raise HTTPException(
@@ -156,9 +161,7 @@ async def get_patient_studies(
     patient_id: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> list[PatientStudySummary]:
-    """
-    Get all studies for a patient.
-    """
+    """Get all studies for a patient."""
     if patient_id not in PATIENTS_DB:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -187,8 +190,7 @@ async def delete_patient(
     patient_id: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> None:
-    """
-    Delete a patient and all associated studies (admin only).
+    """Delete a patient and all associated studies (admin only).
 
     This action permanently removes all patient data and is logged for audit.
     """
@@ -214,8 +216,7 @@ async def merge_patients(
     source_patient_id: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Merge two patient records (admin only).
+    """Merge two patient records (admin only).
 
     Moves all studies from source patient to target patient.
     """

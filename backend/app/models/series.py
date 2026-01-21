@@ -124,4 +124,6 @@ class Series(Base):
             self.pixel_spacing = None
 
     def __repr__(self) -> str:
-        return f"<Series(id={self.id}, uid='{self.series_instance_uid}', modality='{self.modality}')>"
+        return (
+            f"<Series(id={self.id}, uid='{self.series_instance_uid}', modality='{self.modality}')>"
+        )

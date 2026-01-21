@@ -1,30 +1,30 @@
-"""
-Study management endpoints for Horalix View.
+"""Study management endpoints for Horalix View.
 
 Provides CRUD operations for DICOM studies with support for
 filtering, pagination, and metadata retrieval.
 """
 
-from datetime import date, datetime, time as dt_time
-from typing import Annotated, Any
+from datetime import date, datetime
+from datetime import time as dt_time
 from enum import Enum
 from io import BytesIO
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, or_, and_
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
-from app.core.security import TokenData
 from app.core.logging import audit_logger
-from app.models.base import get_db
-from app.models.study import Study, StudyStatus
-from app.models.series import Series
-from app.models.patient import Patient
-from app.models.instance import Instance
+from app.core.security import TokenData
 from app.models.annotation import Annotation
+from app.models.base import get_db
+from app.models.instance import Instance
+from app.models.patient import Patient
+from app.models.series import Series
+from app.models.study import Study, StudyStatus
 
 router = APIRouter()
 
@@ -135,8 +135,7 @@ async def list_studies(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
 ) -> StudyListResponse:
-    """
-    List studies with filtering and pagination.
+    """List studies with filtering and pagination.
 
     Supports filtering by patient, date range, modality, and other criteria.
     Results are paginated for efficient browsing.
@@ -192,10 +191,7 @@ async def list_studies(
     studies = result.scalars().all()
 
     # Convert to response
-    study_list = [
-        _study_to_metadata(study, study.patient)
-        for study in studies
-    ]
+    study_list = [_study_to_metadata(study, study.patient) for study in studies]
 
     return StudyListResponse(
         total=total,
@@ -211,8 +207,7 @@ async def get_study(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StudyDetailResponse:
-    """
-    Get detailed study information.
+    """Get detailed study information.
 
     Returns study metadata along with series summaries and
     information about available AI results and annotations.
@@ -258,13 +253,11 @@ async def get_study(
     ]
 
     # Check for completed AI jobs
-    ai_results_available = any(
-        job.status.value == "COMPLETED" for job in study.ai_jobs
-    )
+    ai_results_available = any(job.status.value == "COMPLETED" for job in study.ai_jobs)
 
     # Query annotations count for this study
-    annotation_count_query = select(func.count()).select_from(Annotation).where(
-        Annotation.study_uid == study_uid
+    annotation_count_query = (
+        select(func.count()).select_from(Annotation).where(Annotation.study_uid == study_uid)
     )
     annotation_count_result = await db.execute(annotation_count_query)
     annotations_count = annotation_count_result.scalar() or 0
@@ -284,8 +277,7 @@ async def upload_study(
     db: Annotated[AsyncSession, Depends(get_db)],
     files: list[UploadFile] = File(..., description="DICOM files to upload"),
 ) -> StudyMetadata:
-    """
-    Upload a new DICOM study.
+    """Upload a new DICOM study.
 
     Accepts multiple DICOM files and creates a new study entry.
     Files are parsed and stored in the configured storage location.
@@ -375,11 +367,21 @@ async def upload_study(
                     "body_part_examined": str(ds.get("BodyPartExamined", "")),
                     "patient_position": str(ds.get("PatientPosition", "")),
                     "protocol_name": str(ds.get("ProtocolName", "")),
-                    "slice_thickness": float(ds.SliceThickness) if hasattr(ds, "SliceThickness") else None,
+                    "slice_thickness": (
+                        float(ds.SliceThickness) if hasattr(ds, "SliceThickness") else None
+                    ),
                     "rows": ds.Rows if hasattr(ds, "Rows") else None,
                     "columns": ds.Columns if hasattr(ds, "Columns") else None,
-                    "window_center": float(ds.WindowCenter[0]) if hasattr(ds, "WindowCenter") and ds.WindowCenter else None,
-                    "window_width": float(ds.WindowWidth[0]) if hasattr(ds, "WindowWidth") and ds.WindowWidth else None,
+                    "window_center": (
+                        float(ds.WindowCenter[0])
+                        if hasattr(ds, "WindowCenter") and ds.WindowCenter
+                        else None
+                    ),
+                    "window_width": (
+                        float(ds.WindowWidth[0])
+                        if hasattr(ds, "WindowWidth") and ds.WindowWidth
+                        else None
+                    ),
                     "instances": [],
                 }
 
@@ -393,9 +395,19 @@ async def upload_study(
                 "bits_allocated": ds.BitsAllocated if hasattr(ds, "BitsAllocated") else None,
                 "bits_stored": ds.BitsStored if hasattr(ds, "BitsStored") else None,
                 "photometric_interpretation": str(ds.get("PhotometricInterpretation", "")),
-                "window_center": float(ds.WindowCenter[0]) if hasattr(ds, "WindowCenter") and ds.WindowCenter else None,
-                "window_width": float(ds.WindowWidth[0]) if hasattr(ds, "WindowWidth") and ds.WindowWidth else None,
-                "rescale_intercept": float(ds.RescaleIntercept) if hasattr(ds, "RescaleIntercept") else 0.0,
+                "window_center": (
+                    float(ds.WindowCenter[0])
+                    if hasattr(ds, "WindowCenter") and ds.WindowCenter
+                    else None
+                ),
+                "window_width": (
+                    float(ds.WindowWidth[0])
+                    if hasattr(ds, "WindowWidth") and ds.WindowWidth
+                    else None
+                ),
+                "rescale_intercept": (
+                    float(ds.RescaleIntercept) if hasattr(ds, "RescaleIntercept") else 0.0
+                ),
                 "rescale_slope": float(ds.RescaleSlope) if hasattr(ds, "RescaleSlope") else 1.0,
                 "slice_location": float(ds.SliceLocation) if hasattr(ds, "SliceLocation") else None,
             }
@@ -478,8 +490,7 @@ async def delete_study(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """
-    Delete a study (admin only).
+    """Delete a study (admin only).
 
     Permanently removes the study and all associated data.
     This action is logged for audit purposes.
@@ -518,8 +529,7 @@ async def get_study_thumbnail(
     db: Annotated[AsyncSession, Depends(get_db)],
     size: int = Query(128, ge=32, le=512, description="Thumbnail size"),
 ) -> dict:
-    """
-    Get study thumbnail image.
+    """Get study thumbnail image.
 
     Returns a representative thumbnail from the study's first series.
     """
@@ -547,8 +557,7 @@ async def refresh_study_metadata(
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StudyMetadata:
-    """
-    Refresh study metadata from stored DICOM files.
+    """Refresh study metadata from stored DICOM files.
 
     Re-parses DICOM headers to update study information.
     Useful after manual file modifications or imports.
@@ -603,7 +612,7 @@ def _parse_dicom_time(value: Any) -> dt_time | None:
         time_str = str(value).split(".")[0]  # Remove fractional seconds
         if len(time_str) >= 6:
             return dt_time(int(time_str[:2]), int(time_str[2:4]), int(time_str[4:6]))
-        elif len(time_str) >= 4:
+        if len(time_str) >= 4:
             return dt_time(int(time_str[:2]), int(time_str[2:4]))
     except (ValueError, TypeError):
         pass
