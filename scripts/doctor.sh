@@ -265,6 +265,102 @@ check_backend() {
     cd "$PROJECT_ROOT"
 }
 
+# AI Model checks
+check_ai_models() {
+    log_header "AI MODEL CHECKS"
+
+    cd "$PROJECT_ROOT/backend"
+
+    # Check if AI models directory exists
+    MODELS_DIR="${AI_MODELS_DIR:-$PROJECT_ROOT/models}"
+    log_info "Checking AI models directory: $MODELS_DIR"
+
+    if [ -d "$MODELS_DIR" ]; then
+        log_success "AI models directory exists"
+    else
+        log_warning "AI models directory not found (create with: mkdir -p $MODELS_DIR)"
+    fi
+
+    # Check for YOLOv8 weights
+    log_info "Checking YOLOv8 model..."
+    if [ -f "$MODELS_DIR/yolov8/model.pt" ]; then
+        log_success "YOLOv8: Weights found"
+    else
+        log_warning "YOLOv8: Weights not found (expected at $MODELS_DIR/yolov8/model.pt)"
+    fi
+
+    # Check for MONAI weights
+    log_info "Checking MONAI models..."
+    if [ -d "$MODELS_DIR/monai_segmentation" ] || [ -d "$MODELS_DIR/spleen_segmentation" ] || [ -d "$MODELS_DIR/liver_segmentation" ]; then
+        log_success "MONAI: At least one model found"
+    else
+        log_warning "MONAI: No segmentation models found"
+    fi
+
+    # Check for MedSAM weights
+    log_info "Checking MedSAM model..."
+    if [ -f "$MODELS_DIR/medsam/medsam_vit_b.pth" ] || [ -f "$MODELS_DIR/medsam/sam_vit_b_01ec64.pth" ]; then
+        log_success "MedSAM: Weights found"
+    else
+        log_warning "MedSAM: Weights not found (expected at $MODELS_DIR/medsam/medsam_vit_b.pth)"
+    fi
+
+    # Check AI dependencies
+    log_info "Checking AI dependencies..."
+    if python3 -c "import torch; print(f'PyTorch: {torch.__version__}')" 2>/dev/null; then
+        log_success "PyTorch installed"
+    else
+        log_warning "PyTorch not installed (install with: pip install torch)"
+    fi
+
+    cd "$PROJECT_ROOT"
+}
+
+# DICOM checks
+check_dicom() {
+    log_header "DICOM CHECKS"
+
+    cd "$PROJECT_ROOT/backend"
+
+    # Check DICOM storage directory
+    DICOM_STORAGE_DIR="${DICOM_STORAGE_DIR:-$PROJECT_ROOT/storage/dicom}"
+    log_info "Checking DICOM storage directory: $DICOM_STORAGE_DIR"
+
+    if [ -d "$DICOM_STORAGE_DIR" ]; then
+        log_success "DICOM storage directory exists"
+        # Check if writable
+        if [ -w "$DICOM_STORAGE_DIR" ]; then
+            log_success "DICOM storage is writable"
+        else
+            log_warning "DICOM storage is not writable"
+        fi
+    else
+        log_warning "DICOM storage directory not found (will be created on first upload)"
+    fi
+
+    # Check DICOM dependencies
+    log_info "Checking DICOM dependencies..."
+    if python3 -c "import pydicom; print(f'pydicom: {pydicom.__version__}')" 2>/dev/null; then
+        log_success "pydicom installed"
+    else
+        log_error "pydicom not installed"
+    fi
+
+    if python3 -c "import SimpleITK; print(f'SimpleITK: {SimpleITK.Version()}')" 2>/dev/null; then
+        log_success "SimpleITK installed"
+    else
+        log_warning "SimpleITK not installed (optional, for advanced processing)"
+    fi
+
+    if python3 -c "import nibabel; print(f'nibabel: {nibabel.__version__}')" 2>/dev/null; then
+        log_success "nibabel installed (NIfTI support)"
+    else
+        log_warning "nibabel not installed (optional, for NIfTI export)"
+    fi
+
+    cd "$PROJECT_ROOT"
+}
+
 # Security checks
 check_security() {
     log_header "SECURITY CHECKS"
@@ -287,6 +383,19 @@ check_security() {
         log_success "No obvious hardcoded secrets found"
     else
         log_warning "Potential hardcoded secrets detected"
+    fi
+
+    # Check .env file security
+    log_info "Checking .env file security..."
+    if [ -f "$PROJECT_ROOT/.env" ]; then
+        # Check if SECRET_KEY is set
+        if grep -q "^SECRET_KEY=.\{32,\}" "$PROJECT_ROOT/.env" 2>/dev/null; then
+            log_success "SECRET_KEY is set with adequate length"
+        else
+            log_warning "SECRET_KEY may be insecure (should be 32+ chars)"
+        fi
+    else
+        log_warning "No .env file found at project root"
     fi
 }
 
@@ -336,6 +445,8 @@ main() {
     check_backend
 
     if [ "$QUICK_MODE" = false ]; then
+        check_ai_models
+        check_dicom
         check_security
     fi
 

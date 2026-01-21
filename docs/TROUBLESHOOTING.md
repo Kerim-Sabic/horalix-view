@@ -165,6 +165,90 @@ REDIS_URL=redis://localhost:6379/0
 
 ---
 
+## Authentication Issues
+
+### Login fails but no error message shows
+
+**Symptom:** Login form submits but nothing happens, or user stays on login page.
+
+**Cause:** Frontend may have an older version expecting `user` object directly in token response.
+
+**Fix:**
+1. Ensure `frontend/src/services/authService.ts` uses `TokenResponse` interface
+2. Ensure `frontend/src/contexts/AuthContext.tsx` fetches user via `/auth/me` after storing token
+3. Rebuild the frontend: `npm run build`
+
+### "user is undefined" after login
+
+**Symptom:** Login succeeds but dashboard shows blank user or errors.
+
+**Cause:** Token stored but user data not fetched.
+
+**Fix:**
+```typescript
+// In AuthContext.tsx login function:
+const tokenResponse = await authService.login(credentials);
+localStorage.setItem('access_token', tokenResponse.access_token);
+const userData = await authService.getCurrentUser();  // Required!
+setUser(userData);
+```
+
+### "Incorrect username or password" when credentials are correct
+
+**Symptom:** Valid credentials rejected.
+
+**Cause:** Default users may not be created, or password encoding issue.
+
+**Fix:**
+```bash
+# Check if users exist
+docker compose exec backend python -c "
+from app.models.user import User
+from app.models.base import async_session_maker
+import asyncio
+
+async def check():
+    async with async_session_maker() as db:
+        from sqlalchemy import select
+        result = await db.execute(select(User))
+        users = result.scalars().all()
+        for u in users:
+            print(f'{u.username}: {u.is_active}')
+asyncio.run(check())
+"
+
+# Create admin manually if needed
+docker compose exec backend python -m app.cli create-admin \
+  --username admin --email admin@local.dev --password admin123
+```
+
+### "Account is temporarily locked"
+
+**Symptom:** Cannot login even with correct password.
+
+**Cause:** Too many failed login attempts (5+ triggers 30-minute lockout).
+
+**Fix:**
+```bash
+# Wait 30 minutes, or reset via database
+docker compose exec postgres psql -U horalix -d horalix_view -c \
+  "UPDATE users SET is_locked=false, failed_login_attempts=0 WHERE username='admin';"
+```
+
+### Token expires too quickly
+
+**Symptom:** User gets logged out frequently.
+
+**Cause:** Short token expiration configured.
+
+**Fix:**
+```bash
+# In .env, increase expiration (default is 60 minutes)
+ACCESS_TOKEN_EXPIRE_MINUTES=480  # 8 hours
+```
+
+---
+
 ## Frontend Issues
 
 ### "Module not found" errors during build
@@ -293,6 +377,96 @@ mypy app
 # - Add type annotations
 # - Use proper Optional types
 # - Add type: ignore comments for library issues
+```
+
+---
+
+## DICOM Issues
+
+### DICOM upload fails
+
+**Symptom:** Upload returns error or times out.
+
+**Cause:** File too large, invalid format, or storage not writable.
+
+**Fix:**
+```bash
+# Check storage directory exists and is writable
+docker compose exec backend ls -la /app/storage/dicom
+
+# Check upload limits in nginx (if using)
+# In nginx.conf: client_max_body_size 500M;
+
+# Check DICOM file validity
+python -c "import pydicom; ds = pydicom.dcmread('your_file.dcm'); print(ds.PatientName)"
+```
+
+### "Invalid DICOM file" error
+
+**Symptom:** Backend rejects valid DICOM files.
+
+**Cause:** File is corrupted or missing required tags.
+
+**Fix:**
+```bash
+# Validate DICOM file
+python -c "
+import pydicom
+ds = pydicom.dcmread('file.dcm')
+required = ['PatientName', 'PatientID', 'StudyInstanceUID', 'SeriesInstanceUID', 'SOPInstanceUID']
+for tag in required:
+    print(f'{tag}: {getattr(ds, tag, \"MISSING\")}')"
+```
+
+### DICOM viewer shows blank or wrong images
+
+**Symptom:** Images don't render correctly in viewer.
+
+**Cause:** Pixel data encoding issues or transfer syntax not supported.
+
+**Fix:**
+1. Check browser console for errors
+2. Verify transfer syntax is supported:
+```bash
+python -c "
+import pydicom
+ds = pydicom.dcmread('file.dcm')
+print(f'Transfer Syntax: {ds.file_meta.TransferSyntaxUID}')"
+```
+3. Ensure Cornerstone codecs are loaded for compressed transfer syntaxes
+
+### Study not appearing in list after upload
+
+**Symptom:** Upload succeeds but study isn't visible.
+
+**Cause:** Database record not created or query filter mismatch.
+
+**Fix:**
+```bash
+# Check study exists in database
+docker compose exec postgres psql -U horalix -d horalix_view -c \
+  "SELECT study_instance_uid, patient_name, study_date FROM studies ORDER BY created_at DESC LIMIT 5;"
+
+# Check backend logs for errors
+docker compose logs backend | grep -i error
+```
+
+### Window/Level appears wrong
+
+**Symptom:** Image too dark, too bright, or no contrast.
+
+**Cause:** DICOM has unusual rescale slope/intercept or no window center/width.
+
+**Fix:**
+```bash
+# Check DICOM window values
+python -c "
+import pydicom
+ds = pydicom.dcmread('file.dcm')
+print(f'WindowCenter: {getattr(ds, \"WindowCenter\", \"Not set\")}')
+print(f'WindowWidth: {getattr(ds, \"WindowWidth\", \"Not set\")}')
+print(f'RescaleSlope: {getattr(ds, \"RescaleSlope\", 1)}')
+print(f'RescaleIntercept: {getattr(ds, \"RescaleIntercept\", 0)}')"
 ```
 
 ---

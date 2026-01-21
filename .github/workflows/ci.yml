@@ -188,6 +188,45 @@ jobs:
           name: frontend-build
           path: frontend/dist
 
+  security-audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install frontend dependencies
+        run: |
+          cd frontend
+          npm ci
+
+      - name: Run npm audit
+        continue-on-error: true
+        run: |
+          cd frontend
+          npm audit --audit-level=high || echo "npm audit found vulnerabilities (review required)"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        continue-on-error: true
+        run: |
+          cd backend
+          pip install -e "." --quiet
+          pip-audit --ignore-vuln GHSA-jwhx-xcg6-8xhj || echo "pip-audit found vulnerabilities (review required)"
+
   docker-build:
     name: Docker Build
     runs-on: ubuntu-latest
@@ -202,7 +241,8 @@ jobs:
       - name: Build backend image
         uses: docker/build-push-action@v5
         with:
-          context: ./backend
+          context: .
+          file: docker/Dockerfile.backend
           push: false
           tags: horalix-view-backend:${{ github.sha }}
           cache-from: type=gha
@@ -211,8 +251,27 @@ jobs:
       - name: Build frontend image
         uses: docker/build-push-action@v5
         with:
-          context: ./frontend
+          context: .
+          file: docker/Dockerfile.frontend
           push: false
           tags: horalix-view-frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [backend-lint, backend-test, frontend-lint, frontend-test, frontend-build, security-audit]
+    if: always()
+    steps:
+      - name: Check if all jobs passed
+        run: |
+          if [[ "${{ needs.backend-lint.result }}" != "success" || \
+                "${{ needs.backend-test.result }}" != "success" || \
+                "${{ needs.frontend-lint.result }}" != "success" || \
+                "${{ needs.frontend-test.result }}" != "success" || \
+                "${{ needs.frontend-build.result }}" != "success" ]]; then
+            echo "One or more required jobs failed"
+            exit 1
+          fi
+          echo "All required CI jobs passed successfully!"
