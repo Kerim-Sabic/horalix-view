@@ -20,23 +20,34 @@ export interface LoginCredentials {
   password: string;
 }
 
-export interface LoginResponse {
+export interface TokenResponse {
   access_token: string;
   token_type: string;
   expires_in: number;
-  user: User;
+}
+
+export interface UserResponse {
+  user_id: string;
+  username: string;
+  email: string;
+  full_name: string | null;
+  roles: string[];
+  is_active: boolean;
+  is_verified: boolean;
+  last_login: string | null;
 }
 
 export const authService = {
   /**
    * Login with username and password.
+   * Returns only the token response - call getCurrentUser() to get user info.
    */
-  async login(credentials: LoginCredentials): Promise<LoginResponse> {
+  async login(credentials: LoginCredentials): Promise<TokenResponse> {
     const formData = new FormData();
     formData.append('username', credentials.username);
     formData.append('password', credentials.password);
 
-    const response = await apiClient.post<LoginResponse>('/auth/token', formData, {
+    const response = await apiClient.post<TokenResponse>('/auth/token', formData, {
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
@@ -46,10 +57,19 @@ export const authService = {
 
   /**
    * Get current user information.
+   * Requires a valid token in localStorage.
    */
   async getCurrentUser(): Promise<User> {
-    const response = await apiClient.get<User>('/auth/me');
-    return response.data;
+    const response = await apiClient.get<UserResponse>('/auth/me');
+    // Map UserResponse to User interface
+    return {
+      id: response.data.user_id,
+      username: response.data.username,
+      email: response.data.email,
+      full_name: response.data.full_name,
+      roles: response.data.roles,
+      is_active: response.data.is_active,
+    };
   },
 
   /**

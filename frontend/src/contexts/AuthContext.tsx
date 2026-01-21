@@ -61,10 +61,16 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     setError(null);
 
     try {
-      const response = await authService.login(credentials);
-      localStorage.setItem('access_token', response.access_token);
-      setUser(response.user);
+      // Step 1: Get access token from backend
+      const tokenResponse = await authService.login(credentials);
+      localStorage.setItem('access_token', tokenResponse.access_token);
+
+      // Step 2: Fetch user info with the new token
+      const userData = await authService.getCurrentUser();
+      setUser(userData);
     } catch (err: unknown) {
+      // Clean up token on any error
+      localStorage.removeItem('access_token');
       const axiosError = err as { response?: { data?: { detail?: string } } };
       const message = axiosError.response?.data?.detail || 'Login failed';
       setError(message);
