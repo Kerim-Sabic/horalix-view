@@ -90,6 +90,18 @@ const DashboardPage: React.FC = () => {
   const [recentStudies, setRecentStudies] = useState<Study[]>([]);
   const [recentJobs, setRecentJobs] = useState<AIJob[]>([]);
 
+  // Safe default stats to prevent undefined errors
+  const defaultStats: DashboardStats = {
+    total_studies: 0,
+    total_patients: 0,
+    total_series: 0,
+    total_instances: 0,
+    ai_jobs_today: 0,
+    ai_jobs_running: 0,
+    storage_used_bytes: 0,
+    storage_total_bytes: 1, // Avoid division by zero
+  };
+
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
@@ -103,20 +115,43 @@ const DashboardPage: React.FC = () => {
           api.dashboard.getRecentJobs(5),
         ]);
 
-        if (statsResult.status === 'fulfilled') {
+        // Process stats - validate and set with fallback to defaults
+        if (statsResult.status === 'fulfilled' && statsResult.value && typeof statsResult.value === 'object') {
           setStats(statsResult.value);
+        } else {
+          // Log the rejection reason if available
+          if (statsResult.status === 'rejected') {
+            console.warn('Failed to fetch dashboard stats:', statsResult.reason);
+          }
+          setStats(defaultStats);
         }
 
-        if (studiesResult.status === 'fulfilled') {
+        // Process studies - ALWAYS ensure we set an array, never undefined
+        if (studiesResult.status === 'fulfilled' && Array.isArray(studiesResult.value)) {
           setRecentStudies(studiesResult.value);
+        } else {
+          if (studiesResult.status === 'rejected') {
+            console.warn('Failed to fetch recent studies:', studiesResult.reason);
+          }
+          setRecentStudies([]); // Always fallback to empty array
         }
 
-        if (jobsResult.status === 'fulfilled') {
+        // Process jobs - ALWAYS ensure we set an array, never undefined
+        if (jobsResult.status === 'fulfilled' && Array.isArray(jobsResult.value)) {
           setRecentJobs(jobsResult.value);
+        } else {
+          if (jobsResult.status === 'rejected') {
+            console.warn('Failed to fetch recent jobs:', jobsResult.reason);
+          }
+          setRecentJobs([]); // Always fallback to empty array
         }
       } catch (err) {
         console.error('Failed to fetch dashboard data:', err);
         setError('Failed to load dashboard data. Please try again.');
+        // Ensure we have safe defaults even on error
+        setStats(defaultStats);
+        setRecentStudies([]);
+        setRecentJobs([]);
       } finally {
         setLoading(false);
       }
@@ -167,12 +202,17 @@ const DashboardPage: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  const storagePercentage = stats
-    ? Math.round((stats.storage_used_bytes / stats.storage_total_bytes) * 100)
+  // Safe accessors - guaranteed to never be undefined even if state is corrupted
+  const safeStudies = Array.isArray(recentStudies) ? recentStudies : [];
+  const safeJobs = Array.isArray(recentJobs) ? recentJobs : [];
+  const safeStats = stats ?? defaultStats;
+
+  const storagePercentage = safeStats.storage_total_bytes > 0
+    ? Math.round((safeStats.storage_used_bytes / safeStats.storage_total_bytes) * 100)
     : 0;
 
   return (
-    <Box>
+    <Box data-testid="dashboard-page">
       <Typography variant="h4" sx={{ mb: 3, fontWeight: 700 }}>
         Dashboard
       </Typography>
@@ -188,7 +228,7 @@ const DashboardPage: React.FC = () => {
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
             title="Total Studies"
-            value={stats?.total_studies.toLocaleString() ?? '-'}
+            value={loading ? '-' : safeStats.total_studies.toLocaleString()}
             icon={<StudiesIcon />}
             color="#007AFF"
             loading={loading}
@@ -197,7 +237,7 @@ const DashboardPage: React.FC = () => {
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
             title="Total Patients"
-            value={stats?.total_patients.toLocaleString() ?? '-'}
+            value={loading ? '-' : safeStats.total_patients.toLocaleString()}
             icon={<PatientsIcon />}
             color="#34C759"
             loading={loading}
@@ -206,8 +246,8 @@ const DashboardPage: React.FC = () => {
         <Grid item xs={12} sm={6} md={3}>
           <StatCard
             title="AI Jobs Today"
-            value={stats?.ai_jobs_today ?? '-'}
-            subtitle={stats ? `${stats.ai_jobs_running} running` : undefined}
+            value={loading ? '-' : safeStats.ai_jobs_today}
+            subtitle={loading ? undefined : `${safeStats.ai_jobs_running} running`}
             icon={<AIIcon />}
             color="#5856D6"
             loading={loading}
@@ -218,9 +258,9 @@ const DashboardPage: React.FC = () => {
             title="Storage Used"
             value={loading ? '-' : `${storagePercentage}%`}
             subtitle={
-              stats
-                ? `${formatBytes(stats.storage_used_bytes)} / ${formatBytes(stats.storage_total_bytes)}`
-                : undefined
+              loading
+                ? undefined
+                : `${formatBytes(safeStats.storage_used_bytes)} / ${formatBytes(safeStats.storage_total_bytes)}`
             }
             icon={<StorageIcon />}
             color="#FF9500"
@@ -248,9 +288,9 @@ const DashboardPage: React.FC = () => {
             )}
           </Box>
           <Typography variant="body2" color="text.secondary">
-            {stats
-              ? `${formatBytes(stats.storage_used_bytes)} used of ${formatBytes(stats.storage_total_bytes)} total storage`
-              : 'Loading...'}
+            {loading
+              ? 'Loading...'
+              : `${formatBytes(safeStats.storage_used_bytes)} used of ${formatBytes(safeStats.storage_total_bytes)} total storage`}
           </Typography>
         </CardContent>
       </Card>
@@ -276,13 +316,13 @@ const DashboardPage: React.FC = () => {
                     </Box>
                   ))}
                 </Box>
-              ) : recentStudies.length === 0 ? (
+              ) : safeStudies.length === 0 ? (
                 <Typography color="text.secondary" sx={{ py: 2 }}>
                   No studies found. Upload DICOM files to get started.
                 </Typography>
               ) : (
-                <List disablePadding>
-                  {recentStudies.map((study) => (
+                <List disablePadding data-testid="recent-studies-list">
+                  {safeStudies.map((study) => (
                     <ListItem key={study.study_instance_uid} disablePadding>
                       <ListItemButton onClick={() => navigate(`/viewer/${study.study_instance_uid}`)}>
                         <ListItemIcon sx={{ minWidth: 36 }}>
@@ -325,13 +365,13 @@ const DashboardPage: React.FC = () => {
                     </Box>
                   ))}
                 </Box>
-              ) : recentJobs.length === 0 ? (
+              ) : safeJobs.length === 0 ? (
                 <Typography color="text.secondary" sx={{ py: 2 }}>
                   No AI jobs found. Start an AI analysis from the viewer.
                 </Typography>
               ) : (
-                <List disablePadding>
-                  {recentJobs.map((job) => (
+                <List disablePadding data-testid="recent-jobs-list">
+                  {safeJobs.map((job) => (
                     <ListItem key={job.job_id} sx={{ px: 0 }}>
                       <ListItemIcon sx={{ minWidth: 36 }}>
                         {getStatusIcon(job.status)}
