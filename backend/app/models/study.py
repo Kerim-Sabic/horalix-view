@@ -55,9 +55,7 @@ class Study(Base):
     study_time: Mapped[Optional[time]] = mapped_column(Time, nullable=True)
 
     # DICOM Accession Number (0008,0050)
-    accession_number: Mapped[Optional[str]] = mapped_column(
-        String(64), nullable=True, index=True
-    )
+    accession_number: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     # DICOM Study Description (0008,1030)
     study_description: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
@@ -90,9 +88,7 @@ class Study(Base):
     patient_id_fk: Mapped[Optional[int]] = mapped_column(
         ForeignKey("patients.id", ondelete="SET NULL"), nullable=True
     )
-    patient: Mapped[Optional["Patient"]] = relationship(
-        "Patient", back_populates="studies"
-    )
+    patient: Mapped[Optional["Patient"]] = relationship("Patient", back_populates="studies")
 
     # Relationships
     series_list: Mapped[list["Series"]] = relationship(

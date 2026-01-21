@@ -1,5 +1,4 @@
-"""
-Administration endpoints for Horalix View.
+"""Administration endpoints for Horalix View.
 
 Provides system administration, configuration, and monitoring capabilities.
 """
@@ -8,11 +7,11 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from app.api.v1.endpoints.auth import get_current_active_user, require_roles
-from app.core.security import TokenData
+from app.api.v1.endpoints.auth import require_roles
 from app.core.logging import audit_logger
+from app.core.security import TokenData
 
 router = APIRouter()
 
@@ -87,9 +86,7 @@ SYSTEM_START_TIME = datetime.now()
 async def get_system_status(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> SystemStatus:
-    """
-    Get system status and health metrics.
-    """
+    """Get system status and health metrics."""
     uptime = (datetime.now() - SYSTEM_START_TIME).total_seconds()
 
     return SystemStatus(
@@ -108,9 +105,7 @@ async def get_system_status(
 async def get_ai_model_status(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> list[AIModelStatus]:
-    """
-    Get status of all AI models.
-    """
+    """Get status of all AI models."""
     return [
         AIModelStatus(
             model_name="nnunet",
@@ -144,9 +139,7 @@ async def load_ai_model(
     model_name: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Load an AI model into memory.
-    """
+    """Load an AI model into memory."""
     audit_logger.log_configuration_change(
         user_id=current_user.user_id,
         setting_name=f"ai_model_{model_name}",
@@ -163,9 +156,7 @@ async def unload_ai_model(
     model_name: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Unload an AI model from memory.
-    """
+    """Unload an AI model from memory."""
     return {"message": f"Model {model_name} unloaded", "status": "unloaded"}
 
 
@@ -173,9 +164,7 @@ async def unload_ai_model(
 async def get_storage_info(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> StorageInfo:
-    """
-    Get storage information.
-    """
+    """Get storage information."""
     return StorageInfo(
         total_bytes=1000000000000,  # 1TB
         used_bytes=350000000000,  # 350GB
@@ -190,9 +179,7 @@ async def get_storage_info(
 async def get_configuration(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Get current system configuration.
-    """
+    """Get current system configuration."""
     from app.core.config import settings
 
     return {
@@ -221,8 +208,7 @@ async def update_configuration(
     update: ConfigUpdate,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Update system configuration.
+    """Update system configuration.
 
     Changes may require a restart to take effect.
     """
@@ -253,8 +239,7 @@ async def get_audit_logs(
     limit: int = 100,
     offset: int = 0,
 ) -> AuditLogResponse:
-    """
-    Query audit logs.
+    """Query audit logs.
 
     Supports filtering by user, action, resource type, and date range.
     """
@@ -289,9 +274,7 @@ async def export_audit_logs(
     to_date: datetime | None = None,
     format: str = "csv",
 ) -> dict:
-    """
-    Export audit logs for compliance reporting.
-    """
+    """Export audit logs for compliance reporting."""
     return {
         "message": "Audit log export initiated",
         "format": format,
@@ -303,9 +286,7 @@ async def export_audit_logs(
 async def list_users(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> list[dict]:
-    """
-    List all users.
-    """
+    """List all users."""
     from app.api.v1.endpoints.auth import USERS_DB
 
     return [
@@ -326,9 +307,7 @@ async def update_user_roles(
     roles: list[str],
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Update user roles.
-    """
+    """Update user roles."""
     from app.api.v1.endpoints.auth import USERS_DB
 
     for user in USERS_DB.values():
@@ -358,9 +337,7 @@ async def update_user_status(
     is_active: bool,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Activate or deactivate a user.
-    """
+    """Activate or deactivate a user."""
     from app.api.v1.endpoints.auth import USERS_DB
 
     for user in USERS_DB.values():
@@ -382,9 +359,7 @@ async def run_cleanup(
     cleanup_old_exports: bool = True,
     days_old: int = 30,
 ) -> dict:
-    """
-    Run maintenance cleanup tasks.
-    """
+    """Run maintenance cleanup tasks."""
     return {
         "message": "Cleanup initiated",
         "tasks": {
@@ -400,7 +375,5 @@ async def run_cleanup(
 async def reindex_database(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> dict:
-    """
-    Reindex the DICOM database.
-    """
+    """Reindex the DICOM database."""
     return {"message": "Reindexing initiated", "status": "running"}

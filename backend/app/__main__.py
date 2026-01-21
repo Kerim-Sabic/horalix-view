@@ -1,5 +1,4 @@
-"""
-Horalix View CLI entry point.
+"""Horalix View CLI entry point.
 
 Allows running the CLI as: python -m app <command>
 """

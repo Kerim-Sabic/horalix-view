@@ -1,16 +1,16 @@
 """API v1 endpoints."""
 
 from app.api.v1.endpoints import (
-    studies,
-    series,
+    admin,
+    ai,
+    annotations,
+    auth,
+    dicomweb,
+    export,
     instances,
     patients,
-    ai,
-    dicomweb,
-    auth,
-    admin,
-    annotations,
-    export,
+    series,
+    studies,
 )
 
 __all__ = [

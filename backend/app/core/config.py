@@ -1,19 +1,17 @@
-"""
-Application configuration management using Pydantic Settings.
+"""Application configuration management using Pydantic Settings.
 
 This module provides centralized configuration for the Horalix View backend,
 supporting environment variables and .env files for different deployment environments.
 """
 
-import os
 import secrets
 import sys
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from dotenv import load_dotenv
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Get the backend directory (parent of app/ directory)
@@ -45,8 +43,7 @@ def _is_insecure_key(key: str) -> bool:
 
 
 class AIModelSettings(BaseSettings):
-    """
-    Configuration for AI model settings.
+    """Configuration for AI model settings.
 
     IMPORTANT: This configuration controls REAL AI inference.
     Models will only work if weights are available at the specified paths.
@@ -58,15 +55,14 @@ class AIModelSettings(BaseSettings):
     # Model paths and configurations
     models_dir: Path = Field(
         default=Path("./models"),
-        description="Directory for AI model weights. Create subdirectories per model."
+        description="Directory for AI model weights. Create subdirectories per model.",
     )
     cache_dir: Path = Field(
-        default=Path("./cache/models"),
-        description="Model cache directory for downloaded weights"
+        default=Path("./cache/models"), description="Model cache directory for downloaded weights"
     )
     results_dir: Path = Field(
         default=Path("./results"),
-        description="Directory for storing inference results (masks, etc.)"
+        description="Directory for storing inference results (masks, etc.)",
     )
 
     # Segmentation models
@@ -96,66 +92,54 @@ class AIModelSettings(BaseSettings):
 
     # Inference settings
     device: str = Field(
-        default="cuda",
-        description="Device for inference: 'cuda', 'cuda:0', 'cuda:1', or 'cpu'"
+        default="cuda", description="Device for inference: 'cuda', 'cuda:0', 'cuda:1', or 'cpu'"
     )
     batch_size: int = Field(default=4, ge=1, le=64, description="Batch size for inference")
     num_workers: int = Field(default=4, ge=0, le=16, description="Number of data loader workers")
-    mixed_precision: bool = Field(default=True, description="Enable mixed precision (FP16) inference")
+    mixed_precision: bool = Field(
+        default=True, description="Enable mixed precision (FP16) inference"
+    )
 
     # Reproducibility settings
     deterministic: bool = Field(
-        default=False,
-        description="Enable deterministic mode for reproducible results (slower)"
+        default=False, description="Enable deterministic mode for reproducible results (slower)"
     )
     seed: int = Field(default=42, description="Random seed for reproducibility")
 
     # YOLOv8 specific settings
     yolov8_confidence: float = Field(
-        default=0.25, ge=0.0, le=1.0,
-        description="YOLOv8 detection confidence threshold"
+        default=0.25, ge=0.0, le=1.0, description="YOLOv8 detection confidence threshold"
     )
-    yolov8_iou: float = Field(
-        default=0.45, ge=0.0, le=1.0,
-        description="YOLOv8 NMS IoU threshold"
-    )
+    yolov8_iou: float = Field(default=0.45, ge=0.0, le=1.0, description="YOLOv8 NMS IoU threshold")
     yolov8_weights: str = Field(
-        default="model.pt",
-        description="YOLOv8 weights filename (relative to models_dir/yolov8/)"
+        default="model.pt", description="YOLOv8 weights filename (relative to models_dir/yolov8/)"
     )
 
     # MedSAM specific settings
     medsam_model_type: str = Field(
-        default="vit_b",
-        description="MedSAM model type: 'vit_b', 'vit_l', or 'vit_h'"
+        default="vit_b", description="MedSAM model type: 'vit_b', 'vit_l', or 'vit_h'"
     )
     medsam_checkpoint: str = Field(
         default="medsam_vit_b.pth",
-        description="MedSAM checkpoint filename (relative to models_dir/medsam/)"
+        description="MedSAM checkpoint filename (relative to models_dir/medsam/)",
     )
 
     # MONAI specific settings
     monai_spatial_size: tuple[int, int, int] = Field(
         default=(96, 96, 96),
-        description="MONAI sliding window spatial size for volumetric inference"
+        description="MONAI sliding window spatial size for volumetric inference",
     )
-    monai_sw_batch_size: int = Field(
-        default=4, ge=1,
-        description="MONAI sliding window batch size"
-    )
+    monai_sw_batch_size: int = Field(default=4, ge=1, description="MONAI sliding window batch size")
     monai_overlap: float = Field(
-        default=0.25, ge=0.0, le=0.9,
-        description="MONAI sliding window overlap ratio"
+        default=0.25, ge=0.0, le=0.9, description="MONAI sliding window overlap ratio"
     )
 
     # Logging settings
     log_inference_metrics: bool = Field(
-        default=True,
-        description="Log detailed inference metrics (time, memory, etc.)"
+        default=True, description="Log detailed inference metrics (time, memory, etc.)"
     )
     log_weights_hash: bool = Field(
-        default=True,
-        description="Log SHA256 hash of weights for reproducibility tracking"
+        default=True, description="Log SHA256 hash of weights for reproducibility tracking"
     )
 
 
@@ -165,11 +149,15 @@ class DICOMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="DICOM_")
 
     # DICOM AE settings
-    ae_title: str = Field(default="HORALIX_VIEW", max_length=16, description="Application Entity Title")
+    ae_title: str = Field(
+        default="HORALIX_VIEW", max_length=16, description="Application Entity Title"
+    )
     port: int = Field(default=11112, ge=1, le=65535, description="DICOM port")
 
     # Storage paths
-    storage_dir: Path = Field(default=Path("./storage/dicom"), description="DICOM storage directory")
+    storage_dir: Path = Field(
+        default=Path("./storage/dicom"), description="DICOM storage directory"
+    )
     temp_dir: Path = Field(default=Path("./temp"), description="Temporary file directory")
 
     # DICOMweb settings
@@ -328,23 +316,22 @@ class Settings(BaseSettings):
                     file=sys.stderr,
                 )
                 raise ValueError("SECRET_KEY must be set to a secure value in production")
-            else:
-                # Development mode - generate a temporary key and warn loudly
-                temp_key = _generate_dev_secret_key()
-                object.__setattr__(self, "secret_key", temp_key)
-                print(
-                    "\n"
-                    "!" * 70 + "\n"
-                    "WARNING: Using auto-generated temporary SECRET_KEY for development!\n"
-                    "!" * 70 + "\n"
-                    "\n"
-                    "This key is NOT secure and will change on every restart.\n"
-                    "For persistent development, add SECRET_KEY to your .env file.\n"
-                    "\n"
-                    "Generate a key with: openssl rand -hex 32\n"
-                    "!" * 70 + "\n",
-                    file=sys.stderr,
-                )
+            # Development mode - generate a temporary key and warn loudly
+            temp_key = _generate_dev_secret_key()
+            object.__setattr__(self, "secret_key", temp_key)
+            print(
+                "\n"
+                "!" * 70 + "\n"
+                "WARNING: Using auto-generated temporary SECRET_KEY for development!\n"
+                "!" * 70 + "\n"
+                "\n"
+                "This key is NOT secure and will change on every restart.\n"
+                "For persistent development, add SECRET_KEY to your .env file.\n"
+                "\n"
+                "Generate a key with: openssl rand -hex 32\n"
+                "!" * 70 + "\n",
+                file=sys.stderr,
+            )
 
         # Production-specific validations
         if self.environment == "production":

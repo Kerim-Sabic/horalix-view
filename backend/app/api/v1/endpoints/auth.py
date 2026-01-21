@@ -1,23 +1,22 @@
-"""
-Authentication endpoints for Horalix View.
+"""Authentication endpoints for Horalix View.
 
 Provides OAuth2 password flow authentication with JWT tokens,
 user management, and role-based access control.
 """
 
+import uuid
 from datetime import datetime, timezone
 from typing import Annotated
-import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.security import SecurityManager, TokenData, PermissionChecker
 from app.core.logging import audit_logger
+from app.core.security import PermissionChecker, SecurityManager, TokenData
 from app.models.base import get_db
 from app.models.user import User
 
@@ -79,8 +78,7 @@ async def get_current_user(
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenData:
-    """
-    Validate JWT token and return current user.
+    """Validate JWT token and return current user.
 
     Raises HTTPException if token is invalid or expired.
     """
@@ -108,8 +106,7 @@ async def get_current_user(
 async def get_current_active_user(
     current_user: Annotated[TokenData, Depends(get_current_user)],
 ) -> TokenData:
-    """
-    Get current active user.
+    """Get current active user.
 
     Returns the current user token data if valid.
     """
@@ -117,14 +114,14 @@ async def get_current_active_user(
 
 
 def require_roles(*roles: str):
-    """
-    Dependency factory that requires specific roles.
+    """Dependency factory that requires specific roles.
 
     Usage:
         @router.get("/admin", dependencies=[Depends(require_roles("admin"))])
         async def admin_endpoint():
             pass
     """
+
     async def role_checker(
         current_user: Annotated[TokenData, Depends(get_current_active_user)],
     ) -> TokenData:
@@ -139,14 +136,14 @@ def require_roles(*roles: str):
 
 
 def require_permissions(*permissions: str):
-    """
-    Dependency factory that requires specific permissions.
+    """Dependency factory that requires specific permissions.
 
     Usage:
         @router.get("/view", dependencies=[Depends(require_permissions("view:studies"))])
         async def view_endpoint():
             pass
     """
+
     async def permission_checker(
         current_user: Annotated[TokenData, Depends(get_current_active_user)],
     ) -> TokenData:
@@ -167,8 +164,7 @@ async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Token:
-    """
-    OAuth2 password grant authentication.
+    """OAuth2 password grant authentication.
 
     Returns a JWT access token on successful authentication.
     """
@@ -210,11 +206,10 @@ async def login(
                 detail="Account is temporarily locked",
                 headers={"WWW-Authenticate": "Bearer"},
             )
-        else:
-            # Unlock if lock period expired
-            user.is_locked = False
-            user.locked_until = None
-            user.failed_login_attempts = 0
+        # Unlock if lock period expired
+        user.is_locked = False
+        user.locked_until = None
+        user.failed_login_attempts = 0
 
     # Verify password
     if not security.verify_password(form_data.password, user.hashed_password):
@@ -225,6 +220,7 @@ async def login(
         if user.failed_login_attempts >= 5:
             user.is_locked = True
             from datetime import timedelta
+
             user.locked_until = datetime.now(timezone.utc) + timedelta(minutes=30)
 
         await db.commit()
@@ -295,9 +291,7 @@ async def get_current_user_info(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserResponse:
-    """
-    Get current authenticated user information.
-    """
+    """Get current authenticated user information."""
     query = select(User).where(User.user_id == current_user.user_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -325,8 +319,7 @@ async def logout(
     request: Request,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> dict:
-    """
-    Logout current user.
+    """Logout current user.
 
     Note: With JWT tokens, actual token invalidation requires
     a token blacklist or short expiration times.
@@ -351,9 +344,7 @@ async def change_password(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    """
-    Change current user's password.
-    """
+    """Change current user's password."""
     query = select(User).where(User.user_id == current_user.user_id)
     result = await db.execute(query)
     user = result.scalar_one_or_none()
@@ -395,9 +386,7 @@ async def register_user(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> UserResponse:
-    """
-    Register a new user (admin only).
-    """
+    """Register a new user (admin only)."""
     # Check if username already exists
     query = select(User).where(User.username == user_data.username)
     result = await db.execute(query)

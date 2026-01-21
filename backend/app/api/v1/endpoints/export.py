@@ -1,5 +1,4 @@
-"""
-Export endpoints for Horalix View.
+"""Export endpoints for Horalix View.
 
 Handles data export in various formats including DICOM, images, reports, and anonymized data.
 """
@@ -9,13 +8,13 @@ from enum import Enum
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.v1.endpoints.auth import get_current_active_user, require_roles
-from app.core.security import TokenData
+from app.api.v1.endpoints.auth import get_current_active_user
 from app.core.logging import audit_logger
+from app.core.security import TokenData
 
 router = APIRouter()
 
@@ -117,8 +116,7 @@ async def create_export(
     background_tasks: BackgroundTasks,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> ExportJob:
-    """
-    Create an export job.
+    """Create an export job.
 
     Starts an asynchronous export process for the specified data.
     Returns immediately with a job ID for status tracking.
@@ -163,9 +161,7 @@ async def list_exports(
     status: ExportStatus | None = Query(None),
     limit: int = Query(50, ge=1, le=100),
 ) -> ExportListResponse:
-    """
-    List export jobs.
-    """
+    """List export jobs."""
     jobs = list(EXPORT_JOBS_DB.values())
 
     if status:
@@ -184,9 +180,7 @@ async def get_export(
     job_id: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> ExportJob:
-    """
-    Get export job status.
-    """
+    """Get export job status."""
     if job_id not in EXPORT_JOBS_DB:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -201,9 +195,7 @@ async def download_export(
     job_id: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> StreamingResponse:
-    """
-    Download exported file.
-    """
+    """Download exported file."""
     if job_id not in EXPORT_JOBS_DB:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -248,9 +240,7 @@ async def cancel_export(
     job_id: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> None:
-    """
-    Cancel or delete an export job.
-    """
+    """Cancel or delete an export job."""
     if job_id not in EXPORT_JOBS_DB:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -267,12 +257,12 @@ async def quick_export(
     format: ExportFormat = Query(ExportFormat.PNG),
     instance_uid: str | None = Query(None),
 ) -> StreamingResponse:
-    """
-    Quick synchronous export of a single image.
+    """Quick synchronous export of a single image.
 
     For small exports that can be completed immediately.
     """
     from io import BytesIO
+
     import numpy as np
     from PIL import Image
 

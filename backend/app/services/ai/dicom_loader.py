@@ -1,13 +1,10 @@
-"""
-DICOM Loading Pipeline for AI Inference.
+"""DICOM Loading Pipeline for AI Inference.
 
 Provides clean utilities to load pixel data from stored DICOM instances,
 building properly ordered volumes with correct metadata for AI model inference.
 """
 
-import asyncio
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -60,19 +57,18 @@ class LoadedVolume:
 
 
 class DicomLoader:
-    """
-    DICOM loading pipeline for AI inference.
+    """DICOM loading pipeline for AI inference.
 
     Loads pixel data from stored DICOM instances, orders slices correctly,
     and provides properly formatted numpy arrays for model inference.
     """
 
     def __init__(self, storage_service: DicomStorageService):
-        """
-        Initialize the DICOM loader.
+        """Initialize the DICOM loader.
 
         Args:
             storage_service: The DICOM storage service for file access
+
         """
         self.storage = storage_service
 
@@ -84,8 +80,7 @@ class DicomLoader:
         apply_windowing: bool = False,
         target_dtype: np.dtype | None = None,
     ) -> LoadedVolume:
-        """
-        Load a complete DICOM series as a volume.
+        """Load a complete DICOM series as a volume.
 
         Args:
             study_uid: Study Instance UID
@@ -100,9 +95,9 @@ class DicomLoader:
         Raises:
             FileNotFoundError: If series not found
             ValueError: If no valid DICOM instances found
+
         """
         import pydicom
-        from io import BytesIO
 
         # Find the study directory
         study_path = await self.storage.get_study_path(study_uid)
@@ -126,17 +121,19 @@ class DicomLoader:
                 ds = pydicom.dcmread(str(dcm_file))
 
                 # Get slice location for ordering
-                slice_location = float(getattr(ds, 'SliceLocation', 0.0))
+                slice_location = float(getattr(ds, "SliceLocation", 0.0))
                 if slice_location == 0.0:
                     # Try to compute from ImagePositionPatient
-                    if hasattr(ds, 'ImagePositionPatient') and hasattr(ds, 'ImageOrientationPatient'):
+                    if hasattr(ds, "ImagePositionPatient") and hasattr(
+                        ds, "ImageOrientationPatient"
+                    ):
                         pos = ds.ImagePositionPatient
                         orient = ds.ImageOrientationPatient
                         # Use the z-component (or compute from orientation)
                         slice_location = float(pos[2])
                     else:
                         # Fall back to instance number
-                        slice_location = float(getattr(ds, 'InstanceNumber', 0))
+                        slice_location = float(getattr(ds, "InstanceNumber", 0))
 
                 instance_uid = str(ds.SOPInstanceUID)
                 datasets.append((ds, slice_location, instance_uid))
@@ -153,10 +150,7 @@ class DicomLoader:
 
         # Extract metadata from first dataset
         first_ds = datasets[0][0]
-        metadata = self._extract_metadata(
-            first_ds, study_uid, series_uid,
-            [d[2] for d in datasets]
-        )
+        metadata = self._extract_metadata(first_ds, study_uid, series_uid, [d[2] for d in datasets])
         metadata.num_slices = len(datasets)
 
         # Build volume
@@ -180,7 +174,11 @@ class DicomLoader:
             if len(datasets) >= 2:
                 z_spacing = abs(datasets[1][1] - datasets[0][1])
                 if z_spacing > 0 and metadata.pixel_spacing:
-                    metadata.spacing = (z_spacing, metadata.pixel_spacing[0], metadata.pixel_spacing[1])
+                    metadata.spacing = (
+                        z_spacing,
+                        metadata.pixel_spacing[0],
+                        metadata.pixel_spacing[1],
+                    )
                     metadata.slice_thickness = z_spacing
 
         # Apply rescale if requested
@@ -189,7 +187,11 @@ class DicomLoader:
             volume = volume * metadata.rescale_slope + metadata.rescale_intercept
 
         # Apply windowing if requested
-        if apply_windowing and metadata.window_center is not None and metadata.window_width is not None:
+        if (
+            apply_windowing
+            and metadata.window_center is not None
+            and metadata.window_width is not None
+        ):
             volume = self._apply_windowing(
                 volume,
                 metadata.window_center,
@@ -224,8 +226,7 @@ class DicomLoader:
         instance_uid: str,
         apply_rescale: bool = False,
     ) -> LoadedVolume:
-        """
-        Load a single DICOM instance.
+        """Load a single DICOM instance.
 
         Args:
             study_uid: Study Instance UID
@@ -235,9 +236,11 @@ class DicomLoader:
 
         Returns:
             LoadedVolume with 2D pixel data
+
         """
-        import pydicom
         from io import BytesIO
+
+        import pydicom
 
         # Retrieve the instance data
         data = await self.storage.retrieve_instance(
@@ -247,9 +250,7 @@ class DicomLoader:
         )
 
         if data is None:
-            raise FileNotFoundError(
-                f"Instance not found: {instance_uid} in series {series_uid}"
-            )
+            raise FileNotFoundError(f"Instance not found: {instance_uid} in series {series_uid}")
 
         # Parse DICOM
         ds = pydicom.dcmread(BytesIO(data))
@@ -288,42 +289,45 @@ class DicomLoader:
         instance_uids: list[str],
     ) -> VolumeMetadata:
         """Extract metadata from a DICOM dataset."""
-
         # Get pixel spacing
         pixel_spacing = None
-        if hasattr(ds, 'PixelSpacing') and ds.PixelSpacing:
+        if hasattr(ds, "PixelSpacing") and ds.PixelSpacing:
             pixel_spacing = (float(ds.PixelSpacing[0]), float(ds.PixelSpacing[1]))
 
         # Get window settings
         window_center = None
         window_width = None
-        if hasattr(ds, 'WindowCenter'):
+        if hasattr(ds, "WindowCenter"):
             wc = ds.WindowCenter
             window_center = float(wc[0] if isinstance(wc, (list, tuple)) else wc)
-        if hasattr(ds, 'WindowWidth'):
+        if hasattr(ds, "WindowWidth"):
             ww = ds.WindowWidth
             window_width = float(ww[0] if isinstance(ww, (list, tuple)) else ww)
 
         # Get rescale values
-        rescale_slope = float(getattr(ds, 'RescaleSlope', 1.0))
-        rescale_intercept = float(getattr(ds, 'RescaleIntercept', 0.0))
+        rescale_slope = float(getattr(ds, "RescaleSlope", 1.0))
+        rescale_intercept = float(getattr(ds, "RescaleIntercept", 0.0))
 
         return VolumeMetadata(
             study_uid=study_uid,
             series_uid=series_uid,
-            modality=str(getattr(ds, 'Modality', 'UNKNOWN')),
+            modality=str(getattr(ds, "Modality", "UNKNOWN")),
             pixel_spacing=pixel_spacing,
-            slice_thickness=float(getattr(ds, 'SliceThickness', 0.0)) or None,
-            image_orientation=list(ds.ImageOrientationPatient) if hasattr(ds, 'ImageOrientationPatient') else None,
-            image_position=list(ds.ImagePositionPatient) if hasattr(ds, 'ImagePositionPatient') else None,
+            slice_thickness=float(getattr(ds, "SliceThickness", 0.0)) or None,
+            image_orientation=(
+                list(ds.ImageOrientationPatient) if hasattr(ds, "ImageOrientationPatient") else None
+            ),
+            image_position=(
+                list(ds.ImagePositionPatient) if hasattr(ds, "ImagePositionPatient") else None
+            ),
             window_center=window_center,
             window_width=window_width,
             rescale_slope=rescale_slope,
             rescale_intercept=rescale_intercept,
-            photometric_interpretation=str(getattr(ds, 'PhotometricInterpretation', 'MONOCHROME2')),
-            bits_stored=int(getattr(ds, 'BitsStored', 16)),
-            rows=int(getattr(ds, 'Rows', 512)),
-            columns=int(getattr(ds, 'Columns', 512)),
+            photometric_interpretation=str(getattr(ds, "PhotometricInterpretation", "MONOCHROME2")),
+            bits_stored=int(getattr(ds, "BitsStored", 16)),
+            rows=int(getattr(ds, "Rows", 512)),
+            columns=int(getattr(ds, "Columns", 512)),
             instance_uids=instance_uids,
         )
 
@@ -357,8 +361,7 @@ class DicomLoader:
         convert_to_rgb: bool = False,
         target_size: tuple[int, int] | None = None,
     ) -> np.ndarray:
-        """
-        Prepare a loaded volume for model inference.
+        """Prepare a loaded volume for model inference.
 
         Args:
             volume: LoadedVolume from load_series/load_instance
@@ -368,6 +371,7 @@ class DicomLoader:
 
         Returns:
             Preprocessed numpy array ready for inference
+
         """
         import cv2
 

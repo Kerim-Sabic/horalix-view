@@ -30,9 +30,7 @@ class Patient(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
     # DICOM Patient ID (0010,0020) - unique identifier in the system
-    patient_id: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False, index=True
-    )
+    patient_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
 
     # DICOM Patient's Name (0010,0010)
     patient_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
@@ -70,4 +68,6 @@ class Patient(Base):
     )
 
     def __repr__(self) -> str:
-        return f"<Patient(id={self.id}, patient_id='{self.patient_id}', name='{self.patient_name}')>"
+        return (
+            f"<Patient(id={self.id}, patient_id='{self.patient_id}', name='{self.patient_name}')>"
+        )

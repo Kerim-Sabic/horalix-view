@@ -1,15 +1,14 @@
-"""
-DICOM Networking Service for Horalix View.
+"""DICOM Networking Service for Horalix View.
 
 Implements DICOM networking protocols including C-STORE, C-MOVE, C-FIND,
 and C-ECHO for PACS integration.
 """
 
-import asyncio
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.core.logging import get_logger
 
@@ -67,8 +66,7 @@ class QueryResult:
 
 
 class DicomNetworkService:
-    """
-    Service for DICOM networking operations.
+    """Service for DICOM networking operations.
 
     Supports:
     - C-ECHO: Verify connectivity
@@ -83,13 +81,13 @@ class DicomNetworkService:
         port: int = 11112,
         storage_dir: Path | None = None,
     ):
-        """
-        Initialize DICOM network service.
+        """Initialize DICOM network service.
 
         Args:
             ae_title: Application Entity Title
             port: DICOM listening port
             storage_dir: Directory for storing received instances
+
         """
         self.ae_title = ae_title
         self.port = port
@@ -105,11 +103,11 @@ class DicomNetworkService:
             logger.warning("pynetdicom not available, DICOM networking disabled")
 
     def register_node(self, node: DicomNode) -> None:
-        """
-        Register a DICOM node for communication.
+        """Register a DICOM node for communication.
 
         Args:
             node: DicomNode configuration
+
         """
         self._registered_nodes[node.ae_title] = node
         logger.info(
@@ -120,14 +118,14 @@ class DicomNetworkService:
         )
 
     def unregister_node(self, ae_title: str) -> bool:
-        """
-        Unregister a DICOM node.
+        """Unregister a DICOM node.
 
         Args:
             ae_title: AE Title of node to remove
 
         Returns:
             True if removed, False if not found
+
         """
         if ae_title in self._registered_nodes:
             del self._registered_nodes[ae_title]
@@ -139,14 +137,14 @@ class DicomNetworkService:
         return list(self._registered_nodes.values())
 
     async def echo(self, node: DicomNode) -> AssociationResult:
-        """
-        Verify connectivity to a DICOM node using C-ECHO.
+        """Verify connectivity to a DICOM node using C-ECHO.
 
         Args:
             node: Target DICOM node
 
         Returns:
             AssociationResult indicating success/failure
+
         """
         if not self._pynetdicom_available:
             return AssociationResult(
@@ -172,16 +170,14 @@ class DicomNetworkService:
                         success=True,
                         message="C-ECHO successful",
                     )
-                else:
-                    return AssociationResult(
-                        success=False,
-                        message=f"C-ECHO failed with status: {status}",
-                    )
-            else:
                 return AssociationResult(
                     success=False,
-                    message="Association rejected or aborted",
+                    message=f"C-ECHO failed with status: {status}",
                 )
+            return AssociationResult(
+                success=False,
+                message="Association rejected or aborted",
+            )
 
         except Exception as e:
             logger.error("C-ECHO failed", error=str(e))
@@ -196,8 +192,7 @@ class DicomNetworkService:
         level: QueryRetrieveLevel,
         query: dict[str, Any],
     ) -> QueryResult:
-        """
-        Query a DICOM node using C-FIND.
+        """Query a DICOM node using C-FIND.
 
         Args:
             node: Target DICOM node
@@ -206,6 +201,7 @@ class DicomNetworkService:
 
         Returns:
             QueryResult with matching records
+
         """
         if not self._pynetdicom_available:
             return QueryResult(
@@ -216,13 +212,12 @@ class DicomNetworkService:
             )
 
         try:
+            from pydicom.dataset import Dataset
             from pynetdicom import AE
             from pynetdicom.sop_class import (
                 PatientRootQueryRetrieveInformationModelFind,
                 StudyRootQueryRetrieveInformationModelFind,
             )
-            import pydicom
-            from pydicom.dataset import Dataset
 
             ae = AE(ae_title=self.ae_title)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelFind)
@@ -269,13 +264,12 @@ class DicomNetworkService:
                     matches=matches,
                     status="success",
                 )
-            else:
-                return QueryResult(
-                    level=level,
-                    matches=[],
-                    status="error",
-                    message="Association rejected",
-                )
+            return QueryResult(
+                level=level,
+                matches=[],
+                status="error",
+                message="Association rejected",
+            )
 
         except Exception as e:
             logger.error("C-FIND failed", error=str(e))
@@ -293,8 +287,7 @@ class DicomNetworkService:
         level: QueryRetrieveLevel,
         identifiers: dict[str, Any],
     ) -> dict[str, Any]:
-        """
-        Request data transfer using C-MOVE.
+        """Request data transfer using C-MOVE.
 
         Args:
             node: Source DICOM node
@@ -304,14 +297,15 @@ class DicomNetworkService:
 
         Returns:
             Move operation result
+
         """
         if not self._pynetdicom_available:
             return {"success": False, "message": "pynetdicom not available"}
 
         try:
+            from pydicom.dataset import Dataset
             from pynetdicom import AE
             from pynetdicom.sop_class import StudyRootQueryRetrieveInformationModelMove
-            from pydicom.dataset import Dataset
 
             ae = AE(ae_title=self.ae_title)
             ae.add_requested_context(StudyRootQueryRetrieveInformationModelMove)
@@ -354,8 +348,7 @@ class DicomNetworkService:
                     "failed": failed,
                     "warning": warning,
                 }
-            else:
-                return {"success": False, "message": "Association rejected"}
+            return {"success": False, "message": "Association rejected"}
 
         except Exception as e:
             logger.error("C-MOVE failed", error=str(e))
@@ -366,8 +359,7 @@ class DicomNetworkService:
         node: DicomNode,
         instances: list[Path | bytes],
     ) -> dict[str, Any]:
-        """
-        Store instances to a DICOM node using C-STORE.
+        """Store instances to a DICOM node using C-STORE.
 
         Args:
             node: Destination DICOM node
@@ -375,14 +367,16 @@ class DicomNetworkService:
 
         Returns:
             Store operation result
+
         """
         if not self._pynetdicom_available:
             return {"success": False, "message": "pynetdicom not available"}
 
         try:
-            from pynetdicom import AE, StoragePresentationContexts
-            import pydicom
             from io import BytesIO
+
+            import pydicom
+            from pynetdicom import AE, StoragePresentationContexts
 
             ae = AE(ae_title=self.ae_title)
             ae.requested_contexts = StoragePresentationContexts
@@ -413,8 +407,7 @@ class DicomNetworkService:
                     "stored": success_count,
                     "failed": fail_count,
                 }
-            else:
-                return {"success": False, "message": "Association rejected"}
+            return {"success": False, "message": "Association rejected"}
 
         except Exception as e:
             logger.error("C-STORE failed", error=str(e))
@@ -424,14 +417,14 @@ class DicomNetworkService:
         self,
         on_store: Callable[[Any], int] | None = None,
     ) -> bool:
-        """
-        Start Storage SCP (Service Class Provider).
+        """Start Storage SCP (Service Class Provider).
 
         Args:
             on_store: Callback for handling incoming C-STORE requests
 
         Returns:
             True if started successfully
+
         """
         if not self._pynetdicom_available:
             logger.error("Cannot start SCP: pynetdicom not available")
@@ -442,7 +435,7 @@ class DicomNetworkService:
             return True
 
         try:
-            from pynetdicom import AE, evt, StoragePresentationContexts
+            from pynetdicom import AE, StoragePresentationContexts, evt
             from pynetdicom.sop_class import Verification
 
             ae = AE(ae_title=self.ae_title)

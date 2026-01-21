@@ -95,7 +95,7 @@ class YoloV8Detector(DetectionModel):
         """Get class names from model or custom config."""
         if self._custom_class_names:
             return self._custom_class_names
-        if self._model is not None and hasattr(self._model, 'names'):
+        if self._model is not None and hasattr(self._model, "names"):
             return list(self._model.names.values())
         return []
 
@@ -105,8 +105,8 @@ class YoloV8Detector(DetectionModel):
             return "NOT_FOUND"
 
         sha256 = hashlib.sha256()
-        with open(self.weights_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
+        with open(self.weights_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()[:16]
 
@@ -167,6 +167,7 @@ class YoloV8Detector(DetectionModel):
             if device.startswith("cuda"):
                 try:
                     import torch
+
                     if torch.cuda.is_available():
                         self._model.to(device)
                     else:
@@ -200,6 +201,7 @@ class YoloV8Detector(DetectionModel):
             # Clear CUDA cache if available
             try:
                 import torch
+
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             except ImportError:
@@ -232,9 +234,7 @@ class YoloV8Detector(DetectionModel):
             ValueError: If input image is invalid
         """
         if not self._loaded or self._model is None:
-            raise RuntimeError(
-                "Model not loaded. Call load() first or check weights path."
-            )
+            raise RuntimeError("Model not loaded. Call load() first or check weights path.")
 
         # Validate input
         self.validate_input(image)
@@ -310,7 +310,9 @@ class YoloV8Detector(DetectionModel):
                 image = (image * 255).astype(np.uint8)
             else:
                 # Normalize to 0-255 for medical images with wider ranges
-                image = ((image - image.min()) / (image.max() - image.min() + 1e-8) * 255).astype(np.uint8)
+                image = ((image - image.min()) / (image.max() - image.min() + 1e-8) * 255).astype(
+                    np.uint8
+                )
         elif image.dtype != np.uint8:
             image = image.astype(np.uint8)
 
@@ -344,12 +346,12 @@ class YoloV8Detector(DetectionModel):
         class_ids = boxes_data.cls.cpu().numpy().astype(int)
 
         # Get class names
-        model_names = self._model.names if hasattr(self._model, 'names') else {}
+        model_names = self._model.names if hasattr(self._model, "names") else {}
         class_names = [model_names.get(int(cid), f"class_{cid}") for cid in class_ids]
 
         # Extract masks if available (for instance segmentation models)
         masks = None
-        if hasattr(result, 'masks') and result.masks is not None:
+        if hasattr(result, "masks") and result.masks is not None:
             masks = result.masks.data.cpu().numpy()
 
         return DetectionOutput(
@@ -373,11 +375,7 @@ class YoloV8Detector(DetectionModel):
         super().validate_input(image)
 
         if image.ndim not in [2, 3]:
-            raise ValueError(
-                f"Expected 2D (H,W) or 3D (H,W,C) image, got shape {image.shape}"
-            )
+            raise ValueError(f"Expected 2D (H,W) or 3D (H,W,C) image, got shape {image.shape}")
 
         if image.ndim == 3 and image.shape[2] not in [1, 3, 4]:
-            raise ValueError(
-                f"Expected 1, 3, or 4 channels, got {image.shape[2]}"
-            )
+            raise ValueError(f"Expected 1, 3, or 4 channels, got {image.shape[2]}")

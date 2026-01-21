@@ -1,5 +1,4 @@
-"""
-Base AI Model Interface for Horalix View.
+"""Base AI Model Interface for Horalix View.
 
 Defines the plugin interface for AI models, allowing easy extension
 and integration of new models.
@@ -9,7 +8,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from pathlib import Path
 from typing import Any, Generic, TypeVar
 
 import numpy as np
@@ -117,8 +115,7 @@ class EnhancementOutput:
 
 
 class BaseAIModel(ABC):
-    """
-    Abstract base class for AI models.
+    """Abstract base class for AI models.
 
     All AI models in Horalix View should inherit from this class
     to ensure consistent interface and behavior.
@@ -174,11 +171,11 @@ class BaseAIModel(ABC):
 
     @abstractmethod
     async def load(self, device: str = "cuda") -> None:
-        """
-        Load model weights into memory.
+        """Load model weights into memory.
 
         Args:
             device: Device to load model to ('cuda', 'cpu')
+
         """
         pass
 
@@ -193,8 +190,7 @@ class BaseAIModel(ABC):
         image: np.ndarray,
         **kwargs: Any,
     ) -> InferenceResult:
-        """
-        Run inference on input image.
+        """Run inference on input image.
 
         Args:
             image: Input image array
@@ -202,12 +198,12 @@ class BaseAIModel(ABC):
 
         Returns:
             InferenceResult with model output
+
         """
         pass
 
     async def preprocess(self, image: np.ndarray) -> np.ndarray:
-        """
-        Preprocess image before inference.
+        """Preprocess image before inference.
 
         Override this method for custom preprocessing.
 
@@ -216,12 +212,12 @@ class BaseAIModel(ABC):
 
         Returns:
             Preprocessed image
+
         """
         return image
 
     async def postprocess(self, output: Any) -> Any:
-        """
-        Postprocess model output.
+        """Postprocess model output.
 
         Override this method for custom postprocessing.
 
@@ -230,18 +226,19 @@ class BaseAIModel(ABC):
 
         Returns:
             Postprocessed output
+
         """
         return output
 
     def validate_input(self, image: np.ndarray) -> None:
-        """
-        Validate input image.
+        """Validate input image.
 
         Args:
             image: Input image to validate
 
         Raises:
             ValueError: If image is invalid
+
         """
         if image is None:
             raise ValueError("Input image cannot be None")
@@ -270,8 +267,7 @@ class SegmentationModel(BaseAIModel):
         prediction: np.ndarray,
         ground_truth: np.ndarray,
     ) -> dict[str, float]:
-        """
-        Compute segmentation metrics.
+        """Compute segmentation metrics.
 
         Args:
             prediction: Predicted segmentation mask
@@ -279,6 +275,7 @@ class SegmentationModel(BaseAIModel):
 
         Returns:
             Dictionary of metrics (Dice, HD95, etc.)
+
         """
         # Dice coefficient
         intersection = np.logical_and(prediction, ground_truth).sum()
@@ -344,8 +341,7 @@ class InteractiveSegmentationModel(SegmentationModel):
         mask_input: np.ndarray | None = None,
         **kwargs: Any,
     ) -> InferenceResult[SegmentationOutput]:
-        """
-        Run segmentation with interactive prompts.
+        """Run segmentation with interactive prompts.
 
         Args:
             image: Input image
@@ -356,18 +352,19 @@ class InteractiveSegmentationModel(SegmentationModel):
 
         Returns:
             Segmentation result
+
         """
         pass
 
     @abstractmethod
     async def encode_image(self, image: np.ndarray) -> Any:
-        """
-        Encode image for efficient multi-prompt inference.
+        """Encode image for efficient multi-prompt inference.
 
         Args:
             image: Input image
 
         Returns:
             Image embedding
+
         """
         pass

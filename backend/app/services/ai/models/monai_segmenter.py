@@ -106,8 +106,8 @@ class MonaiSegmentationModel(SegmentationModel):
             return "NOT_FOUND"
 
         sha256 = hashlib.sha256()
-        with open(weights_file, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
+        with open(weights_file, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()[:16]
 
@@ -201,6 +201,7 @@ class MonaiSegmentationModel(SegmentationModel):
 
             if config_path and config_path.exists():
                 import json
+
                 with open(config_path) as f:
                     config = json.load(f)
                 # Build model from config
@@ -249,10 +250,12 @@ class MonaiSegmentationModel(SegmentationModel):
             )
 
             # Post-processing
-            self._post_transforms = Compose([
-                EnsureType(),
-                AsDiscrete(argmax=True),
-            ])
+            self._post_transforms = Compose(
+                [
+                    EnsureType(),
+                    AsDiscrete(argmax=True),
+                ]
+            )
 
             self._loaded = True
 
@@ -277,6 +280,7 @@ class MonaiSegmentationModel(SegmentationModel):
 
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:
@@ -307,9 +311,7 @@ class MonaiSegmentationModel(SegmentationModel):
             ValueError: If input image is invalid
         """
         if not self._loaded or self._model is None:
-            raise RuntimeError(
-                "Model not loaded. Call load() first or check weights path."
-            )
+            raise RuntimeError("Model not loaded. Call load() first or check weights path.")
 
         import torch
 
@@ -425,7 +427,7 @@ class MonaiSegmentationModel(SegmentationModel):
         for i, class_name in enumerate(self._class_names):
             if i == 0:  # Skip background
                 continue
-            class_mask = (mask == i)
+            class_mask = mask == i
             voxel_count = np.sum(class_mask)
 
             if voxel_volume_ml is not None:
@@ -434,7 +436,9 @@ class MonaiSegmentationModel(SegmentationModel):
                 volumes[class_name] = float(voxel_count)
 
             # Dice scores require ground truth - store confidence instead
-            dice_scores[class_name] = float(np.mean(probabilities[i][class_mask])) if voxel_count > 0 else 0.0
+            dice_scores[class_name] = (
+                float(np.mean(probabilities[i][class_mask])) if voxel_count > 0 else 0.0
+            )
 
         return SegmentationOutput(
             mask=mask,
@@ -449,9 +453,7 @@ class MonaiSegmentationModel(SegmentationModel):
         super().validate_input(image)
 
         if image.ndim not in [2, 3]:
-            raise ValueError(
-                f"Expected 2D (H,W) or 3D (D,H,W) volume, got shape {image.shape}"
-            )
+            raise ValueError(f"Expected 2D (H,W) or 3D (D,H,W) volume, got shape {image.shape}")
 
     async def compute_metrics(
         self,

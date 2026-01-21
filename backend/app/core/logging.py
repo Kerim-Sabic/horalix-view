@@ -1,5 +1,4 @@
-"""
-Structured logging configuration for Horalix View.
+"""Structured logging configuration for Horalix View.
 
 Provides consistent, structured logging with support for different
 output formats and log levels based on environment.
@@ -13,9 +12,7 @@ import structlog
 from structlog.types import EventDict, Processor
 
 
-def add_app_context(
-    logger: logging.Logger, method_name: str, event_dict: EventDict
-) -> EventDict:
+def add_app_context(logger: logging.Logger, method_name: str, event_dict: EventDict) -> EventDict:
     """Add application context to log entries."""
     event_dict["app"] = "horalix-view"
     return event_dict
@@ -26,13 +23,13 @@ def setup_logging(
     json_logs: bool = False,
     log_file: str | None = None,
 ) -> None:
-    """
-    Configure structured logging for the application.
+    """Configure structured logging for the application.
 
     Args:
         log_level: Minimum log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         json_logs: If True, output logs as JSON (for production)
         log_file: Optional file path for log output
+
     """
     # Configure standard library logging
     logging.basicConfig(
@@ -87,21 +84,20 @@ def setup_logging(
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
-    """
-    Get a structured logger instance.
+    """Get a structured logger instance.
 
     Args:
         name: Logger name (typically __name__)
 
     Returns:
         Configured structlog BoundLogger
+
     """
     return structlog.get_logger(name)
 
 
 class AuditLogger:
-    """
-    Specialized logger for audit trail compliance.
+    """Specialized logger for audit trail compliance.
 
     Provides methods for logging security-relevant events in a format
     suitable for HIPAA and 21 CFR Part 11 compliance.
@@ -120,8 +116,7 @@ class AuditLogger:
         success: bool = True,
         details: dict[str, Any] | None = None,
     ) -> None:
-        """
-        Log a resource access event.
+        """Log a resource access event.
 
         Args:
             user_id: ID of the user accessing the resource
@@ -130,6 +125,7 @@ class AuditLogger:
             action: Action performed (e.g., "VIEW", "EXPORT")
             success: Whether the action succeeded
             details: Additional details
+
         """
         self.logger.info(
             "resource_access",
@@ -151,8 +147,7 @@ class AuditLogger:
         ip_address: str | None = None,
         failure_reason: str | None = None,
     ) -> None:
-        """
-        Log an authentication event.
+        """Log an authentication event.
 
         Args:
             user_id: ID of the authenticated user (None if failed)
@@ -161,6 +156,7 @@ class AuditLogger:
             method: Authentication method used
             ip_address: Client IP address
             failure_reason: Reason for failure (if applicable)
+
         """
         log_method = self.logger.info if success else self.logger.warning
         log_method(
@@ -183,8 +179,7 @@ class AuditLogger:
         anonymized: bool = False,
         destination: str | None = None,
     ) -> None:
-        """
-        Log a data export event.
+        """Log a data export event.
 
         Args:
             user_id: ID of the user exporting data
@@ -193,6 +188,7 @@ class AuditLogger:
             format: Export format (e.g., "DICOM", "PDF")
             anonymized: Whether data was anonymized
             destination: Export destination (if applicable)
+
         """
         self.logger.info(
             "data_export",
@@ -214,8 +210,7 @@ class AuditLogger:
         new_value: Any,
         component: str,
     ) -> None:
-        """
-        Log a configuration change.
+        """Log a configuration change.
 
         Args:
             user_id: ID of the user making the change
@@ -223,6 +218,7 @@ class AuditLogger:
             old_value: Previous value
             new_value: New value
             component: Component/module affected
+
         """
         self.logger.info(
             "configuration_change",
@@ -244,8 +240,7 @@ class AuditLogger:
         success: bool = True,
         error: str | None = None,
     ) -> None:
-        """
-        Log an AI inference event.
+        """Log an AI inference event.
 
         Args:
             user_id: ID of the user requesting inference
@@ -255,6 +250,7 @@ class AuditLogger:
             duration_ms: Inference duration in milliseconds
             success: Whether inference succeeded
             error: Error message if failed
+
         """
         log_method = self.logger.info if success else self.logger.error
         log_method(

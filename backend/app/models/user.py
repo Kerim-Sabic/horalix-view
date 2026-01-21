@@ -27,17 +27,11 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
     # Unique user identifier (for external references)
-    user_id: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False, index=True
-    )
+    user_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
 
     # Login credentials
-    username: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False, index=True
-    )
-    email: Mapped[str] = mapped_column(
-        String(256), unique=True, nullable=False, index=True
-    )
+    username: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(256), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(256), nullable=False)
 
     # User profile

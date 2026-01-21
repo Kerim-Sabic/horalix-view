@@ -90,9 +90,7 @@ class AIJob(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
 
     # Unique job identifier
-    job_id: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False, index=True
-    )
+    job_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
 
     # Model and task configuration
     model_type: Mapped[ModelType] = mapped_column(Enum(ModelType), nullable=False)

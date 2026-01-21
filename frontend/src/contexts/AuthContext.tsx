@@ -64,8 +64,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       const response = await authService.login(credentials);
       localStorage.setItem('access_token', response.access_token);
       setUser(response.user);
-    } catch (err: any) {
-      const message = err.response?.data?.detail || 'Login failed';
+    } catch (err: unknown) {
+      const axiosError = err as { response?: { data?: { detail?: string } } };
+      const message = axiosError.response?.data?.detail || 'Login failed';
       setError(message);
       throw new Error(message);
     } finally {

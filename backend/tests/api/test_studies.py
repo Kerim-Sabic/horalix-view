@@ -1,5 +1,4 @@
-"""
-Tests for study endpoints.
+"""Tests for study endpoints.
 
 Verifies that the studies API correctly:
 1. Returns proper annotations count for a study
@@ -7,27 +6,29 @@ Verifies that the studies API correctly:
 3. Computes annotations count from database
 """
 
-from datetime import date, datetime
-from unittest.mock import AsyncMock, MagicMock
+from datetime import date
 
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.models.base import Base
 from app.models.annotation import Annotation, AnnotationType
+from app.models.base import Base
 from app.models.patient import Patient
-from app.models.study import Study, StudyStatus
 from app.models.series import Series
+from app.models.study import Study, StudyStatus
 
 
 @pytest.fixture
-async def test_db():
-    """Create an in-memory test database."""
-    # Use SQLite in-memory database for testing
+async def test_db(tmp_path):
+    """Create an isolated test database using a temp file."""
+    import uuid
+
+    # Use a temp file database for complete isolation
+    db_file = tmp_path / f"test_{uuid.uuid4().hex}.db"
     engine = create_async_engine(
-        "sqlite+aiosqlite:///:memory:",
+        f"sqlite+aiosqlite:///{db_file}",
         echo=False,
     )
 
@@ -36,14 +37,13 @@ async def test_db():
         await conn.run_sync(Base.metadata.create_all)
 
     # Create async session factory
-    async_session = sessionmaker(
-        engine, class_=AsyncSession, expire_on_commit=False
-    )
+    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with async_session() as session:
         yield session
 
     await engine.dispose()
+    # Temp file is automatically cleaned up by tmp_path fixture
 
 
 @pytest.fixture
@@ -103,17 +103,15 @@ class TestAnnotationsCount:
     """Test annotations count functionality in get_study endpoint."""
 
     @pytest.mark.asyncio
-    async def test_study_with_no_annotations(
-        self, test_db: AsyncSession, sample_study: Study
-    ):
+    async def test_study_with_no_annotations(self, test_db: AsyncSession, sample_study: Study):
         """Test that a study with no annotations returns count of 0."""
         from sqlalchemy import func
 
-        from app.models.annotation import Annotation
-
         # Query annotations count
-        query = select(func.count()).select_from(Annotation).where(
-            Annotation.study_uid == sample_study.study_instance_uid
+        query = (
+            select(func.count())
+            .select_from(Annotation)
+            .where(Annotation.study_uid == sample_study.study_instance_uid)
         )
         result = await test_db.execute(query)
         count = result.scalar() or 0
@@ -129,8 +127,6 @@ class TestAnnotationsCount:
     ):
         """Test that a study correctly counts its annotations."""
         from sqlalchemy import func
-
-        from app.models.annotation import Annotation
 
         # Create 3 annotations for this study
         annotations = [
@@ -150,8 +146,10 @@ class TestAnnotationsCount:
         await test_db.commit()
 
         # Query annotations count
-        query = select(func.count()).select_from(Annotation).where(
-            Annotation.study_uid == sample_study.study_instance_uid
+        query = (
+            select(func.count())
+            .select_from(Annotation)
+            .where(Annotation.study_uid == sample_study.study_instance_uid)
         )
         result = await test_db.execute(query)
         count = result.scalar() or 0
@@ -168,8 +166,6 @@ class TestAnnotationsCount:
     ):
         """Test that annotation counts are isolated per study."""
         from sqlalchemy import func
-
-        from app.models.annotation import Annotation
 
         # Create a second study
         study2 = Study(
@@ -214,16 +210,20 @@ class TestAnnotationsCount:
         await test_db.commit()
 
         # Verify study 1 has 2 annotations
-        query1 = select(func.count()).select_from(Annotation).where(
-            Annotation.study_uid == sample_study.study_instance_uid
+        query1 = (
+            select(func.count())
+            .select_from(Annotation)
+            .where(Annotation.study_uid == sample_study.study_instance_uid)
         )
         result1 = await test_db.execute(query1)
         count1 = result1.scalar() or 0
         assert count1 == 2
 
         # Verify study 2 has 5 annotations
-        query2 = select(func.count()).select_from(Annotation).where(
-            Annotation.study_uid == study2.study_instance_uid
+        query2 = (
+            select(func.count())
+            .select_from(Annotation)
+            .where(Annotation.study_uid == study2.study_instance_uid)
         )
         result2 = await test_db.execute(query2)
         count2 = result2.scalar() or 0
@@ -238,8 +238,6 @@ class TestAnnotationsCount:
     ):
         """Test that all annotation types are counted correctly."""
         from sqlalchemy import func
-
-        from app.models.annotation import Annotation
 
         # Create annotations of different types
         annotation_types = [
@@ -264,8 +262,10 @@ class TestAnnotationsCount:
         await test_db.commit()
 
         # Query total count
-        query = select(func.count()).select_from(Annotation).where(
-            Annotation.study_uid == sample_study.study_instance_uid
+        query = (
+            select(func.count())
+            .select_from(Annotation)
+            .where(Annotation.study_uid == sample_study.study_instance_uid)
         )
         result = await test_db.execute(query)
         count = result.scalar() or 0

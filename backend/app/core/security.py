@@ -1,10 +1,10 @@
-"""
-Security utilities for Horalix View.
+"""Security utilities for Horalix View.
 
 Provides authentication, authorization, encryption, and audit logging
 capabilities for HIPAA and 21 CFR Part 11 compliance.
 """
 
+import base64
 import hashlib
 import hmac
 import secrets
@@ -17,7 +17,6 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-import base64
 
 
 class TokenData(BaseModel):
@@ -46,8 +45,7 @@ class AuditLogEntry(BaseModel):
 
 
 class SecurityManager:
-    """
-    Centralized security manager for authentication, encryption, and auditing.
+    """Centralized security manager for authentication, encryption, and auditing.
 
     Implements security best practices for healthcare applications including:
     - JWT-based authentication
@@ -62,13 +60,13 @@ class SecurityManager:
         algorithm: str = "HS256",
         access_token_expire_minutes: int = 60,
     ):
-        """
-        Initialize security manager.
+        """Initialize security manager.
 
         Args:
             secret_key: Secret key for JWT signing
             algorithm: JWT algorithm (default: HS256)
             access_token_expire_minutes: Token expiration in minutes
+
         """
         self.secret_key = secret_key
         self.algorithm = algorithm
@@ -92,20 +90,19 @@ class SecurityManager:
         return self._fernet
 
     def hash_password(self, password: str) -> str:
-        """
-        Hash a password using bcrypt.
+        """Hash a password using bcrypt.
 
         Args:
             password: Plain text password
 
         Returns:
             Hashed password string
+
         """
         return self.pwd_context.hash(password)
 
     def verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        """
-        Verify a password against a hash.
+        """Verify a password against a hash.
 
         Args:
             plain_password: Plain text password to verify
@@ -113,6 +110,7 @@ class SecurityManager:
 
         Returns:
             True if password matches, False otherwise
+
         """
         return self.pwd_context.verify(plain_password, hashed_password)
 
@@ -121,8 +119,7 @@ class SecurityManager:
         data: dict[str, Any],
         expires_delta: timedelta | None = None,
     ) -> str:
-        """
-        Create a JWT access token.
+        """Create a JWT access token.
 
         Args:
             data: Token payload data
@@ -130,6 +127,7 @@ class SecurityManager:
 
         Returns:
             Encoded JWT token string
+
         """
         to_encode = data.copy()
         expire = datetime.now(timezone.utc) + (
@@ -139,14 +137,14 @@ class SecurityManager:
         return jwt.encode(to_encode, self.secret_key, algorithm=self.algorithm)
 
     def decode_token(self, token: str) -> TokenData | None:
-        """
-        Decode and validate a JWT token.
+        """Decode and validate a JWT token.
 
         Args:
             token: JWT token string
 
         Returns:
             TokenData if valid, None otherwise
+
         """
         try:
             payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
@@ -161,69 +159,68 @@ class SecurityManager:
             return None
 
     def encrypt_data(self, data: str | bytes) -> bytes:
-        """
-        Encrypt sensitive data using Fernet (AES-128-CBC).
+        """Encrypt sensitive data using Fernet (AES-128-CBC).
 
         Args:
             data: Data to encrypt (string or bytes)
 
         Returns:
             Encrypted data as bytes
+
         """
         if isinstance(data, str):
             data = data.encode()
         return self.fernet.encrypt(data)
 
     def decrypt_data(self, encrypted_data: bytes) -> bytes:
-        """
-        Decrypt encrypted data.
+        """Decrypt encrypted data.
 
         Args:
             encrypted_data: Data encrypted with encrypt_data()
 
         Returns:
             Decrypted data as bytes
+
         """
         return self.fernet.decrypt(encrypted_data)
 
     def generate_secure_token(self, length: int = 32) -> str:
-        """
-        Generate a cryptographically secure random token.
+        """Generate a cryptographically secure random token.
 
         Args:
             length: Token length in bytes
 
         Returns:
             Hex-encoded random token
+
         """
         return secrets.token_hex(length)
 
     def generate_api_key(self) -> tuple[str, str]:
-        """
-        Generate an API key pair (key_id, key_secret).
+        """Generate an API key pair (key_id, key_secret).
 
         Returns:
             Tuple of (key_id, key_secret)
+
         """
         key_id = f"hv_{secrets.token_hex(8)}"
         key_secret = secrets.token_urlsafe(32)
         return key_id, key_secret
 
     def hash_api_key(self, api_key: str) -> str:
-        """
-        Hash an API key for secure storage.
+        """Hash an API key for secure storage.
 
         Args:
             api_key: API key to hash
 
         Returns:
             SHA-256 hash of the API key
+
         """
         return hashlib.sha256(api_key.encode()).hexdigest()
 
     def verify_api_key(self, api_key: str, stored_hash: str) -> bool:
-        """
-        Verify an API key against a stored hash.
+        """Verify an API key against a stored hash.
 
         Args:
             api_key: API key to verify
@@ -231,6 +228,7 @@ class SecurityManager:
 
         Returns:
             True if key matches, False otherwise
+
         """
         return hmac.compare_digest(self.hash_api_key(api_key), stored_hash)
 
@@ -246,8 +244,7 @@ class SecurityManager:
         success: bool = True,
         error_message: str | None = None,
     ) -> AuditLogEntry:
-        """
-        Create an audit log entry.
+        """Create an audit log entry.
 
         Args:
             user_id: ID of the user performing the action
@@ -262,6 +259,7 @@ class SecurityManager:
 
         Returns:
             AuditLogEntry object
+
         """
         return AuditLogEntry(
             timestamp=datetime.now(timezone.utc),
@@ -318,12 +316,12 @@ class PermissionChecker:
     }
 
     def __init__(self, user_roles: list[str], user_permissions: list[str] | None = None):
-        """
-        Initialize permission checker.
+        """Initialize permission checker.
 
         Args:
             user_roles: List of user roles
             user_permissions: Optional explicit permissions (override role-based)
+
         """
         self.user_roles = user_roles
         self.user_permissions = user_permissions or self._get_permissions_for_roles(user_roles)
@@ -337,14 +335,14 @@ class PermissionChecker:
         return list(permissions)
 
     def has_permission(self, required_permission: str) -> bool:
-        """
-        Check if user has a specific permission.
+        """Check if user has a specific permission.
 
         Args:
             required_permission: Permission to check (e.g., "view:studies")
 
         Returns:
             True if user has permission, False otherwise
+
         """
         for perm in self.user_permissions:
             # Check for wildcard permissions

@@ -1,13 +1,13 @@
-"""
-AI Model Registry for Horalix View.
+"""AI Model Registry for Horalix View.
 
 Manages registration, loading, and lifecycle of AI models.
 Provides real inference - NO PLACEHOLDERS OR SIMULATED OUTPUTS.
 """
 
 import asyncio
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from app.core.config import AIModelSettings
 from app.core.logging import get_logger
@@ -30,8 +30,7 @@ class ModelNotAvailableError(Exception):
 
 
 class ModelRegistry:
-    """
-    Central registry for AI models.
+    """Central registry for AI models.
 
     Manages model lifecycle including:
     - Registration of model classes
@@ -44,11 +43,11 @@ class ModelRegistry:
     """
 
     def __init__(self, settings: AIModelSettings):
-        """
-        Initialize model registry.
+        """Initialize model registry.
 
         Args:
             settings: AI model configuration settings
+
         """
         self.settings = settings
         self.models_dir = Path(settings.models_dir)
@@ -121,14 +120,14 @@ class ModelRegistry:
         metadata: ModelMetadata,
         enabled: bool = True,
     ) -> None:
-        """
-        Register a model factory.
+        """Register a model factory.
 
         Args:
             model_name: Unique identifier for the model
             factory: Factory function that creates model instance
             metadata: Model metadata
             enabled: Whether this model is enabled
+
         """
         if model_name in self._model_factories:
             logger.warning(f"Overwriting registered model: {model_name}")
@@ -166,16 +165,12 @@ class ModelRegistry:
 
     def get_models_by_type(self, model_type: ModelType) -> list[ModelMetadata]:
         """Get all models of a specific type."""
-        return [
-            meta for meta in self._model_metadata.values()
-            if meta.model_type == model_type
-        ]
+        return [meta for meta in self._model_metadata.values() if meta.model_type == model_type]
 
     def get_models_for_modality(self, modality: str) -> list[ModelMetadata]:
         """Get all models supporting a specific modality."""
         return [
-            meta for meta in self._model_metadata.values()
-            if modality in meta.supported_modalities
+            meta for meta in self._model_metadata.values() if modality in meta.supported_modalities
         ]
 
     def is_model_available(self, model_name: str) -> bool:
@@ -207,8 +202,7 @@ class ModelRegistry:
         model_name: str,
         device: str | None = None,
     ) -> BaseAIModel:
-        """
-        Load a model into memory.
+        """Load a model into memory.
 
         Args:
             model_name: Model identifier
@@ -221,6 +215,7 @@ class ModelRegistry:
             KeyError: If model not registered
             ModelNotAvailableError: If weights not found
             RuntimeError: If loading fails
+
         """
         if model_name in self._loaded_models:
             return self._loaded_models[model_name]
@@ -229,9 +224,7 @@ class ModelRegistry:
             raise KeyError(f"Model not registered: {model_name}")
 
         if not self._model_enabled.get(model_name, False):
-            raise RuntimeError(
-                f"Model '{model_name}' is disabled. Enable it in settings."
-            )
+            raise RuntimeError(f"Model '{model_name}' is disabled. Enable it in settings.")
 
         weights_path = self._get_weights_path(model_name)
         device = device or self.settings.device
@@ -259,7 +252,7 @@ class ModelRegistry:
 
             return model
 
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             # Re-raise with helpful instructions
             logger.error(
                 f"Model weights not found: {model_name}",
@@ -311,8 +304,7 @@ class ModelRegistry:
         auto_load: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """
-        Run inference with a model.
+        """Run inference with a model.
 
         Args:
             model_name: Model identifier
@@ -326,6 +318,7 @@ class ModelRegistry:
         Raises:
             RuntimeError: If model not available
             FileNotFoundError: If weights not found
+
         """
         model = self._loaded_models.get(model_name)
 
@@ -348,8 +341,7 @@ class ModelRegistry:
         auto_load: bool = True,
         **kwargs: Any,
     ) -> Any:
-        """
-        Run interactive segmentation with prompts.
+        """Run interactive segmentation with prompts.
 
         Args:
             model_name: Model identifier (must be interactive segmentation model)
@@ -362,6 +354,7 @@ class ModelRegistry:
 
         Returns:
             Segmentation result with mask
+
         """
         from app.services.ai.base import InteractiveSegmentationModel
 
@@ -391,9 +384,9 @@ class ModelRegistry:
     async def _register_real_models(self) -> None:
         """Register real model implementations."""
         from app.services.ai.models import (
-            YoloV8Detector,
-            MonaiSegmentationModel,
             MedSAMModel,
+            MonaiSegmentationModel,
+            YoloV8Detector,
         )
 
         # YOLOv8 Detection

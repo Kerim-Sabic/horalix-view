@@ -111,8 +111,8 @@ class MedSAMModel(InteractiveSegmentationModel):
             return "NOT_FOUND"
 
         sha256 = hashlib.sha256()
-        with open(self.checkpoint_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
+        with open(self.checkpoint_path, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
                 sha256.update(chunk)
         return sha256.hexdigest()[:16]
 
@@ -206,6 +206,7 @@ class MedSAMModel(InteractiveSegmentationModel):
 
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:
@@ -227,9 +228,7 @@ class MedSAMModel(InteractiveSegmentationModel):
             Dictionary with embedding info for use with predict_with_prompts
         """
         if not self._loaded or self._model is None:
-            raise RuntimeError(
-                "Model not loaded. Call load() first or check checkpoint path."
-            )
+            raise RuntimeError("Model not loaded. Call load() first or check checkpoint path.")
 
         # Preprocess image
         processed_image = await self._prepare_image(image)
@@ -289,14 +288,10 @@ class MedSAMModel(InteractiveSegmentationModel):
             ValueError: If no prompts provided
         """
         if not self._loaded or self._model is None:
-            raise RuntimeError(
-                "Model not loaded. Call load() first or check checkpoint path."
-            )
+            raise RuntimeError("Model not loaded. Call load() first or check checkpoint path.")
 
         if point_coords is None and box is None and mask_input is None:
-            raise ValueError(
-                "At least one prompt type required: point_coords, box, or mask_input"
-            )
+            raise ValueError("At least one prompt type required: point_coords, box, or mask_input")
 
         import torch
 
@@ -447,6 +442,4 @@ class MedSAMModel(InteractiveSegmentationModel):
         super().validate_input(image)
 
         if image.ndim not in [2, 3]:
-            raise ValueError(
-                f"Expected 2D (H,W) or 3D (H,W,C) image, got shape {image.shape}"
-            )
+            raise ValueError(f"Expected 2D (H,W) or 3D (H,W,C) image, got shape {image.shape}")

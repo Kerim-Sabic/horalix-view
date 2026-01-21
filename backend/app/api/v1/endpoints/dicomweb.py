@@ -1,5 +1,4 @@
-"""
-DICOMweb endpoints for Horalix View.
+"""DICOMweb endpoints for Horalix View.
 
 Implements WADO-RS, QIDO-RS, and STOW-RS services for interoperability
 with PACS and other DICOM systems.
@@ -7,7 +6,7 @@ with PACS and other DICOM systems.
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -47,8 +46,7 @@ async def qido_search_studies(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
-    """
-    QIDO-RS: Search for studies.
+    """QIDO-RS: Search for studies.
 
     Query parameters use DICOM tag format (e.g., 00100020 for Patient ID).
     Supports wildcards (*) in search values.
@@ -78,9 +76,7 @@ async def qido_search_series(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
-    """
-    QIDO-RS: Search for series within a study.
-    """
+    """QIDO-RS: Search for series within a study."""
     return [
         {
             "00080060": {"vr": "CS", "Value": ["CT"]},
@@ -103,20 +99,20 @@ async def qido_search_instances(
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
 ) -> list[dict]:
-    """
-    QIDO-RS: Search for instances within a series.
-    """
+    """QIDO-RS: Search for instances within a series."""
     instances = []
     for i in range(min(10, limit)):
-        instances.append({
-            "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.2"]},
-            "00080018": {"vr": "UI", "Value": [f"{series_uid}.{i + 1}"]},
-            "0020000D": {"vr": "UI", "Value": [study_uid]},
-            "0020000E": {"vr": "UI", "Value": [series_uid]},
-            "00200013": {"vr": "IS", "Value": [i + 1]},
-            "00280010": {"vr": "US", "Value": [512]},
-            "00280011": {"vr": "US", "Value": [512]},
-        })
+        instances.append(
+            {
+                "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.2"]},
+                "00080018": {"vr": "UI", "Value": [f"{series_uid}.{i + 1}"]},
+                "0020000D": {"vr": "UI", "Value": [study_uid]},
+                "0020000E": {"vr": "UI", "Value": [series_uid]},
+                "00200013": {"vr": "IS", "Value": [i + 1]},
+                "00280010": {"vr": "US", "Value": [512]},
+                "00280011": {"vr": "US", "Value": [512]},
+            }
+        )
     return instances
 
 
@@ -131,9 +127,7 @@ async def wado_retrieve_study(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     accept: str | None = Query(None, description="Requested media type"),
 ) -> Response:
-    """
-    WADO-RS: Retrieve entire study as multipart DICOM.
-    """
+    """WADO-RS: Retrieve entire study as multipart DICOM."""
     # In production, stream actual DICOM data
     return Response(
         content=b"DICOM study data placeholder",
@@ -147,9 +141,7 @@ async def wado_retrieve_series(
     series_uid: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Response:
-    """
-    WADO-RS: Retrieve entire series as multipart DICOM.
-    """
+    """WADO-RS: Retrieve entire series as multipart DICOM."""
     return Response(
         content=b"DICOM series data placeholder",
         media_type="multipart/related; type=application/dicom",
@@ -163,16 +155,16 @@ async def wado_retrieve_instance(
     instance_uid: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> Response:
-    """
-    WADO-RS: Retrieve single instance as DICOM.
-    """
+    """WADO-RS: Retrieve single instance as DICOM."""
     return Response(
         content=b"DICOM instance data placeholder",
         media_type="application/dicom",
     )
 
 
-@router.get("/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_numbers}")
+@router.get(
+    "/studies/{study_uid}/series/{series_uid}/instances/{instance_uid}/frames/{frame_numbers}"
+)
 async def wado_retrieve_frames(
     study_uid: str,
     series_uid: str,
@@ -181,8 +173,7 @@ async def wado_retrieve_frames(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     accept: str | None = Query(None),
 ) -> Response:
-    """
-    WADO-RS: Retrieve specific frames from a multi-frame instance.
+    """WADO-RS: Retrieve specific frames from a multi-frame instance.
 
     frame_numbers: Comma-separated frame numbers (1-indexed)
     """
@@ -202,12 +193,12 @@ async def wado_retrieve_rendered(
     window: str | None = Query(None, description="Window center,width"),
     viewport: str | None = Query(None, description="width,height"),
 ) -> Response:
-    """
-    WADO-RS: Retrieve rendered image.
+    """WADO-RS: Retrieve rendered image.
 
     Returns the instance rendered as a consumer image format (PNG, JPEG, etc.).
     """
     from io import BytesIO
+
     import numpy as np
     from PIL import Image
 
@@ -247,9 +238,7 @@ async def wado_retrieve_metadata(
     instance_uid: str,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> list[dict]:
-    """
-    WADO-RS: Retrieve instance metadata as DICOM JSON.
-    """
+    """WADO-RS: Retrieve instance metadata as DICOM JSON."""
     return [
         {
             "00080016": {"vr": "UI", "Value": ["1.2.840.10008.5.1.4.1.1.2"]},
@@ -275,8 +264,7 @@ async def stow_store_instances(
     request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
 ) -> dict:
-    """
-    STOW-RS: Store DICOM instances.
+    """STOW-RS: Store DICOM instances.
 
     Accepts multipart/related request with DICOM instances.
     Returns store results for each instance.
@@ -313,9 +301,7 @@ async def stow_store_to_study(
     request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
 ) -> dict:
-    """
-    STOW-RS: Store instances to a specific study.
-    """
+    """STOW-RS: Store instances to a specific study."""
     return {
         "00081190": {"vr": "UR", "Value": [f"/studies/{study_uid}"]},
         "00081199": {"vr": "SQ", "Value": []},
@@ -333,10 +319,9 @@ async def wado_study_thumbnail(
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
     viewport: str = Query("128,128"),
 ) -> Response:
-    """
-    WADO-RS: Get study thumbnail.
-    """
+    """WADO-RS: Get study thumbnail."""
     from io import BytesIO
+
     import numpy as np
     from PIL import Image
 
@@ -362,8 +347,6 @@ async def wado_delete_study(
     study_uid: str,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
 ) -> None:
-    """
-    WADO-RS: Delete a study (non-standard extension).
-    """
+    """WADO-RS: Delete a study (non-standard extension)."""
     # In production, delete the study
-    return None
+    return
