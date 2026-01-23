@@ -3,7 +3,7 @@
  */
 
 import React, { Suspense, lazy } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Box, CircularProgress } from '@mui/material';
 
 import { useAuth } from './contexts/AuthContext';
@@ -37,14 +37,15 @@ const PageLoader: React.FC = () => (
 );
 
 const App: React.FC = () => {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user } = useAuth();
+  const location = useLocation();
 
   if (isLoading) {
     return <PageLoader />;
   }
 
   return (
-    <ErrorBoundary>
+    <ErrorBoundary route={location.pathname} userId={user?.id || null}>
       <Suspense fallback={<PageLoader />}>
         <Routes>
           {/* Public routes */}

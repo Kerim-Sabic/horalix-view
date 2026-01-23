@@ -20,7 +20,7 @@ curl http://localhost:8000/health
 docker compose exec backend python -c "from app.core.config import settings; print(settings.database_url)"
 
 # Run doctor script
-./scripts/doctor.sh --check-env
+./scripts/doctor.sh
 ```
 
 ---
@@ -198,6 +198,97 @@ setUser(userData);
 **Symptom:** Valid credentials rejected.
 
 **Cause:** Default users may not be created, or password encoding issue.
+
+---
+
+## Upload Issues
+
+### "413 Request Entity Too Large"
+
+**Symptom:** Upload fails with HTTP 413.
+
+**Cause:** Reverse proxy or backend size limits.
+
+**Fix:**
+1. Set `DICOM_MAX_UPLOAD_SIZE_GB` in `.env` (default 10).
+2. Confirm `client_max_body_size 10g` in `docker/nginx.conf` and `frontend/docker/nginx.conf`.
+3. Restart containers after config changes.
+
+### Upload timeouts or stalled progress
+
+**Symptom:** Upload stops or times out for large studies.
+
+**Cause:** Proxy timeouts or request buffering.
+
+**Fix:**
+1. Ensure `proxy_read_timeout 3600s` and `proxy_request_buffering off` in Nginx.
+2. Retry upload and verify backend logs for chunked streaming.
+
+---
+
+## Viewer Issues
+
+### Viewer shows error overlay or blank image
+
+**Symptom:** Viewer renders but image fails to display.
+
+**Cause:** Unsupported transfer syntax or missing pixel data decode.
+
+**Fix:**
+1. Check backend logs for transfer syntax errors.
+2. Ensure the backend image includes `pylibjpeg` plus plugins (`pylibjpeg-libjpeg`, `pylibjpeg-openjpeg`, `pylibjpeg-rle`).
+3. Rebuild the backend image and re-upload the study after dependencies are installed.
+
+### Window/Level or zoom not responding
+
+**Symptom:** Dragging tools has no effect.
+
+**Cause:** Tool selection not active or tool focus lost.
+
+**Fix:**
+1. Select the tool in the top toolbar.
+2. Click the viewport once and retry drag gestures.
+
+---
+
+## AI Models Issues
+
+### AI models show missing weights
+
+**Symptom:** AI Models page shows models as unavailable or missing weights.
+
+**Cause:** Model weights not found in the configured models directory.
+
+**Fix:**
+1. Verify `AI_MODELS_DIR` (default `./models`).
+2. Place model weights at the expected path.
+3. Restart backend to reload registry.
+
+### "External command not configured"
+
+**Symptom:** AI Models page shows availability errors like "External command not configured".
+
+**Cause:** External model command (EchoNet Measurements, Prov-GigaPath, HoVer-Net) not set.
+
+**Fix:**
+1. Set `AI_ECHONET_MEASUREMENTS_CMD`, `AI_GIGAPATH_CMD`, or `AI_HOVERNET_CMD` in `.env`.
+2. Ensure the command writes a JSON file to `$OUTPUT_JSON`.
+3. Restart the backend to reload configuration.
+
+---
+
+## Error Boundary / Client Errors
+
+### Unexpected UI crash or fallback screen
+
+**Symptom:** App shows fallback error UI instead of page.
+
+**Cause:** Unhandled frontend error or malformed API response.
+
+**Fix:**
+1. Check backend logs for `/api/v1/health/client-error` entries.
+2. Inspect the browser console for the originating error.
+3. Verify API response shapes for the affected endpoint.
 
 **Fix:**
 ```bash
@@ -465,7 +556,7 @@ import pydicom
 ds = pydicom.dcmread('file.dcm')
 print(f'Transfer Syntax: {ds.file_meta.TransferSyntaxUID}')"
 ```
-3. Ensure Cornerstone codecs are loaded for compressed transfer syntaxes
+3. Ensure the backend has `pylibjpeg` plugins installed for compressed transfer syntaxes
 
 ### Study not appearing in list after upload
 

@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -24,6 +24,7 @@ router = APIRouter()
 
 # OAuth2 scheme
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
+oauth2_scheme_optional = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token", auto_error=False)
 
 # Security manager instance
 security = SecurityManager(
@@ -74,19 +75,19 @@ class PasswordChange(BaseModel):
     new_password: str = Field(..., min_length=8)
 
 
-async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
-    db: Annotated[AsyncSession, Depends(get_db)],
+async def _resolve_user_from_token(
+    token: str | None,
+    db: AsyncSession,
 ) -> TokenData:
-    """Validate JWT token and return current user.
-
-    Raises HTTPException if token is invalid or expired.
-    """
+    """Validate JWT token and return current user."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    if not token:
+        raise credentials_exception
 
     token_data = security.decode_token(token)
     if not token_data:
@@ -103,6 +104,27 @@ async def get_current_user(
     return token_data
 
 
+async def get_current_user(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TokenData:
+    """Validate JWT token and return current user.
+
+    Raises HTTPException if token is invalid or expired.
+    """
+    return await _resolve_user_from_token(token, db)
+
+
+async def get_current_user_with_token(
+    token_header: Annotated[str | None, Depends(oauth2_scheme_optional)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    token_query: Annotated[str | None, Query(alias="token")] = None,
+) -> TokenData:
+    """Validate JWT token from header or query parameter."""
+    token = token_query or token_header
+    return await _resolve_user_from_token(token, db)
+
+
 async def get_current_active_user(
     current_user: Annotated[TokenData, Depends(get_current_user)],
 ) -> TokenData:
@@ -110,6 +132,13 @@ async def get_current_active_user(
 
     Returns the current user token data if valid.
     """
+    return current_user
+
+
+async def get_current_active_user_from_token(
+    current_user: Annotated[TokenData, Depends(get_current_user_with_token)],
+) -> TokenData:
+    """Get current active user from header or query token."""
     return current_user
 
 

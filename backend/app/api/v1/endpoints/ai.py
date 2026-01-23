@@ -6,6 +6,7 @@ If a model is not available, endpoints return clear error messages.
 """
 
 import time
+from io import BytesIO
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,7 +20,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.endpoints.auth import get_current_active_user, require_roles
+from app.api.v1.endpoints.auth import (
+    get_current_active_user,
+    get_current_active_user_from_token,
+    require_roles,
+)
 from app.core.config import get_settings
 from app.core.logging import audit_logger, get_logger
 from app.core.security import TokenData
@@ -66,19 +71,49 @@ class InferenceJobResponse(BaseModel):
         from_attributes = True
 
 
+class ModelDetails(BaseModel):
+    """Stable AI model details for UI consumption."""
+
+    model_type: str = ""
+    version: str = ""
+    description: str = ""
+    supported_modalities: list[str] = Field(default_factory=list)
+    performance_metrics: dict[str, float] = Field(default_factory=dict)
+    reference: str | None = None
+    license: str | None = None
+    class_names: list[str] = Field(default_factory=list)
+    input_size: list[int] = Field(default_factory=list)
+    output_channels: int | None = None
+
+
+class ModelRequirements(BaseModel):
+    """Runtime requirements and configuration flags."""
+
+    enabled: bool = False
+    device: str | None = None
+    weights_path: str | None = None
+
+
+class ModelWeights(BaseModel):
+    """Weights information (no PHI)."""
+
+    path: str | None = None
+    exists: bool = False
+    size_bytes: int | None = None
+    sha256: str | None = None
+
+
 class ModelInfo(BaseModel):
-    """AI model information."""
+    """Stable AI model info schema."""
 
     name: str
-    version: str
-    model_type: str
-    description: str
-    supported_modalities: list[str]
-    performance_metrics: dict[str, float] = {}
-    reference: str | None = None
     available: bool = False
-    enabled: bool = False
-    weights_path: str | None = None
+    status: str = "unknown"
+    details: ModelDetails = Field(default_factory=ModelDetails)
+    requirements: ModelRequirements = Field(default_factory=ModelRequirements)
+    weights: ModelWeights = Field(default_factory=ModelWeights)
+    last_checked: datetime
+    errors: list[str] = Field(default_factory=list)
 
 
 class ModelAvailabilityResponse(BaseModel):
@@ -160,7 +195,7 @@ async def list_models(
     availability = model_registry.get_model_availability()
     registered_metadata = model_registry.get_registered_models()
 
-    models = []
+    models: list[ModelInfo] = []
     for meta in registered_metadata:
         avail = availability.get(meta.name, {})
 
@@ -172,18 +207,66 @@ async def list_models(
         if modality and modality not in meta.supported_modalities:
             continue
 
+        enabled = bool(avail.get("enabled", False))
+        weights_path = avail.get("weights_path")
+        weights_available = bool(avail.get("weights_available", False))
+        loaded = bool(avail.get("loaded", False))
+        errors: list[str] = []
+        availability_errors = avail.get("availability_errors") or []
+
+        if availability_errors:
+            errors.extend([str(err) for err in availability_errors])
+        if not enabled:
+            errors.append("Model disabled in configuration")
+        if enabled and not weights_available:
+            if weights_path:
+                errors.append(f"Weights not found at {weights_path}")
+            else:
+                errors.append("Weights not found")
+
+        status = "unknown"
+        if not enabled:
+            status = "disabled"
+        elif weights_available:
+            status = "loaded" if loaded else "available"
+        else:
+            status = "missing_weights"
+
+        weights_exists = False
+        if weights_path:
+            try:
+                weights_exists = Path(weights_path).exists()
+            except Exception:
+                weights_exists = False
+
         models.append(
             ModelInfo(
                 name=meta.name,
-                version=meta.version,
-                model_type=meta.model_type.value,
-                description=meta.description,
-                supported_modalities=meta.supported_modalities,
-                performance_metrics=meta.performance_metrics or {},
-                reference=meta.reference,
-                available=avail.get("weights_available", False),
-                enabled=avail.get("enabled", False),
-                weights_path=avail.get("weights_path"),
+                available=weights_available and enabled,
+                status=status,
+                details=ModelDetails(
+                    model_type=meta.model_type.value,
+                    version=meta.version,
+                    description=meta.description,
+                    supported_modalities=meta.supported_modalities or [],
+                    performance_metrics=meta.performance_metrics or {},
+                    reference=meta.reference,
+                    license=meta.license,
+                    class_names=meta.class_names or [],
+                    input_size=list(meta.input_size) if meta.input_size else [],
+                    output_channels=meta.output_channels,
+                ),
+                requirements=ModelRequirements(
+                    enabled=enabled,
+                    device=settings.ai.device,
+                    weights_path=weights_path,
+                ),
+                weights=ModelWeights(
+                    path=weights_path,
+                    exists=weights_exists,
+                ),
+                last_checked=datetime.now(timezone.utc),
+                errors=errors,
             )
         )
 
@@ -222,19 +305,134 @@ async def get_model_info(
         )
 
     availability = model_registry.get_model_availability().get(model_name, {})
+    enabled = bool(availability.get("enabled", False))
+    weights_path = availability.get("weights_path")
+    weights_available = bool(availability.get("weights_available", False))
+    loaded = bool(availability.get("loaded", False))
+    errors: list[str] = []
+    availability_errors = availability.get("availability_errors") or []
+
+    if availability_errors:
+        errors.extend([str(err) for err in availability_errors])
+    if not enabled:
+        errors.append("Model disabled in configuration")
+    if enabled and not weights_available:
+        if weights_path:
+            errors.append(f"Weights not found at {weights_path}")
+        else:
+            errors.append("Weights not found")
+
+    status = "unknown"
+    if not enabled:
+        status = "disabled"
+    elif weights_available:
+        status = "loaded" if loaded else "available"
+    else:
+        status = "missing_weights"
+
+    weights_exists = False
+    if weights_path:
+        try:
+            weights_exists = Path(weights_path).exists()
+        except Exception:
+            weights_exists = False
 
     return ModelInfo(
         name=metadata.name,
-        version=metadata.version,
-        model_type=metadata.model_type.value,
-        description=metadata.description,
-        supported_modalities=metadata.supported_modalities,
-        performance_metrics=metadata.performance_metrics or {},
-        reference=metadata.reference,
-        available=availability.get("weights_available", False),
-        enabled=availability.get("enabled", False),
-        weights_path=availability.get("weights_path"),
+        available=weights_available and enabled,
+        status=status,
+        details=ModelDetails(
+            model_type=metadata.model_type.value,
+            version=metadata.version,
+            description=metadata.description,
+            supported_modalities=metadata.supported_modalities or [],
+            performance_metrics=metadata.performance_metrics or {},
+            reference=metadata.reference,
+            license=metadata.license,
+            class_names=metadata.class_names or [],
+            input_size=list(metadata.input_size) if metadata.input_size else [],
+            output_channels=metadata.output_channels,
+        ),
+        requirements=ModelRequirements(
+            enabled=enabled,
+            device=settings.ai.device,
+            weights_path=weights_path,
+        ),
+        weights=ModelWeights(
+            path=weights_path,
+            exists=weights_exists,
+        ),
+        last_checked=datetime.now(timezone.utc),
+        errors=errors,
     )
+
+
+@router.post("/models/{model_name}/load")
+async def load_model(
+    model_name: str,
+    http_request: Request,
+    current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+) -> dict:
+    """Load a model into memory (admin only)."""
+    model_registry = http_request.app.state.model_registry
+
+    try:
+        await model_registry.load_model(model_name)
+    except KeyError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model not found: {model_name}",
+        )
+    except FileNotFoundError:
+        availability = model_registry.get_model_availability().get(model_name, {})
+        weights_path = availability.get("weights_path", "unknown")
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=f"Weights not found at {weights_path}",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to load model: {exc}",
+        ) from exc
+
+    audit_logger.log_configuration_change(
+        user_id=current_user.user_id,
+        setting_name=f"ai_model_{model_name}",
+        old_value="unloaded",
+        new_value="loaded",
+        component="ai",
+    )
+
+    return {"name": model_name, "status": "loaded"}
+
+
+@router.post("/models/{model_name}/unload")
+async def unload_model(
+    model_name: str,
+    http_request: Request,
+    current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+) -> dict:
+    """Unload a model from memory (admin only)."""
+    model_registry = http_request.app.state.model_registry
+
+    try:
+        unloaded = await model_registry.unload_model(model_name)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to unload model: {exc}",
+        ) from exc
+
+    audit_logger.log_configuration_change(
+        user_id=current_user.user_id,
+        setting_name=f"ai_model_{model_name}",
+        old_value="loaded" if unloaded else "not_loaded",
+        new_value="unloaded",
+        component="ai",
+    )
+
+    return {"name": model_name, "status": "unloaded" if unloaded else "not_loaded"}
 
 
 @router.post("/infer", response_model=InferenceJobResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -271,11 +469,16 @@ async def submit_inference(
     if not model_registry.is_model_available(request.model_type):
         availability = model_registry.get_model_availability().get(request.model_type, {})
         weights_path = availability.get("weights_path", "unknown")
+        availability_errors = availability.get("availability_errors") or []
+        extra_hint = ""
+        if availability_errors:
+            extra_hint = "\n".join([f"- {err}" for err in availability_errors])
         raise HTTPException(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
             detail=(
                 f"Model '{request.model_type}' weights not available.\n"
                 f"Expected weights at: {weights_path}\n\n"
+                f"{extra_hint}\n\n"
                 f"To enable this model:\n"
                 f"1. Download or train model weights\n"
                 f"2. Place weights at the path above\n"
@@ -580,7 +783,7 @@ async def interactive_medsam(
 
     # Save mask result
     mask = result.output.mask
-    results_dir = Path(settings.ai.models_dir).parent / "results" / study_uid
+    results_dir = Path(settings.ai.results_dir) / study_uid
     results_dir.mkdir(parents=True, exist_ok=True)
 
     mask_filename = f"medsam_interactive_{instance_uid}_{uuid4().hex[:8]}.npz"
@@ -624,6 +827,8 @@ async def get_study_results(
         "segmentations": [],
         "detections": [],
         "classifications": [],
+        "pathology": [],
+        "cardiac": [],
         "jobs": [],
     }
 
@@ -646,6 +851,10 @@ async def get_study_results(
                 results["detections"].append(job.results)
             elif job.task_type == TaskType.CLASSIFICATION:
                 results["classifications"].append(job.results)
+            elif job.task_type == TaskType.PATHOLOGY:
+                results["pathology"].append(job.results)
+            elif job.task_type == TaskType.CARDIAC:
+                results["cardiac"].append(job.results)
 
     return results
 
@@ -654,10 +863,10 @@ async def get_study_results(
 async def get_mask_file(
     study_uid: str,
     filename: str,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
 ) -> Response:
     """Download a mask result file."""
-    results_dir = Path(settings.ai.models_dir).parent / "results" / study_uid
+    results_dir = Path(settings.ai.results_dir) / study_uid
     file_path = results_dir / filename
 
     if not file_path.exists():
@@ -681,6 +890,73 @@ async def get_mask_file(
         filename=filename,
         media_type=media_type,
     )
+
+
+@router.get("/results/{study_uid}/masks/{filename}/render")
+async def render_mask_overlay(
+    study_uid: str,
+    filename: str,
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
+    slice_index: int = Query(0, ge=0, alias="slice"),
+    class_id: int | None = Query(None, ge=0),
+) -> Response:
+    """Render a segmentation mask slice as a PNG overlay."""
+    from PIL import Image
+
+    results_dir = Path(settings.ai.results_dir) / study_uid
+    file_path = results_dir / filename
+
+    if file_path.parent != results_dir or not file_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Result file not found: {filename}",
+        )
+
+    if not filename.endswith(".npz"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mask rendering supported for .npz files only",
+        )
+
+    data = np.load(file_path)
+    if "mask" not in data:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Mask file missing mask array",
+        )
+
+    mask = data["mask"]
+    if mask.ndim == 3:
+        if slice_index >= mask.shape[0]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Slice index out of range (0-{mask.shape[0] - 1})",
+            )
+        mask_slice = mask[slice_index]
+    elif mask.ndim == 2:
+        mask_slice = mask
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported mask dimensions",
+        )
+
+    if class_id is None:
+        binary_mask = mask_slice > 0
+    else:
+        binary_mask = mask_slice == class_id
+
+    height, width = binary_mask.shape
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    rgba[..., 1] = 200  # green
+    rgba[..., 3] = np.where(binary_mask, 140, 0).astype(np.uint8)
+
+    image = Image.fromarray(rgba, mode="RGBA")
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    buffer.seek(0)
+
+    return Response(content=buffer.read(), media_type="image/png")
 
 
 async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> None:
@@ -759,6 +1035,18 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
                 results, result_files = await _run_segmentation(
                     job, actual_model_name, volume, loader, model_registry
                 )
+            elif job.task_type == TaskType.CLASSIFICATION:
+                results, result_files = await _run_classification(
+                    job, actual_model_name, volume, loader, model_registry
+                )
+            elif job.task_type == TaskType.PATHOLOGY:
+                results, result_files = await _run_pathology(
+                    job, actual_model_name, volume, model_registry
+                )
+            elif job.task_type == TaskType.CARDIAC:
+                results, result_files = await _run_cardiac(
+                    job, actual_model_name, volume, model_registry
+                )
             else:
                 raise ValueError(f"Task type not yet implemented: {job.task_type}")
 
@@ -818,9 +1106,11 @@ async def _run_detection(
 ) -> tuple[dict, dict]:
     """Run detection inference."""
     # Prepare image for detection (2D)
+    slice_index = 0
     if volume.is_3d:
         # For 3D volumes, run detection on middle slice or all slices
         middle_idx = volume.pixel_data.shape[0] // 2
+        slice_index = middle_idx
         image = volume.pixel_data[middle_idx]
     else:
         image = volume.pixel_data
@@ -853,6 +1143,7 @@ async def _run_detection(
                 "width": float(box[2] - box[0]),
                 "height": float(box[3] - box[1]),
                 "series_uid": job.series_instance_uid,
+                "slice_index": slice_index,
             }
         )
 
@@ -863,6 +1154,8 @@ async def _run_detection(
         "model_version": result.model_version,
         "inference_time_ms": result.inference_time_ms,
         "input_shape": list(image.shape),
+        "series_uid": job.series_instance_uid,
+        "slice_index": slice_index,
     }
 
     return results, {}
@@ -894,7 +1187,7 @@ async def _run_segmentation(
     )
 
     # Save mask to file
-    results_dir = Path(settings.ai.models_dir).parent / "results" / job.study_instance_uid
+    results_dir = Path(settings.ai.results_dir) / job.study_instance_uid
     results_dir.mkdir(parents=True, exist_ok=True)
 
     mask_filename = f"segmentation_{model_name}_{job.job_id[:8]}.npz"
@@ -940,10 +1233,145 @@ async def _run_segmentation(
         "model_version": result.model_version,
         "inference_time_ms": result.inference_time_ms,
         "input_shape": list(image_prepared.shape),
+        "series_uid": job.series_instance_uid,
     }
 
     result_files = {
         "mask": f"/api/v1/ai/results/{job.study_instance_uid}/masks/{mask_filename}",
+    }
+
+    return results, result_files
+
+
+def _select_representative_slice(volume: Any) -> tuple[np.ndarray, int | None]:
+    """Pick a representative 2D slice/frame from a volume or cine stack."""
+    data = volume.pixel_data
+    if data.ndim == 2:
+        return data, None
+    if data.ndim >= 3:
+        index = data.shape[0] // 2
+        return data[index], index
+    return data, None
+
+
+def _extract_result_payload(result: Any) -> tuple[dict, dict]:
+    """Normalize model output to a JSON-friendly payload and result file map."""
+    result_files: dict[str, str] = {}
+    if isinstance(result.metadata, dict):
+        result_files = result.metadata.get("result_files", {}) or {}
+
+    output = result.output
+    if hasattr(output, "predicted_class"):
+        results_payload = {
+            "predicted_class": output.predicted_class,
+            "predicted_class_id": int(output.predicted_class_id),
+            "confidence": float(output.confidence),
+            "probabilities": output.probabilities,
+        }
+        if output.features is not None:
+            results_payload["features_shape"] = list(output.features.shape)
+    elif isinstance(output, dict):
+        results_payload = output.get("results") if isinstance(output.get("results"), dict) else output
+        if isinstance(output.get("result_files"), dict):
+            result_files = output.get("result_files") or result_files
+    else:
+        results_payload = {"output": output}
+
+    return results_payload, result_files
+
+
+async def _run_classification(
+    job: AIJob,
+    model_name: str,
+    volume: Any,
+    loader: Any,
+    model_registry: Any,
+) -> tuple[dict, dict]:
+    """Run classification inference."""
+    image, slice_index = _select_representative_slice(volume)
+    prepared = loader.prepare_for_inference(
+        type("obj", (object,), {"pixel_data": image, "is_3d": False})(),
+        normalize=True,
+        convert_to_rgb=True,
+    )
+
+    result = await model_registry.run_inference(model_name, prepared)
+    payload, result_files = _extract_result_payload(result)
+
+    results = {
+        "output": payload,
+        "model_used": model_name,
+        "model_version": result.model_version,
+        "inference_time_ms": result.inference_time_ms,
+        "input_shape": list(prepared.shape),
+        "series_uid": job.series_instance_uid,
+        "slice_index": slice_index,
+    }
+
+    return results, result_files
+
+
+async def _run_pathology(
+    job: AIJob,
+    model_name: str,
+    volume: Any,
+    model_registry: Any,
+) -> tuple[dict, dict]:
+    """Run pathology inference with external models."""
+    input_file = None
+    if getattr(volume, "metadata", None) and getattr(volume.metadata, "instance_files", None):
+        if volume.metadata.instance_files:
+            input_file = volume.metadata.instance_files[0]
+
+    result = await model_registry.run_inference(
+        model_name,
+        volume,
+        study_uid=job.study_instance_uid,
+        series_uid=job.series_instance_uid,
+        task_type=job.task_type.value,
+        input_file=input_file,
+    )
+
+    payload, result_files = _extract_result_payload(result)
+    results = {
+        "output": payload,
+        "model_used": model_name,
+        "model_version": result.model_version,
+        "inference_time_ms": result.inference_time_ms,
+        "series_uid": job.series_instance_uid,
+    }
+
+    return results, result_files
+
+
+async def _run_cardiac(
+    job: AIJob,
+    model_name: str,
+    volume: Any,
+    model_registry: Any,
+) -> tuple[dict, dict]:
+    """Run cardiac inference (cine/echo focused)."""
+    input_file = None
+    if getattr(volume, "metadata", None) and getattr(volume.metadata, "instance_files", None):
+        if volume.metadata.instance_files:
+            input_file = volume.metadata.instance_files[0]
+
+    result = await model_registry.run_inference(
+        model_name,
+        volume,
+        study_uid=job.study_instance_uid,
+        series_uid=job.series_instance_uid,
+        task_type=job.task_type.value,
+        input_file=input_file,
+    )
+
+    payload, result_files = _extract_result_payload(result)
+    results = {
+        "output": payload,
+        "model_used": model_name,
+        "model_version": result.model_version,
+        "inference_time_ms": result.inference_time_ms,
+        "series_uid": job.series_instance_uid,
     }
 
     return results, result_files

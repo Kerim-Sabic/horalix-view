@@ -96,8 +96,19 @@ class ModelRegistry:
             return True
         if weights_path.is_dir():
             # Check for common weight files
-            for pattern in ["*.pt", "*.pth", "*.ckpt", "*.bin", "model.*"]:
-                if list(weights_path.glob(pattern)):
+            for pattern in [
+                "*.pt",
+                "*.pth",
+                "*.ckpt",
+                "*.bin",
+                "*.onnx",
+                "*.h5",
+                "*.tar",
+                "*.tar.gz",
+                "*.zip",
+                "model.*",
+            ]:
+                if list(weights_path.rglob(pattern)):
                     return True
         return False
 
@@ -177,23 +188,37 @@ class ModelRegistry:
         """Check if a model has weights available for inference."""
         if model_name not in self._model_factories:
             return False
-        if not self._model_enabled.get(model_name, False):
+        availability = self.get_model_availability().get(model_name, {})
+        if not availability.get("enabled", False):
             return False
-        weights_path = self._get_weights_path(model_name)
-        return self._weights_exist(weights_path)
+        return bool(availability.get("weights_available", False))
 
     def get_model_availability(self) -> dict[str, dict[str, Any]]:
         """Get availability status for all registered models."""
         result = {}
         for name, metadata in self._model_metadata.items():
             weights_path = self._get_weights_path(name)
+            weights_available = self._weights_exist(weights_path)
+            availability_errors: list[str] = []
+
+            factory = self._model_factories.get(name)
+            if factory is not None:
+                try:
+                    model = factory()
+                    if hasattr(model, "check_availability"):
+                        weights_available, availability_errors = model.check_availability()
+                except Exception as exc:
+                    weights_available = False
+                    availability_errors = [f"Availability check failed: {exc}"]
+
             result[name] = {
                 "registered": True,
                 "enabled": self._model_enabled.get(name, False),
-                "weights_available": self._weights_exist(weights_path),
+                "weights_available": weights_available,
                 "weights_path": str(weights_path),
                 "loaded": name in self._loaded_models,
                 "model_type": metadata.model_type.value,
+                "availability_errors": availability_errors,
             }
         return result
 
@@ -384,6 +409,7 @@ class ModelRegistry:
     async def _register_real_models(self) -> None:
         """Register real model implementations."""
         from app.services.ai.models import (
+            ExternalCommandModel,
             MedSAMModel,
             MonaiSegmentationModel,
             YoloV8Detector,
@@ -491,6 +517,82 @@ class ModelRegistry:
                 class_names=["background", "spleen"],
             ),
             enabled=self.settings.nnunet_enabled,
+        )
+
+        echonet_metadata = ModelMetadata(
+            name="echonet_measurements",
+            version="1.0.0",
+            model_type=ModelType.CARDIAC,
+            description="EchoNet measurements for echocardiography cine analysis",
+            supported_modalities=["US"],
+            reference="https://github.com/echonet/measurements",
+            license="Unknown",
+        )
+        self.register_model(
+            model_name="echonet_measurements",
+            factory=lambda: ExternalCommandModel(
+                metadata=echonet_metadata,
+                command_template=self.settings.echonet_measurements_command,
+                weights_path=self.models_dir / "echonet_measurements",
+                results_dir=Path(self.settings.results_dir),
+                work_dir=self.settings.external_workdir
+                or (self.models_dir / "echonet_measurements"),
+                timeout_seconds=self.settings.external_timeout_seconds,
+                input_kind="cine",
+                export_frames=True,
+            ),
+            metadata=echonet_metadata,
+            enabled=self.settings.echonet_measurements_enabled,
+        )
+
+        gigapath_metadata = ModelMetadata(
+            name="prov_gigapath",
+            version="1.0.0",
+            model_type=ModelType.PATHOLOGY,
+            description="Prov-GigaPath foundation model for digital pathology",
+            supported_modalities=["SM"],
+            reference="https://github.com/prov-gigapath/prov-gigapath",
+            license="Apache-2.0",
+        )
+        self.register_model(
+            model_name="prov_gigapath",
+            factory=lambda: ExternalCommandModel(
+                metadata=gigapath_metadata,
+                command_template=self.settings.gigapath_command,
+                weights_path=self.models_dir / "prov_gigapath",
+                results_dir=Path(self.settings.results_dir),
+                work_dir=self.settings.external_workdir or (self.models_dir / "prov_gigapath"),
+                timeout_seconds=self.settings.external_timeout_seconds,
+                input_kind="image",
+                export_frames=False,
+            ),
+            metadata=gigapath_metadata,
+            enabled=self.settings.gigapath_enabled,
+        )
+
+        hovernet_metadata = ModelMetadata(
+            name="hovernet",
+            version="0.2.0",
+            model_type=ModelType.PATHOLOGY,
+            description="HoVer-Net nuclei segmentation for pathology tiles",
+            supported_modalities=["SM"],
+            reference="https://github.com/vqdang/hover_net",
+            license="MIT",
+        )
+        self.register_model(
+            model_name="hovernet",
+            factory=lambda: ExternalCommandModel(
+                metadata=hovernet_metadata,
+                command_template=self.settings.hovernet_command,
+                weights_path=self.models_dir / "hovernet",
+                results_dir=Path(self.settings.results_dir),
+                work_dir=self.settings.external_workdir or (self.models_dir / "hovernet"),
+                timeout_seconds=self.settings.external_timeout_seconds,
+                input_kind="image",
+                export_frames=False,
+            ),
+            metadata=hovernet_metadata,
+            enabled=self.settings.hovernet_enabled,
         )
 
         logger.info(

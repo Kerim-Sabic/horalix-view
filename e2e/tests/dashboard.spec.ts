@@ -21,7 +21,7 @@ test.describe('Dashboard Stability', () => {
 
     // Fill in login credentials (default admin account)
     await page.getByLabel(/username|email/i).fill('admin');
-    await page.getByLabel(/password/i).fill('admin');
+    await page.getByLabel(/password/i).fill('admin123');
 
     // Click login button
     await page.getByRole('button', { name: /sign in|login|submit/i }).click();
@@ -204,7 +204,7 @@ test.describe('Route Navigation', () => {
     await page.goto('/login');
     await expect(page.getByRole('heading', { name: /sign in|login/i })).toBeVisible({ timeout: 10000 });
     await page.getByLabel(/username|email/i).fill('admin');
-    await page.getByLabel(/password/i).fill('admin');
+    await page.getByLabel(/password/i).fill('admin123');
     await page.getByRole('button', { name: /sign in|login|submit/i }).click();
     await expect(page).toHaveURL('/', { timeout: 15000 });
   });
@@ -276,7 +276,7 @@ test.describe('API Response Validation', () => {
     // Login and go to dashboard
     await page.goto('/login');
     await page.getByLabel(/username|email/i).fill('admin');
-    await page.getByLabel(/password/i).fill('admin');
+    await page.getByLabel(/password/i).fill('admin123');
     await page.getByRole('button', { name: /sign in|login|submit/i }).click();
     await expect(page).toHaveURL('/', { timeout: 15000 });
 

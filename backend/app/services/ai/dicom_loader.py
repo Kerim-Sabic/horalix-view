@@ -5,6 +5,7 @@ building properly ordered volumes with correct metadata for AI model inference.
 """
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,7 @@ class VolumeMetadata:
     columns: int = 512
     num_slices: int = 1
     instance_uids: list[str] = field(default_factory=list)
+    instance_files: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -114,7 +116,7 @@ class DicomLoader:
             raise ValueError(f"No DICOM instances found in series: {series_uid}")
 
         # Read all datasets
-        datasets: list[tuple[pydicom.Dataset, float, str]] = []
+        datasets: list[tuple[pydicom.Dataset, float, str, Path]] = []
 
         for dcm_file in dcm_files:
             try:
@@ -136,7 +138,7 @@ class DicomLoader:
                         slice_location = float(getattr(ds, "InstanceNumber", 0))
 
                 instance_uid = str(ds.SOPInstanceUID)
-                datasets.append((ds, slice_location, instance_uid))
+                datasets.append((ds, slice_location, instance_uid, dcm_file))
 
             except Exception as e:
                 logger.warning(f"Failed to read DICOM file {dcm_file}: {e}")
@@ -151,6 +153,7 @@ class DicomLoader:
         # Extract metadata from first dataset
         first_ds = datasets[0][0]
         metadata = self._extract_metadata(first_ds, study_uid, series_uid, [d[2] for d in datasets])
+        metadata.instance_files = [str(d[3]) for d in datasets]
         metadata.num_slices = len(datasets)
 
         # Build volume
@@ -162,7 +165,7 @@ class DicomLoader:
         else:
             # Multi-slice (3D)
             slices = []
-            for ds, _, _ in datasets:
+            for ds, _, _, _ in datasets:
                 pixel_array = self._get_pixel_array(ds)
                 slices.append(pixel_array)
 

@@ -12,7 +12,6 @@ import {
   CardActions,
   Button,
   Chip,
-  LinearProgress,
   Alert,
   Skeleton,
   CircularProgress,
@@ -32,17 +31,24 @@ const AIModelsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
+  const [shapeError, setShapeError] = useState<string | null>(null);
+  const [serverMessage, setServerMessage] = useState<string | null>(null);
 
   const fetchModels = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
+      setShapeError(null);
+      setServerMessage(null);
 
       const response = await api.ai.getModels();
-      setModels(response.models);
+      setModels(response.models ?? []);
+      setShapeError(response.shape_error ?? null);
+      setServerMessage(response.message ?? null);
     } catch (err) {
       console.error('Failed to fetch AI models:', err);
       setError('Failed to load AI models. Please try again.');
+      setShapeError(null);
     } finally {
       setLoading(false);
     }
@@ -81,7 +87,8 @@ const AIModelsPage: React.FC = () => {
   };
 
   const getTypeColor = (type: string): 'primary' | 'secondary' | 'success' | 'warning' | 'info' | 'default' => {
-    switch (type.toLowerCase()) {
+    const normalized = typeof type === 'string' ? type.toLowerCase() : '';
+    switch (normalized) {
       case 'segmentation':
         return 'primary';
       case 'detection':
@@ -156,6 +163,18 @@ const AIModelsPage: React.FC = () => {
         </Alert>
       )}
 
+      {shapeError && (
+        <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setShapeError(null)}>
+          AI models response did not match the expected schema. Showing a safe empty state.
+        </Alert>
+      )}
+
+      {serverMessage && !shapeError && (
+        <Alert severity="info" sx={{ mb: 3 }} onClose={() => setServerMessage(null)}>
+          {serverMessage}
+        </Alert>
+      )}
+
       {models.length === 0 ? (
         <Card>
           <CardContent>
@@ -166,8 +185,39 @@ const AIModelsPage: React.FC = () => {
         </Card>
       ) : (
         <Grid container spacing={3}>
-          {models.map((model) => (
-            <Grid item xs={12} sm={6} lg={4} key={model.model_id}>
+          {models.map((model) => {
+            const details = model.details ?? {
+              model_type: 'unknown',
+              version: '',
+              description: '',
+              supported_modalities: [],
+              performance_metrics: {},
+            };
+            const metrics = details.performance_metrics ?? {};
+            const supportedModalities = Array.isArray(details.supported_modalities)
+              ? details.supported_modalities
+              : [];
+            const isLoaded = model.status === 'loaded';
+            const canLoad = model.status === 'available';
+            const statusLabel = isLoaded
+              ? 'Loaded'
+              : model.status === 'available'
+                ? 'Available'
+                : model.status === 'missing_weights'
+                  ? 'Missing weights'
+                  : model.status === 'disabled'
+                    ? 'Disabled'
+                    : 'Unknown';
+            const statusColor = isLoaded
+              ? 'success'
+              : model.status === 'available'
+                ? 'info'
+                : model.status === 'missing_weights'
+                  ? 'warning'
+                  : 'default';
+
+            return (
+              <Grid item xs={12} sm={6} lg={4} key={model.name}>
               <Card sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
                 <CardContent sx={{ flex: 1 }}>
                   <Box sx={{ display: 'flex', alignItems: 'flex-start', mb: 2 }}>
@@ -176,7 +226,7 @@ const AIModelsPage: React.FC = () => {
                         width: 48,
                         height: 48,
                         borderRadius: 2,
-                        bgcolor: model.is_loaded ? 'success.main' : 'grey.400',
+                        bgcolor: isLoaded ? 'success.main' : canLoad ? 'info.main' : 'grey.400',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -187,16 +237,24 @@ const AIModelsPage: React.FC = () => {
                     </Box>
                     <Box sx={{ flex: 1 }}>
                       <Typography variant="h6">{model.name}</Typography>
-                      <Chip
-                        label={model.model_type}
-                        size="small"
-                        color={getTypeColor(model.model_type)}
-                      />
+                      <Box sx={{ display: 'flex', gap: 0.5, flexWrap: 'wrap' }}>
+                        <Chip
+                          label={details.model_type || 'Unknown'}
+                          size="small"
+                          color={getTypeColor(details.model_type)}
+                        />
+                        <Chip
+                          label={statusLabel}
+                          size="small"
+                          color={statusColor}
+                          variant="outlined"
+                        />
+                      </Box>
                     </Box>
                   </Box>
 
                   <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                    {model.description}
+                    {details.description || 'No description available.'}
                   </Typography>
 
                   <Box sx={{ mb: 2 }}>
@@ -204,19 +262,23 @@ const AIModelsPage: React.FC = () => {
                       Supported Modalities
                     </Typography>
                     <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mt: 0.5 }}>
-                      {model.supported_modalities.map((mod) => (
-                        <Chip key={mod} label={mod} size="small" variant="outlined" />
-                      ))}
+                      {(supportedModalities ?? []).length > 0 ? (
+                        supportedModalities.map((mod) => (
+                          <Chip key={mod} label={mod} size="small" variant="outlined" />
+                        ))
+                      ) : (
+                        <Chip label="None listed" size="small" variant="outlined" />
+                      )}
                     </Box>
                   </Box>
 
-                  {Object.keys(model.metrics).length > 0 && (
+                  {Object.keys(metrics ?? {}).length > 0 && (
                     <Box sx={{ mb: 2 }}>
                       <Typography variant="caption" color="text.secondary">
                         Performance Metrics
                       </Typography>
                       <Box sx={{ display: 'flex', gap: 2, mt: 0.5, flexWrap: 'wrap' }}>
-                        {Object.entries(model.metrics).map(([key, value]) => (
+                        {Object.entries(metrics ?? {}).map(([key, value]) => (
                           <Typography key={key} variant="body2">
                             <strong>{key}:</strong> {typeof value === 'number' ? value.toFixed(2) : value}
                           </Typography>
@@ -225,52 +287,44 @@ const AIModelsPage: React.FC = () => {
                     </Box>
                   )}
 
-                  {model.is_loaded && model.memory_usage_mb > 0 && (
-                    <Box>
-                      <Typography variant="caption" color="text.secondary">
-                        Memory Usage: {model.memory_usage_mb} MB
-                      </Typography>
-                      <LinearProgress
-                        variant="determinate"
-                        value={Math.min((model.memory_usage_mb / 4000) * 100, 100)}
-                        sx={{ mt: 0.5 }}
-                        color={model.memory_usage_mb > 3000 ? 'error' : model.memory_usage_mb > 2000 ? 'warning' : 'primary'}
-                      />
-                    </Box>
+                  {model.errors.length > 0 && (
+                    <Typography variant="caption" color="error" sx={{ display: 'block' }}>
+                      {model.errors[0]}
+                    </Typography>
                   )}
                 </CardContent>
                 <CardActions>
-                  {model.is_loaded ? (
+                  {isLoaded ? (
                     <Button
                       size="small"
                       color="error"
                       startIcon={
-                        loadingModelId === model.model_id ? (
+                        loadingModelId === model.name ? (
                           <CircularProgress size={16} color="inherit" />
                         ) : (
                           <UnloadIcon />
                         )
                       }
-                      onClick={() => handleUnloadModel(model.model_id)}
+                      onClick={() => handleUnloadModel(model.name)}
                       disabled={loadingModelId !== null}
                     >
-                      {loadingModelId === model.model_id ? 'Unloading...' : 'Unload'}
+                      {loadingModelId === model.name ? 'Unloading...' : 'Unload'}
                     </Button>
                   ) : (
                     <Button
                       size="small"
                       color="primary"
                       startIcon={
-                        loadingModelId === model.model_id ? (
+                        loadingModelId === model.name ? (
                           <CircularProgress size={16} color="inherit" />
                         ) : (
                           <LoadIcon />
                         )
                       }
-                      onClick={() => handleLoadModel(model.model_id)}
-                      disabled={loadingModelId !== null}
+                      onClick={() => handleLoadModel(model.name)}
+                      disabled={loadingModelId !== null || !canLoad}
                     >
-                      {loadingModelId === model.model_id ? 'Loading...' : 'Load Model'}
+                      {loadingModelId === model.name ? 'Loading...' : 'Load Model'}
                     </Button>
                   )}
                   <Button size="small" disabled>
@@ -279,7 +333,8 @@ const AIModelsPage: React.FC = () => {
                 </CardActions>
               </Card>
             </Grid>
-          ))}
+            );
+          })}
         </Grid>
       )}
     </Box>

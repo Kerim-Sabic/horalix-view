@@ -84,10 +84,18 @@ Horalix View is a medical imaging application that handles sensitive Protected H
 
 **Implemented Controls:**
 - Password hashing with bcrypt (work factor 12)
-- JWT tokens with short expiration (15 minutes)
+- JWT tokens with configurable expiration (default 60 minutes)
 - Refresh token rotation
 - Role-based access control (RBAC)
 - Rate limiting on auth endpoints
+
+### Roles and Token Expiry
+
+Default roles include `admin`, `radiologist`, `technologist`, and `researcher`. Endpoint access is enforced by role checks.
+
+Default development users are created only when `ENVIRONMENT` is not `production`. Production deployments must provision users explicitly.
+
+Token expiry is controlled by `ACCESS_TOKEN_EXPIRE_MINUTES` and should be shortened in production environments.
 
 ### Secret Management
 
@@ -185,6 +193,12 @@ All user input is validated:
 - PHI access events
 - Configuration changes
 - API rate limit hits
+
+**Client Error Reporting:**
+- Frontend errors are reported to `POST /api/v1/health/client-error`.
+- Payloads include message, stack, route, and user agent only.
+- PHI is explicitly excluded from error reports.
+- Server logs include correlation IDs via `X-Request-ID` headers.
 
 **Log Format:**
 ```json

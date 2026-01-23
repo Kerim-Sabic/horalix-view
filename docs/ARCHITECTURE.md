@@ -1,283 +1,88 @@
-# Horalix View - Architecture Documentation
+# Horalix View Architecture
 
 ## Overview
+Horalix View is a web-based DICOM viewer and AI workstation built around a FastAPI backend and a React frontend. The frontend renders server-produced pixel images and overlays, while the backend handles DICOM ingestion, metadata indexing, and AI inference orchestration.
 
-Horalix View is a multi-tier medical imaging application built with modern technologies for high performance, scalability, and maintainability.
-
-## System Architecture
+## System Components
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                 PRESENTATION LAYER                               │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                         React Frontend (TypeScript)                      │   │
-│  │  ┌───────────┐  ┌────────────┐  ┌──────────┐  ┌────────────────────┐   │   │
-│  │  │  Pages    │  │ Components │  │ Contexts │  │     Services       │   │   │
-│  │  │ Dashboard │  │  Viewer    │  │   Auth   │  │  API Client (Axios)│   │   │
-│  │  │ Studies   │  │  Toolbar   │  │  Theme   │  │  React Query       │   │   │
-│  │  │ Patients  │  │  Sidebar   │  │          │  │                    │   │   │
-│  │  └───────────┘  └────────────┘  └──────────┘  └────────────────────┘   │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐    │   │
-│  │  │              Cornerstone.js (DICOM Rendering)                  │    │   │
-│  │  │  Image Loaders | Viewports | Tools | Synchronizers            │    │   │
-│  │  └────────────────────────────────────────────────────────────────┘    │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        │ HTTP/REST/WebSocket
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                  API LAYER                                       │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                      FastAPI Backend (Python)                            │   │
-│  │  ┌────────────────────────────────────────────────────────────────┐     │   │
-│  │  │                     API Endpoints (v1)                          │     │   │
-│  │  │  /auth  /studies  /patients  /series  /annotations  /ai  /admin │     │   │
-│  │  └────────────────────────────────────────────────────────────────┘     │   │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────────────────┐      │   │
-│  │  │   Security   │  │   Logging    │  │      Configuration       │      │   │
-│  │  │ JWT/RBAC     │  │   Audit      │  │   Pydantic Settings      │      │   │
-│  │  │ Password     │  │   Metrics    │  │   Env Validation         │      │   │
-│  │  └──────────────┘  └──────────────┘  └──────────────────────────┘      │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                               SERVICE LAYER                                      │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐        │
-│  │   DICOM Services   │  │    AI Services     │  │  Storage Services  │        │
-│  │  ┌──────────────┐  │  │  ┌──────────────┐  │  │  ┌──────────────┐  │        │
-│  │  │    Parser    │  │  │  │Model Registry│  │  │  │DICOM Storage │  │        │
-│  │  │  pydicom     │  │  │  │   YOLOv8     │  │  │  │  File System │  │        │
-│  │  └──────────────┘  │  │  │   MONAI      │  │  │  └──────────────┘  │        │
-│  │  ┌──────────────┐  │  │  │   MedSAM     │  │  │  ┌──────────────┐  │        │
-│  │  │ Networking   │  │  │  └──────────────┘  │  │  │  Annotation  │  │        │
-│  │  │ pynetdicom   │  │  │  ┌──────────────┐  │  │  │   Storage    │  │        │
-│  │  └──────────────┘  │  │  │ DICOM Loader │  │  │  └──────────────┘  │        │
-│  └────────────────────┘  │  └──────────────┘  │  └────────────────────┘        │
-│                          └────────────────────┘                                  │
-└─────────────────────────────────────────────────────────────────────────────────┘
-                                        │
-                                        ▼
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                                DATA LAYER                                        │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│  ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐        │
-│  │    PostgreSQL      │  │       Redis        │  │    File System     │        │
-│  │  ┌──────────────┐  │  │  ┌──────────────┐  │  │  ┌──────────────┐  │        │
-│  │  │   patients   │  │  │  │    Cache     │  │  │  │ DICOM Files  │  │        │
-│  │  │   studies    │  │  │  │   Sessions   │  │  │  │ AI Models    │  │        │
-│  │  │   series     │  │  │  │   Job Queue  │  │  │  │ Temp Files   │  │        │
-│  │  │   instances  │  │  │  └──────────────┘  │  │  └──────────────┘  │        │
-│  │  │  annotations │  │  └────────────────────┘  └────────────────────┘        │
-│  │  │    users     │  │                                                         │
-│  │  │    jobs      │  │                                                         │
-│  │  └──────────────┘  │                                                         │
-│  └────────────────────┘                                                         │
-└─────────────────────────────────────────────────────────────────────────────────┘
+Client (React + MUI)
+  |
+  |  HTTPS / REST
+  v
+Nginx (reverse proxy + static frontend)
+  |
+  |  /api/*
+  v
+FastAPI Backend
+  |-- PostgreSQL (patients, studies, series, instances, jobs)
+  |-- Redis (caching, job state)
+  |-- Storage (DICOM files, AI weights, AI results)
 ```
 
-## Component Details
-
-### Frontend (`/frontend`)
-
-| Directory | Purpose |
-|-----------|---------|
-| `src/components/` | Reusable UI components |
-| `src/pages/` | Page-level components (routing targets) |
-| `src/contexts/` | React Context providers (Auth, Theme) |
-| `src/services/` | API client and service functions |
-| `src/hooks/` | Custom React hooks |
-| `src/stores/` | State management (Zustand) |
-| `src/themes/` | MUI theme configuration |
-| `src/types/` | TypeScript type definitions |
-| `src/utils/` | Utility functions |
-
-### Backend (`/backend`)
-
-| Directory | Purpose |
-|-----------|---------|
-| `app/api/v1/endpoints/` | REST API endpoint handlers |
-| `app/core/` | Configuration, security, logging |
-| `app/models/` | SQLAlchemy database models |
-| `app/services/` | Business logic services |
-| `app/services/ai/` | AI model implementations |
-| `app/services/dicom/` | DICOM parsing and networking |
-| `alembic/` | Database migrations |
-| `tests/` | Test suites |
+Storage (bind mounts):
+- `./storage` -> `/app/storage` (DICOM files)
+- `./models` -> `/app/models` (AI weights)
+- `./results` -> `/app/results` (AI outputs)
 
 ## Data Flow
 
-### User Authentication Flow
+### DICOM Upload
+1. Client uploads DICOM via `POST /api/v1/studies/upload`.
+2. Backend streams files to `/app/storage/dicom` and extracts metadata.
+3. Metadata is written into Patients, Studies, Series, and Instances tables.
 
-```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Client  │────▶│  /login  │────▶│ Validate │────▶│ Generate │
-│          │     │          │     │ Password │     │   JWT    │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
-     │                                                   │
-     │◀──────────────────────────────────────────────────┘
-     │                 Return JWT Token
-     ▼
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│ Request  │────▶│  Verify  │────▶│ Execute  │
-│ + JWT    │     │   JWT    │     │ Endpoint │
-└──────────┘     └──────────┘     └──────────┘
-```
+### Viewer Rendering
+1. Client loads metadata from `/api/v1/studies/{uid}` and `/api/v1/series`.
+2. For each frame, the viewer requests `/api/v1/instances/{uid}/pixel-data`.
+3. The backend decodes pixel data and returns PNG/JPEG with window/level applied.
+4. Frontend draws the image in an `<img>` and overlays AI/measurement layers in SVG.
 
-### DICOM Upload Flow
+### MPR (CT/MR/PT)
+1. Client requests volume metadata from `/api/v1/series/{uid}/volume-info`.
+2. MPR slices are rendered on demand via `/api/v1/series/{uid}/mpr`.
 
-```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Upload  │────▶│  Parse   │────▶│  Store   │────▶│ Database │
-│  DICOM   │     │ pydicom  │     │  Files   │     │  Update  │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
-                      │
-                      ▼
-              ┌──────────────┐
-              │   Extract    │
-              │   Metadata   │
-              │  (Patient,   │
-              │   Study,     │
-              │   Series)    │
-              └──────────────┘
-```
+### AI Inference
+1. Client submits jobs to `POST /api/v1/ai/infer`.
+2. Backend loads series data, runs the selected model, and writes results under
+   `results/{study_uid}/`.
+3. Viewer fetches overlays using `/api/v1/ai/results/{study_uid}` and
+   `/api/v1/ai/results/{study_uid}/masks/{file}/render`.
 
-### AI Inference Flow
+### Client Error Reporting
+1. Frontend ErrorBoundary posts errors to `POST /api/v1/health/client-error`.
+2. Backend logs structured, non-PHI error data for observability.
 
-```
-┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
-│  Submit  │────▶│  Create  │────▶│  Queue   │────▶│  Worker  │
-│   Job    │     │   Job    │     │  Redis   │     │ Process  │
-└──────────┘     └──────────┘     └──────────┘     └──────────┘
-     │                                                   │
-     │◀──────────────────────────────────────────────────┘
-     │              Poll Status / WebSocket
-     ▼
-┌──────────┐     ┌──────────┐     ┌──────────┐
-│ Retrieve │◀────│  Store   │◀────│  Model   │
-│ Results  │     │ Results  │     │ Infer    │
-└──────────┘     └──────────┘     └──────────┘
-```
+## AI Integration
 
-## Database Schema
+Horalix View supports two model classes:
+- Native Python models (YOLOv8, MONAI, MedSAM).
+- External command models (EchoNet Measurements, Prov-GigaPath, HoVer-Net).
 
-### Core Entities
+External command models are executed via `ExternalCommandModel` using configured
+command templates:
+- `AI_ECHONET_MEASUREMENTS_CMD`
+- `AI_GIGAPATH_CMD`
+- `AI_HOVERNET_CMD`
 
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│     patients    │────▶│     studies     │────▶│     series      │
-├─────────────────┤     ├─────────────────┤     ├─────────────────┤
-│ id              │     │ study_instance_uid│   │ series_instance_uid│
-│ patient_id      │     │ patient_id_fk   │     │ study_uid_fk    │
-│ patient_name    │     │ study_date      │     │ modality        │
-│ birth_date      │     │ description     │     │ series_number   │
-│ sex             │     │ modalities      │     │ description     │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-                        ┌─────────────────┐     ┌─────────────────┐
-                        │   annotations   │     │    instances    │
-                        ├─────────────────┤     ├─────────────────┤
-                        │ annotation_uid  │     │ sop_instance_uid│
-                        │ study_uid       │     │ series_uid_fk   │
-                        │ annotation_type │     │ instance_number │
-                        │ geometry (JSON) │     │ file_path       │
-                        │ created_by      │     │ rows, columns   │
-                        └─────────────────┘     └─────────────────┘
-```
+The runner receives input/output paths via environment variables (e.g.,
+`HORALIX_INPUT_NPZ`, `HORALIX_OUTPUT_JSON`) and writes JSON to the output path.
 
-## Security Architecture
+## Key Backend Modules
 
-### Authentication
+- `app/api/v1/endpoints/` REST endpoints (auth, studies, series, instances, ai)
+- `app/services/dicom/` DICOM parsing, storage, and networking
+- `app/services/ai/` model registry, inference, external runners
+- `app/core/` configuration, logging, security
 
-- JWT-based authentication with configurable expiration
-- Password hashing using bcrypt
-- Refresh token support (planned)
+## Security & Audit
 
-### Authorization
+- JWT authentication with RBAC.
+- Audit events for login, study access, and AI inference.
+- Client error reports strip PHI and are logged as structured JSON.
 
-- Role-Based Access Control (RBAC)
-- Roles: `admin`, `radiologist`, `technologist`, `researcher`
-- Endpoint-level permission checks
+## Observability
 
-### Audit Logging
-
-- All data access is logged
-- User actions are tracked
-- HIPAA compliance support
-
-## Deployment Architecture
-
-### Docker Compose (Development/Small Scale)
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Docker Host                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
-│  │  frontend   │  │   backend   │  │  postgres   │         │
-│  │   :3000     │  │   :8000     │  │   :5432     │         │
-│  └─────────────┘  └─────────────┘  └─────────────┘         │
-│                                                              │
-│  ┌─────────────┐  ┌─────────────────────────────────┐       │
-│  │    redis    │  │         volumes                 │       │
-│  │   :6379     │  │  dicom_storage | ai_models     │       │
-│  └─────────────┘  └─────────────────────────────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## Performance Considerations
-
-### Caching Strategy
-
-- Redis for session caching
-- Query result caching for frequently accessed data
-- Browser-side caching for static assets
-
-### Database Optimization
-
-- Proper indexing on frequently queried columns
-- Connection pooling with SQLAlchemy
-- Async database operations
-
-### Image Loading
-
-- Lazy loading of DICOM images
-- Progressive rendering
-- Web workers for image processing
-
-## Error Handling
-
-### API Error Responses
-
-All API errors follow a consistent format:
-
-```json
-{
-  "detail": "Error description",
-  "code": "ERROR_CODE",
-  "timestamp": "2024-01-15T10:30:00Z"
-}
-```
-
-### Error Categories
-
-| HTTP Code | Category | Example |
-|-----------|----------|---------|
-| 400 | Bad Request | Invalid input data |
-| 401 | Unauthorized | Invalid/expired token |
-| 403 | Forbidden | Insufficient permissions |
-| 404 | Not Found | Resource doesn't exist |
-| 422 | Validation Error | Schema validation failed |
-| 500 | Server Error | Unexpected error |
-
-## Future Considerations
-
-- **Kubernetes deployment** for horizontal scaling
-- **Message queue** (RabbitMQ/Kafka) for async processing
-- **Distributed caching** for multi-instance deployments
-- **CDC (Change Data Capture)** for real-time sync
+- `/health` and `/ready` endpoints for health checks.
+- `/metrics` for Prometheus-compatible metrics.
+- Structured logs via `structlog` with request IDs.

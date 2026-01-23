@@ -4,8 +4,11 @@ Handles individual DICOM instances (images) including pixel data retrieval,
 metadata access, and image manipulation.
 """
 
+from collections import OrderedDict
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import threading
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -15,13 +18,100 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.endpoints.auth import get_current_active_user
+from app.api.v1.endpoints.auth import (
+    get_current_active_user,
+    get_current_active_user_from_token,
+)
+from app.core.config import get_settings
 from app.core.security import TokenData
 from app.models.base import get_db
 from app.models.instance import Instance
 from app.models.series import Series
 
 router = APIRouter()
+
+PIXEL_CACHE_MAX_BYTES = 512 * 1024 * 1024
+PIXEL_CACHE_MAX_ENTRIES = 6
+
+
+@dataclass
+class CachedPixelData:
+    pixel_array: "numpy.ndarray"
+    samples_per_pixel: int
+    photometric_interpretation: str | None
+    rescale_slope: float | None
+    rescale_intercept: float | None
+
+
+_pixel_cache: "OrderedDict[str, CachedPixelData]" = OrderedDict()
+_pixel_cache_bytes = 0
+_pixel_cache_lock = threading.Lock()
+
+
+def _get_cached_pixel_data(file_path: str) -> CachedPixelData | None:
+    with _pixel_cache_lock:
+        cached = _pixel_cache.get(file_path)
+        if cached:
+            _pixel_cache.move_to_end(file_path)
+        return cached
+
+
+def _set_cached_pixel_data(file_path: str, payload: CachedPixelData) -> None:
+    global _pixel_cache_bytes
+
+    data_bytes = int(payload.pixel_array.nbytes)
+    if data_bytes > PIXEL_CACHE_MAX_BYTES:
+        return
+
+    with _pixel_cache_lock:
+        existing = _pixel_cache.pop(file_path, None)
+        if existing:
+            _pixel_cache_bytes -= int(existing.pixel_array.nbytes)
+
+        while _pixel_cache and (
+            len(_pixel_cache) >= PIXEL_CACHE_MAX_ENTRIES
+            or _pixel_cache_bytes + data_bytes > PIXEL_CACHE_MAX_BYTES
+        ):
+            _, evicted = _pixel_cache.popitem(last=False)
+            _pixel_cache_bytes -= int(evicted.pixel_array.nbytes)
+
+        _pixel_cache[file_path] = payload
+        _pixel_cache_bytes += data_bytes
+
+
+def _load_pixel_data(file_path: str) -> CachedPixelData:
+    cached = _get_cached_pixel_data(file_path)
+    if cached:
+        return cached
+
+    import pydicom
+
+    ds = pydicom.dcmread(file_path)
+    pixel_data = ds.pixel_array
+    payload = CachedPixelData(
+        pixel_array=pixel_data,
+        samples_per_pixel=getattr(ds, "SamplesPerPixel", 1),
+        photometric_interpretation=getattr(ds, "PhotometricInterpretation", None),
+        rescale_slope=getattr(ds, "RescaleSlope", None),
+        rescale_intercept=getattr(ds, "RescaleIntercept", None),
+    )
+    _set_cached_pixel_data(file_path, payload)
+    return payload
+
+
+def _normalize_color_layout(pixel_data, samples_per_pixel: int):
+    """Ensure color data uses channel-last layout."""
+    import numpy as np
+
+    if samples_per_pixel <= 1:
+        return pixel_data
+    if pixel_data.ndim == 3:
+        if pixel_data.shape[0] in (3, 4) and pixel_data.shape[-1] not in (3, 4):
+            return np.moveaxis(pixel_data, 0, -1)
+    if pixel_data.ndim == 4:
+        if pixel_data.shape[1] in (3, 4) and pixel_data.shape[-1] not in (3, 4):
+            return np.moveaxis(pixel_data, 1, -1)
+    return pixel_data
 
 
 class InstanceMetadata(BaseModel):
@@ -49,6 +139,10 @@ class InstanceMetadata(BaseModel):
     window_width: float | None = Field(None, description="Window width")
     rescale_intercept: float = Field(0.0, description="Rescale intercept")
     rescale_slope: float = Field(1.0, description="Rescale slope")
+    number_of_frames: int = Field(1, description="Number of frames for multi-frame instances")
+    image_orientation_patient: tuple[float, float, float, float, float, float] | None = Field(
+        None, description="Image orientation patient (row/col direction cosines)"
+    )
 
     class Config:
         from_attributes = True
@@ -89,6 +183,8 @@ def _instance_to_metadata(instance: Instance, series: Series) -> InstanceMetadat
         window_width=instance.window_width,
         rescale_intercept=instance.rescale_intercept or 0.0,
         rescale_slope=instance.rescale_slope or 1.0,
+        number_of_frames=instance.number_of_frames or 1,
+        image_orientation_patient=instance.image_orientation_tuple,
     )
 
 
@@ -123,12 +219,13 @@ async def get_instance(
 async def get_pixel_data(
     instance_uid: str,
     request: Request,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
     format: str = Query("raw", enum=["raw", "png", "jpeg"], description="Output format"),
     quality: int = Query(90, ge=1, le=100, description="JPEG quality"),
     window_center: float | None = Query(None, description="Override window center"),
     window_width: float | None = Query(None, description="Override window width"),
+    frame: int | None = Query(None, ge=0, description="Frame index for multi-frame instances"),
 ) -> Response:
     """Get instance pixel data.
 
@@ -150,23 +247,76 @@ async def get_pixel_data(
         )
 
     # Get pixel data from stored DICOM file
+    settings = get_settings()
+    payload = None
     if instance.file_path and Path(instance.file_path).exists():
-        import pydicom
-
-        ds = pydicom.dcmread(instance.file_path)
-        pixel_data = ds.pixel_array
-
-        # Apply rescale
-        if hasattr(ds, "RescaleSlope") and hasattr(ds, "RescaleIntercept"):
-            pixel_data = pixel_data * ds.RescaleSlope + ds.RescaleIntercept
+        try:
+            payload = _load_pixel_data(instance.file_path)
+            pixel_data = payload.pixel_array
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Unsupported transfer syntax or pixel data decoding failed",
+            ) from exc
     else:
-        # Generate synthetic data if file not available
+        if not settings.enable_demo_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="DICOM file not available on server",
+            )
+        # Generate synthetic data if demo mode is explicitly enabled
         rows = instance.rows or 512
         cols = instance.columns or 512
         x = np.linspace(0, 1, cols)
         y = np.linspace(0, 1, rows)
         xx, yy = np.meshgrid(x, y)
-        pixel_data = ((np.sin(xx * 10) * np.cos(yy * 10) + 1) * 2000 - 1024).astype(np.float32)
+        pixel_data = ((np.sin(xx * 10) * np.cos(yy * 10) + 1) * 2000 - 1024).astype(
+            np.float32
+        )
+
+    samples_per_pixel = instance.samples_per_pixel or (payload.samples_per_pixel if payload else 1)
+    is_color = samples_per_pixel > 1 or (
+        pixel_data.ndim in (3, 4) and pixel_data.shape[-1] in (3, 4)
+    )
+    if is_color and pixel_data.ndim == 2:
+        is_color = False
+    if is_color:
+        pixel_data = _normalize_color_layout(pixel_data, samples_per_pixel)
+
+    if (
+        not is_color
+        and payload
+        and payload.rescale_slope is not None
+        and payload.rescale_intercept is not None
+    ):
+        pixel_data = pixel_data * payload.rescale_slope + payload.rescale_intercept
+
+    # Handle multi-frame instances
+    if pixel_data.ndim == 4 and is_color:
+        frame_count = pixel_data.shape[0]
+        frame_index = frame if frame is not None else 0
+        if frame_index < 0 or frame_index >= frame_count:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Frame index out of range (0-{frame_count - 1})",
+            )
+        pixel_data = pixel_data[frame_index]
+    elif pixel_data.ndim > 2 and not is_color:
+        frame_count = pixel_data.shape[0]
+        frame_index = frame if frame is not None else 0
+        if frame_index < 0 or frame_index >= frame_count:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Frame index out of range (0-{frame_count - 1})",
+            )
+        pixel_data = pixel_data[frame_index]
+    elif frame not in (None, 0):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Frame index provided for single-frame instance",
+        )
+
+    # pydicom 3.x returns RGB for YBR photometric interpretations by default.
 
     # Get windowing parameters
     wc = window_center if window_center is not None else (instance.window_center or 40)
@@ -177,26 +327,50 @@ async def get_pixel_data(
 
     if format == "raw":
         # Return raw pixel data
-        raw_data = pixel_data.astype(np.int16).tobytes()
+        if is_color:
+            raw_array = pixel_data
+            if raw_array.ndim == 3 and raw_array.shape[-1] > 3:
+                raw_array = raw_array[:, :, :3]
+            if raw_array.dtype != np.uint8:
+                min_val = float(raw_array.min())
+                max_val = float(raw_array.max())
+                scale = max_val - min_val or 1.0
+                raw_array = ((raw_array - min_val) / scale * 255).astype(np.uint8)
+            raw_data = raw_array.tobytes()
+        else:
+            raw_data = pixel_data.astype(np.int16).tobytes()
         return Response(
             content=raw_data,
             media_type="application/octet-stream",
             headers={
+                "Cache-Control": "private, max-age=3600",
                 "X-Rows": str(rows),
                 "X-Columns": str(cols),
                 "X-Bits-Allocated": str(instance.bits_allocated or 16),
                 "X-Window-Center": str(wc),
                 "X-Window-Width": str(ww),
+                "X-Frame-Count": str(instance.number_of_frames or 1),
+                "X-Frame-Index": str(frame or 0),
             },
         )
-    # Apply window/level for display
-    min_val = wc - ww / 2
-    max_val = wc + ww / 2
-    display_data = np.clip(pixel_data, min_val, max_val)
-    display_data = ((display_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
 
-    # Create PIL image
-    img = Image.fromarray(display_data, mode="L")
+    if is_color:
+        display_data = pixel_data
+        if display_data.ndim == 3 and display_data.shape[-1] > 3:
+            display_data = display_data[:, :, :3]
+        if display_data.dtype != np.uint8:
+            min_val = float(display_data.min())
+            max_val = float(display_data.max())
+            scale = max_val - min_val or 1.0
+            display_data = ((display_data - min_val) / scale * 255).astype(np.uint8)
+        img = Image.fromarray(display_data, mode="RGB")
+    else:
+        # Apply window/level for display
+        min_val = wc - ww / 2
+        max_val = wc + ww / 2
+        display_data = np.clip(pixel_data, min_val, max_val)
+        display_data = ((display_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+        img = Image.fromarray(display_data, mode="L")
 
     # Save to buffer
     buffer = BytesIO()
@@ -208,14 +382,18 @@ async def get_pixel_data(
         media_type = "image/jpeg"
 
     buffer.seek(0)
-    return StreamingResponse(buffer, media_type=media_type)
+    return StreamingResponse(
+        buffer,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.get("/{instance_uid}/thumbnail", response_class=Response)
 async def get_thumbnail(
     instance_uid: str,
     request: Request,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
     size: int = Query(128, ge=32, le=512, description="Thumbnail size"),
 ) -> Response:
@@ -238,39 +416,85 @@ async def get_thumbnail(
         )
 
     # Get pixel data and create thumbnail
+    settings = get_settings()
     if instance.file_path and Path(instance.file_path).exists():
-        import pydicom
+        try:
+            payload = _load_pixel_data(instance.file_path)
+            pixel_data = payload.pixel_array
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail="Unsupported transfer syntax or pixel data decoding failed",
+            ) from exc
 
-        ds = pydicom.dcmread(instance.file_path)
-        pixel_data = ds.pixel_array.astype(np.float32)
+        samples_per_pixel = instance.samples_per_pixel or (payload.samples_per_pixel if payload else 1)
+        is_color = samples_per_pixel > 1 or (
+            pixel_data.ndim in (3, 4) and pixel_data.shape[-1] in (3, 4)
+        )
+        if is_color and pixel_data.ndim == 2:
+            is_color = False
+        if is_color:
+            pixel_data = _normalize_color_layout(pixel_data, samples_per_pixel)
 
-        # Apply rescale
-        if hasattr(ds, "RescaleSlope") and hasattr(ds, "RescaleIntercept"):
-            pixel_data = pixel_data * ds.RescaleSlope + ds.RescaleIntercept
+        if pixel_data.ndim == 4 and is_color:
+            pixel_data = pixel_data[0]
+        elif pixel_data.ndim > 2 and not is_color:
+            pixel_data = pixel_data[0]
 
-        # Apply default windowing
-        wc = instance.window_center or 40
-        ww = instance.window_width or 400
-        min_val = wc - ww / 2
-        max_val = wc + ww / 2
-        display_data = np.clip(pixel_data, min_val, max_val)
-        display_data = ((display_data - min_val) / (max_val - min_val) * 255).astype(np.uint8)
+        # pydicom 3.x returns RGB for YBR photometric interpretations by default.
+
+        if (
+            not is_color
+            and payload
+            and payload.rescale_slope is not None
+            and payload.rescale_intercept is not None
+        ):
+            pixel_data = pixel_data * payload.rescale_slope + payload.rescale_intercept
+
+        if is_color:
+            display_data = pixel_data
+            if display_data.ndim == 3 and display_data.shape[-1] > 3:
+                display_data = display_data[:, :, :3]
+            if display_data.dtype != np.uint8:
+                min_val = float(display_data.min())
+                max_val = float(display_data.max())
+                scale = max_val - min_val or 1.0
+                display_data = ((display_data - min_val) / scale * 255).astype(np.uint8)
+            img = Image.fromarray(display_data, mode="RGB")
+        else:
+            wc = instance.window_center or 40
+            ww = instance.window_width or 400
+            min_val = wc - ww / 2
+            max_val = wc + ww / 2
+            scale = max_val - min_val or 1.0
+            display_data = np.clip(pixel_data, min_val, max_val)
+            display_data = ((display_data - min_val) / scale * 255).astype(np.uint8)
+            img = Image.fromarray(display_data, mode="L")
     else:
-        # Generate synthetic thumbnail
+        if not settings.enable_demo_data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="DICOM file not available on server",
+            )
+        # Generate synthetic thumbnail if demo mode is explicitly enabled
         x = np.linspace(0, 1, size)
         y = np.linspace(0, 1, size)
         xx, yy = np.meshgrid(x, y)
         display_data = ((np.sin(xx * 10) * np.cos(yy * 10) + 1) * 127).astype(np.uint8)
+        img = Image.fromarray(display_data, mode="L")
 
     # Create and resize thumbnail
-    img = Image.fromarray(display_data, mode="L")
     img.thumbnail((size, size), Image.Resampling.LANCZOS)
 
     buffer = BytesIO()
     img.save(buffer, format="PNG")
     buffer.seek(0)
 
-    return StreamingResponse(buffer, media_type="image/png")
+    return StreamingResponse(
+        buffer,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.get("/{instance_uid}/pixel-info", response_model=PixelDataInfo)
@@ -407,7 +631,7 @@ async def get_dicom_tags(
 async def get_dicom_file(
     instance_uid: str,
     request: Request,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Response:
     """Download the original DICOM file.

@@ -13,6 +13,8 @@ interface Props {
   children: ReactNode;
   fallback?: ReactNode;
   onError?: (error: Error, errorInfo: ErrorInfo) => void;
+  route?: string;
+  userId?: string | null;
 }
 
 interface State {
@@ -47,18 +49,25 @@ class ErrorBoundary extends Component<Props, State> {
       this.props.onError(error, errorInfo);
     }
 
+    const correlationId =
+      typeof window !== 'undefined' && window.crypto?.randomUUID
+        ? window.crypto.randomUUID()
+        : `err-${Date.now()}`;
+
     // Log to backend for monitoring (if endpoint exists)
     try {
       fetch('/api/v1/health/client-error', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          error: error.message,
+          message: error.message,
           stack: error.stack,
-          componentStack: errorInfo.componentStack,
           url: window.location.href,
-          timestamp: new Date().toISOString(),
+          route: this.props.route || window.location.pathname,
           userAgent: navigator.userAgent,
+          timestamp: new Date().toISOString(),
+          correlationId,
+          userId: this.props.userId || null,
         }),
       }).catch(() => {
         // Silently fail if error reporting endpoint doesn't exist
@@ -74,6 +83,11 @@ class ErrorBoundary extends Component<Props, State> {
 
   handleGoHome = (): void => {
     window.location.href = '/';
+  };
+
+  handleLogout = (): void => {
+    localStorage.removeItem('access_token');
+    window.location.href = '/login';
   };
 
   handleReset = (): void => {
@@ -168,6 +182,14 @@ class ErrorBoundary extends Component<Props, State> {
                   onClick={this.handleGoHome}
                 >
                   Go to Dashboard
+                </Button>
+
+                <Button
+                  variant="outlined"
+                  color="error"
+                  onClick={this.handleLogout}
+                >
+                  Log out
                 </Button>
 
                 <Button

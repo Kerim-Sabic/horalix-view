@@ -113,6 +113,34 @@ class Instance(Base):
             self.image_position_patient = None
 
     @property
+    def image_orientation_tuple(self) -> tuple[float, float, float, float, float, float] | None:
+        """Get image orientation as a tuple (row/col direction cosines)."""
+        if self.image_orientation_patient:
+            parts = self.image_orientation_patient.split("\\")
+            if len(parts) == 6:
+                return (
+                    float(parts[0]),
+                    float(parts[1]),
+                    float(parts[2]),
+                    float(parts[3]),
+                    float(parts[4]),
+                    float(parts[5]),
+                )
+        return None
+
+    @image_orientation_tuple.setter
+    def image_orientation_tuple(
+        self, value: tuple[float, float, float, float, float, float] | None
+    ) -> None:
+        """Set image orientation from a tuple."""
+        if value:
+            self.image_orientation_patient = (
+                f"{value[0]}\\{value[1]}\\{value[2]}\\{value[3]}\\{value[4]}\\{value[5]}"
+            )
+        else:
+            self.image_orientation_patient = None
+
+    @property
     def pixel_spacing_tuple(self) -> tuple[float, float] | None:
         """Get pixel spacing as a tuple (row, col)."""
         if self.pixel_spacing:

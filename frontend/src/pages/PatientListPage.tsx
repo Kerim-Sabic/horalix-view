@@ -37,6 +37,7 @@ const PatientListPage: React.FC = () => {
   const [totalPatients, setTotalPatients] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [shapeError, setShapeError] = useState<string | null>(null);
 
   // Pagination state
   const [page, setPage] = useState(0);
@@ -60,6 +61,7 @@ const PatientListPage: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
+      setShapeError(null);
 
       const response = await api.patients.list({
         search: debouncedSearch || undefined,
@@ -67,11 +69,16 @@ const PatientListPage: React.FC = () => {
         page_size: rowsPerPage,
       });
 
-      setPatients(response.patients);
-      setTotalPatients(response.total);
+      const safePatients = Array.isArray(response.patients) ? response.patients : [];
+      setPatients(safePatients);
+      setTotalPatients(typeof response.total === 'number' ? response.total : 0);
+      if (!Array.isArray(response.patients)) {
+        setShapeError('Patients response did not match the expected schema.');
+      }
     } catch (err) {
       console.error('Failed to fetch patients:', err);
       setError('Failed to load patients. Please try again.');
+      setShapeError(null);
     } finally {
       setLoading(false);
     }
@@ -111,6 +118,12 @@ const PatientListPage: React.FC = () => {
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {shapeError && (
+        <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setShapeError(null)}>
+          {shapeError}
         </Alert>
       )}
 
@@ -184,9 +197,9 @@ const PatientListPage: React.FC = () => {
                       </Typography>
                     </TableCell>
                     <TableCell>{patient.patient_name || 'Unknown'}</TableCell>
-                    <TableCell>{formatDate(patient.patient_birth_date)}</TableCell>
-                    <TableCell>{patient.patient_sex || '-'}</TableCell>
-                    <TableCell align="center">{patient.num_studies}</TableCell>
+                    <TableCell>{formatDate(patient.birth_date)}</TableCell>
+                    <TableCell>{patient.sex || '-'}</TableCell>
+                    <TableCell align="center">{patient.study_count}</TableCell>
                     <TableCell align="right">
                       <Tooltip title="View Studies">
                         <IconButton

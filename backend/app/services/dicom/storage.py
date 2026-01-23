@@ -99,7 +99,9 @@ class DicomStorageService:
             logger.info(
                 "Stored DICOM instance",
                 instance_uid=instance_uid,
-                path=str(file_path),
+                study_uid=study_uid,
+                series_uid=series_uid,
+                file_size=len(data),
             )
 
             return {
@@ -109,6 +111,49 @@ class DicomStorageService:
                 "sop_instance_uid": instance_uid,
                 "file_path": str(file_path),
                 "file_size": len(data),
+                "checksum": checksum,
+                "stored_at": datetime.now().isoformat(),
+            }
+
+        except Exception as e:
+            logger.error("Failed to store DICOM instance", error=str(e))
+            raise
+
+    async def store_instance_file(
+        self,
+        file_path: Path,
+        dicom_dataset: Any,
+        checksum: str,
+        file_size: int,
+    ) -> dict[str, Any]:
+        """Store a DICOM instance from an existing file path."""
+        try:
+            patient_id = str(dicom_dataset.get("PatientID", "UNKNOWN"))
+            study_uid = str(dicom_dataset.StudyInstanceUID)
+            series_uid = str(dicom_dataset.SeriesInstanceUID)
+            instance_uid = str(dicom_dataset.SOPInstanceUID)
+
+            instance_dir = self.storage_dir / patient_id / study_uid / series_uid
+            await aiofiles.os.makedirs(instance_dir, exist_ok=True)
+
+            destination = instance_dir / f"{instance_uid}.dcm"
+            await aiofiles.os.replace(file_path, destination)
+
+            logger.info(
+                "Stored DICOM instance",
+                instance_uid=instance_uid,
+                study_uid=study_uid,
+                series_uid=series_uid,
+                file_size=file_size,
+            )
+
+            return {
+                "patient_id": patient_id,
+                "study_instance_uid": study_uid,
+                "series_instance_uid": series_uid,
+                "sop_instance_uid": instance_uid,
+                "file_path": str(destination),
+                "file_size": file_size,
                 "checksum": checksum,
                 "stored_at": datetime.now().isoformat(),
             }

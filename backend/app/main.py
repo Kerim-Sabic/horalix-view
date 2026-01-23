@@ -37,6 +37,14 @@ REQUEST_LATENCY = Histogram(
 )
 
 
+def _safe_request_path(request: Request) -> str:
+    """Return a route template path to avoid logging PHI in URLs."""
+    route = request.scope.get("route")
+    if route and hasattr(route, "path"):
+        return route.path
+    return request.url.path
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager for startup and shutdown events."""
@@ -54,16 +62,30 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_session_maker = async_session_maker
     logger.info("Database connection pool initialized")
 
-    # Initialize default users (only in development or if no users exist)
-    try:
-        from app.api.v1.endpoints.auth import init_default_users
+    # Initialize default users (development only)
+    if settings.environment != "production":
+        try:
+            from app.api.v1.endpoints.auth import init_default_users
 
-        async with async_session_maker() as session:
-            await init_default_users(session)
-            logger.info("Default users initialized (or already exist)")
-    except Exception as e:
-        # Log but don't fail startup - users may be created later via CLI
-        logger.warning(f"Could not initialize default users: {e}")
+            async with async_session_maker() as session:
+                await init_default_users(session)
+                logger.info("Default users initialized (or already exist)")
+        except Exception as e:
+            # Log but don't fail startup - users may be created later via CLI
+            logger.warning(f"Could not initialize default users: {e}")
+    else:
+        logger.info("Skipping default user initialization in production")
+
+    # Optional demo data seeding (development only)
+    if settings.enable_demo_data:
+        try:
+            from app.services.demo_data import seed_demo_patients
+
+            async with async_session_maker() as session:
+                inserted = await seed_demo_patients(session)
+                logger.warning("Demo data enabled", patients_seeded=inserted)
+        except Exception as e:
+            logger.warning(f"Could not seed demo data: {e}")
 
     # Initialize services
     from app.services.ai.model_registry import ModelRegistry
@@ -149,6 +171,7 @@ def create_application() -> FastAPI:
 
         request_id = str(uuid.uuid4())[:8]
         start_time = time.time()
+        safe_path = _safe_request_path(request)
 
         # Add request ID to headers
         response = await call_next(request)
@@ -157,12 +180,12 @@ def create_application() -> FastAPI:
         # Update metrics
         REQUEST_COUNT.labels(
             method=request.method,
-            endpoint=request.url.path,
+            endpoint=safe_path,
             status=response.status_code,
         ).inc()
         REQUEST_LATENCY.labels(
             method=request.method,
-            endpoint=request.url.path,
+            endpoint=safe_path,
         ).observe(process_time)
 
         # Add custom headers
@@ -173,7 +196,7 @@ def create_application() -> FastAPI:
             "request_completed",
             request_id=request_id,
             method=request.method,
-            path=request.url.path,
+            path=safe_path,
             status_code=response.status_code,
             process_time=f"{process_time:.4f}s",
         )
@@ -239,7 +262,7 @@ def create_application() -> FastAPI:
         """Handle uncaught exceptions."""
         logger.error(
             "unhandled_exception",
-            path=request.url.path,
+            path=_safe_request_path(request),
             method=request.method,
             error=str(exc),
             exc_info=exc,

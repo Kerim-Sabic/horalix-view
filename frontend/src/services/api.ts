@@ -27,6 +27,36 @@ export interface Study {
   created_at: string;
 }
 
+type StudyPayload = Omit<Study, 'modalities' | 'referring_physician'> & {
+  modalities?: unknown;
+  modalities_in_study?: unknown;
+  referring_physician?: unknown;
+  referring_physician_name?: unknown;
+};
+
+const normalizeStudy = (study: StudyPayload): Study => {
+  const modalitiesSource = Array.isArray(study.modalities)
+    ? study.modalities
+    : Array.isArray(study.modalities_in_study)
+      ? study.modalities_in_study
+      : [];
+  const modalities = modalitiesSource.filter((mod): mod is string => typeof mod === 'string');
+  const referringPhysician =
+    typeof study.referring_physician === 'string'
+      ? study.referring_physician
+      : typeof study.referring_physician_name === 'string'
+        ? study.referring_physician_name
+        : null;
+
+  return {
+    ...study,
+    patient_name: typeof study.patient_name === 'string' ? study.patient_name : '',
+    patient_id: typeof study.patient_id === 'string' ? study.patient_id : '',
+    modalities,
+    referring_physician: referringPhysician,
+  };
+};
+
 export interface StudyListResponse {
   total: number;
   page: number;
@@ -73,6 +103,16 @@ export interface Instance {
   rows: number | null;
   columns: number | null;
   bits_allocated: number | null;
+  bits_stored?: number | null;
+  photometric_interpretation?: string | null;
+  pixel_spacing?: [number, number] | null;
+  window_center?: number | null;
+  window_width?: number | null;
+  rescale_intercept?: number | null;
+  rescale_slope?: number | null;
+  number_of_frames?: number | null;
+  image_position_patient?: [number, number, number] | null;
+  image_orientation_patient?: [number, number, number, number, number, number] | null;
 }
 
 export interface SeriesDetailResponse {
@@ -107,16 +147,35 @@ export interface FrameInfo {
   }>;
 }
 
+export interface TrackMeasurementRequest {
+  start_index: number;
+  max_frames?: number;
+  track_full_loop?: boolean;
+  points: Array<{ x: number; y: number }>;
+}
+
+export interface TrackMeasurementResponse {
+  series_uid: string;
+  total_frames: number;
+  frames: Array<{
+    frame_index: number;
+    points: Array<{ x: number; y: number }>;
+    length_mm: number | null;
+    valid: boolean;
+  }>;
+  summary: { min_mm: number | null; max_mm: number | null; mean_mm: number | null };
+}
+
 export interface Patient {
   patient_id: string;
   patient_name: string;
-  patient_birth_date: string | null;
-  patient_sex: string | null;
+  birth_date: string | null;
+  sex: string | null;
   other_patient_ids: string | null;
   ethnic_group: string | null;
-  patient_comments: string | null;
-  num_studies: number;
-  created_at: string;
+  comments: string | null;
+  study_count: number;
+  last_study_date: string | null;
 }
 
 export interface PatientListResponse {
@@ -128,18 +187,18 @@ export interface PatientListResponse {
 
 export interface AIJob {
   job_id: string;
+  study_uid: string;
+  series_uid: string | null;
   model_type: string;
   task_type: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   progress: number;
-  study_instance_uid: string;
-  series_instance_uid: string | null;
-  input_params: Record<string, unknown>;
-  result: Record<string, unknown> | null;
-  error_message: string | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  error_message: string | null;
+  results: Record<string, unknown> | null;
+  result_files: Record<string, string> | null;
 }
 
 export interface AIJobListResponse {
@@ -152,25 +211,110 @@ export interface AIJobListResponse {
 export interface AIJobCreateParams {
   model_type: string;
   task_type: string;
-  study_instance_uid: string;
-  series_instance_uid?: string;
-  input_params?: Record<string, unknown>;
+  study_uid: string;
+  series_uid?: string | null;
+  parameters?: Record<string, unknown>;
+  priority?: number;
+}
+
+export interface AIModelDetails {
+  model_type: string;
+  version: string;
+  description: string;
+  supported_modalities: string[];
+  performance_metrics: Record<string, number>;
+  reference?: string | null;
+  license?: string | null;
+  class_names?: string[];
+  input_size?: number[];
+  output_channels?: number | null;
+}
+
+export interface AIModelRequirements {
+  enabled: boolean;
+  device?: string | null;
+  weights_path?: string | null;
+}
+
+export interface AIModelWeights {
+  path?: string | null;
+  exists: boolean;
+  size_bytes?: number | null;
+  sha256?: string | null;
 }
 
 export interface AIModel {
-  model_id: string;
   name: string;
-  description: string;
-  model_type: string;
-  supported_modalities: string[];
-  is_loaded: boolean;
-  memory_usage_mb: number;
-  metrics: Record<string, number>;
+  available: boolean;
+  status: string;
+  details: AIModelDetails;
+  requirements: AIModelRequirements;
+  weights: AIModelWeights;
+  last_checked: string | null;
+  errors: string[];
 }
 
 export interface AIModelsResponse {
   models: AIModel[];
+  total_registered?: number;
+  total_available?: number;
+  message?: string;
+  shape_error?: string | null;
 }
+
+const normalizeAIModelDetails = (details: Partial<AIModelDetails> | null | undefined): AIModelDetails => {
+  const safe = details && typeof details === 'object' ? details : {};
+  return {
+    model_type: typeof safe.model_type === 'string' ? safe.model_type : 'unknown',
+    version: typeof safe.version === 'string' ? safe.version : '',
+    description: typeof safe.description === 'string' ? safe.description : '',
+    supported_modalities: Array.isArray(safe.supported_modalities) ? safe.supported_modalities : [],
+    performance_metrics:
+      safe.performance_metrics && typeof safe.performance_metrics === 'object'
+        ? safe.performance_metrics
+        : {},
+    reference: typeof safe.reference === 'string' ? safe.reference : null,
+    license: typeof safe.license === 'string' ? safe.license : null,
+    class_names: Array.isArray(safe.class_names) ? safe.class_names : [],
+    input_size: Array.isArray(safe.input_size) ? safe.input_size : [],
+    output_channels: typeof safe.output_channels === 'number' ? safe.output_channels : null,
+  };
+};
+
+const normalizeAIModelRequirements = (
+  requirements: Partial<AIModelRequirements> | null | undefined
+): AIModelRequirements => {
+  const safe = requirements && typeof requirements === 'object' ? requirements : {};
+  return {
+    enabled: typeof safe.enabled === 'boolean' ? safe.enabled : false,
+    device: typeof safe.device === 'string' ? safe.device : null,
+    weights_path: typeof safe.weights_path === 'string' ? safe.weights_path : null,
+  };
+};
+
+const normalizeAIModelWeights = (weights: Partial<AIModelWeights> | null | undefined): AIModelWeights => {
+  const safe = weights && typeof weights === 'object' ? weights : {};
+  return {
+    path: typeof safe.path === 'string' ? safe.path : null,
+    exists: typeof safe.exists === 'boolean' ? safe.exists : false,
+    size_bytes: typeof safe.size_bytes === 'number' ? safe.size_bytes : null,
+    sha256: typeof safe.sha256 === 'string' ? safe.sha256 : null,
+  };
+};
+
+const normalizeAIModel = (model: Partial<AIModel> | null | undefined): AIModel => {
+  const safe = model && typeof model === 'object' ? model : {};
+  return {
+    name: typeof safe.name === 'string' ? safe.name : 'Unknown model',
+    available: typeof safe.available === 'boolean' ? safe.available : false,
+    status: typeof safe.status === 'string' ? safe.status : 'unknown',
+    details: normalizeAIModelDetails(safe.details),
+    requirements: normalizeAIModelRequirements(safe.requirements),
+    weights: normalizeAIModelWeights(safe.weights),
+    last_checked: typeof safe.last_checked === 'string' ? safe.last_checked : null,
+    errors: Array.isArray(safe.errors) ? safe.errors : [],
+  };
+};
 
 export interface DashboardStats {
   total_studies: number;
@@ -201,6 +345,18 @@ export interface UploadProgress {
 // API Service
 // ============================================================================
 
+const getAuthToken = (): string | null => {
+  if (typeof window === 'undefined') return null;
+  return localStorage.getItem('access_token');
+};
+
+const appendAuthToken = (params: URLSearchParams): void => {
+  const token = getAuthToken();
+  if (token) {
+    params.set('token', token);
+  }
+};
+
 export const api = {
   // --------------------------------------------------------------------------
   // Studies
@@ -211,15 +367,36 @@ export const api = {
      */
     async list(params?: StudySearchParams): Promise<StudyListResponse> {
       const response = await apiClient.get<StudyListResponse>('/studies', { params });
-      return response.data;
+      const payload = response.data as unknown as {
+        total?: number;
+        page?: number;
+        page_size?: number;
+        studies?: StudyPayload[];
+      };
+      const rawStudies = Array.isArray(payload.studies) ? payload.studies : [];
+      return {
+        total: typeof payload.total === 'number' ? payload.total : 0,
+        page: typeof payload.page === 'number' ? payload.page : 1,
+        page_size: typeof payload.page_size === 'number' ? payload.page_size : rawStudies.length,
+        studies: rawStudies.map((study) => normalizeStudy(study)),
+      };
     },
 
     /**
      * Get a single study by UID.
      */
     async get(studyUid: string): Promise<Study> {
-      const response = await apiClient.get<Study>(`/studies/${studyUid}`);
-      return response.data;
+      const response = await apiClient.get(`/studies/${studyUid}`);
+      const payload = response.data as
+        | StudyPayload
+        | {
+            study?: StudyPayload;
+          };
+      const rawStudy =
+        payload && typeof payload === 'object' && 'study' in payload && payload.study
+          ? payload.study
+          : (payload as StudyPayload);
+      return normalizeStudy(rawStudy as StudyPayload);
     },
 
     /**
@@ -230,25 +407,39 @@ export const api = {
       onProgress?: (progress: UploadProgress[]) => void
     ): Promise<{ studies_created: string[]; instances_stored: number }> {
       const formData = new FormData();
+      const fileSizes = files.map((file) => file.size || 0);
+      const totalSize = fileSizes.reduce((sum, size) => sum + size, 0);
       files.forEach((file) => {
         formData.append('files', file);
       });
 
-      const response = await apiClient.post('/studies/upload', formData, {
+      const response = await apiClient.post('/studies', formData, {
         headers: {
           'Content-Type': 'multipart/form-data',
         },
+        timeout: 60 * 60 * 1000,
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
         onUploadProgress: (progressEvent) => {
-          if (onProgress && progressEvent.total) {
-            const progress = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-            onProgress(
-              files.map((f) => ({
+          if (!onProgress) return;
+          const total = progressEvent.total || totalSize || 1;
+          const loaded = Math.min(progressEvent.loaded, total);
+          let remaining = loaded;
+
+          onProgress(
+            files.map((f, index) => {
+              const size = fileSizes[index] || 0;
+              const fileLoaded = size ? Math.min(size, Math.max(remaining, 0)) : 0;
+              remaining = Math.max(remaining - fileLoaded, 0);
+              const overallProgress = Math.round((loaded * 100) / total);
+              const fileProgress = size ? Math.round((fileLoaded * 100) / size) : overallProgress;
+              return {
                 file_name: f.name,
-                progress,
-                status: progress < 100 ? 'uploading' : 'processing',
-              }))
-            );
-          }
+                progress: Math.min(fileProgress, 100),
+                status: overallProgress < 100 ? 'uploading' : 'processing',
+              };
+            })
+          );
         },
       });
 
@@ -313,6 +504,41 @@ export const api = {
       const response = await apiClient.get<VolumeInfo>(`/series/${seriesUid}/volume-info`);
       return response.data;
     },
+
+    /**
+     * Get an MPR slice image URL for a series.
+     */
+    getMprUrl(
+      seriesUid: string,
+      options?: {
+        plane?: 'axial' | 'coronal' | 'sagittal';
+        index?: number;
+        windowCenter?: number;
+        windowWidth?: number;
+        format?: 'png' | 'jpeg';
+      }
+    ): string {
+      const params = new URLSearchParams();
+      if (options?.plane) params.set('plane', options.plane);
+      if (options?.index !== undefined) params.set('index', options.index.toString());
+      if (options?.windowCenter !== undefined) params.set('window_center', options.windowCenter.toString());
+      if (options?.windowWidth !== undefined) params.set('window_width', options.windowWidth.toString());
+      if (options?.format) params.set('format', options.format);
+      appendAuthToken(params);
+      const queryString = params.toString();
+      return `/api/v1/series/${seriesUid}/mpr${queryString ? `?${queryString}` : ''}`;
+    },
+
+    async trackMeasurement(
+      seriesUid: string,
+      payload: TrackMeasurementRequest
+    ): Promise<TrackMeasurementResponse> {
+      const response = await apiClient.post<TrackMeasurementResponse>(
+        `/series/${seriesUid}/track-measurement`,
+        payload
+      );
+      return response.data;
+    },
   },
 
   // --------------------------------------------------------------------------
@@ -354,9 +580,21 @@ export const api = {
       if (options?.windowWidth !== undefined) params.set('window_width', options.windowWidth.toString());
       if (options?.format) params.set('format', options.format);
       if (options?.quality !== undefined) params.set('quality', options.quality.toString());
+      appendAuthToken(params);
 
       const queryString = params.toString();
       return `/api/v1/instances/${instanceUid}/pixel-data${queryString ? `?${queryString}` : ''}`;
+    },
+
+    /**
+     * Get a thumbnail URL for quick series previews.
+     */
+    getThumbnailUrl(instanceUid: string, size?: number): string {
+      const params = new URLSearchParams();
+      if (size) params.set('size', size.toString());
+      appendAuthToken(params);
+      const queryString = params.toString();
+      return `/api/v1/instances/${instanceUid}/thumbnail${queryString ? `?${queryString}` : ''}`;
     },
 
     /**
@@ -396,7 +634,19 @@ export const api = {
      */
     async getStudies(patientId: string): Promise<StudyListResponse> {
       const response = await apiClient.get<StudyListResponse>(`/patients/${patientId}/studies`);
-      return response.data;
+      const payload = response.data as unknown as {
+        total?: number;
+        page?: number;
+        page_size?: number;
+        studies?: StudyPayload[];
+      };
+      const rawStudies = Array.isArray(payload.studies) ? payload.studies : [];
+      return {
+        total: typeof payload.total === 'number' ? payload.total : 0,
+        page: typeof payload.page === 'number' ? payload.page : 1,
+        page_size: typeof payload.page_size === 'number' ? payload.page_size : rawStudies.length,
+        studies: rawStudies.map((study) => normalizeStudy(study)),
+      };
     },
   },
 
@@ -409,7 +659,17 @@ export const api = {
      */
     async getModels(): Promise<AIModelsResponse> {
       const response = await apiClient.get<AIModelsResponse>('/ai/models');
-      return response.data;
+      const payload = response.data as unknown;
+      const isObject = typeof payload === 'object' && payload !== null;
+      const base = (isObject ? payload : {}) as AIModelsResponse;
+      const modelsValue = isObject ? (payload as { models?: unknown }).models : undefined;
+      const hasValidModels = Array.isArray(modelsValue);
+      const rawModels = hasValidModels ? (modelsValue as Partial<AIModel>[]) : [];
+      return {
+        ...base,
+        models: rawModels.map((model) => normalizeAIModel(model)),
+        shape_error: hasValidModels ? null : 'Invalid models payload',
+      };
     },
 
     /**
@@ -430,7 +690,7 @@ export const api = {
      * Create a new AI inference job.
      */
     async createJob(params: AIJobCreateParams): Promise<AIJob> {
-      const response = await apiClient.post<AIJob>('/ai/jobs', params);
+      const response = await apiClient.post<AIJob>('/ai/infer', params);
       return response.data;
     },
 
@@ -446,6 +706,51 @@ export const api = {
     }): Promise<AIJobListResponse> {
       const response = await apiClient.get<AIJobListResponse>('/ai/jobs', { params });
       return response.data;
+    },
+
+    /**
+     * Get aggregated AI results for a study.
+     */
+    async getStudyResults(studyUid: string, taskType?: string): Promise<{
+      study_uid: string;
+      total_jobs: number;
+      segmentations: Record<string, unknown>[];
+      detections: Record<string, unknown>[];
+      classifications: Record<string, unknown>[];
+      pathology: Record<string, unknown>[];
+      cardiac: Record<string, unknown>[];
+      jobs: Array<{
+        job_id: string;
+        model_type: string;
+        task_type: string;
+        completed_at: string | null;
+        inference_time_ms: number | null;
+        results: Record<string, unknown> | null;
+        result_files: Record<string, string> | null;
+      }>;
+    }> {
+      const response = await apiClient.get(`/ai/results/${studyUid}`, {
+        params: taskType ? { task_type: taskType } : undefined,
+      });
+      return response.data;
+    },
+
+    /**
+     * Build a URL for rendering a segmentation mask overlay.
+     */
+    getMaskOverlayUrl(
+      studyUid: string,
+      filename: string,
+      sliceIndex: number,
+      classId?: number
+    ): string {
+      const params = new URLSearchParams();
+      params.set('slice', sliceIndex.toString());
+      if (classId !== undefined) {
+        params.set('class_id', classId.toString());
+      }
+      appendAuthToken(params);
+      return `/api/v1/ai/results/${studyUid}/masks/${filename}/render?${params.toString()}`;
     },
 
     /**
@@ -538,7 +843,9 @@ export const api = {
 
         // Ensure we always return an array
         const studies = response.data?.studies;
-        return Array.isArray(studies) ? studies : [];
+        return Array.isArray(studies)
+          ? studies.map((study) => normalizeStudy(study as unknown as StudyPayload))
+          : [];
       } catch (error) {
         console.error('Failed to fetch recent studies:', error);
         throw error; // Let caller handle error - don't silently return empty array

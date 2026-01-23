@@ -3,15 +3,18 @@
 Provides endpoints for retrieving and managing DICOM series.
 """
 
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.endpoints.auth import get_current_active_user
+from app.api.v1.endpoints.auth import get_current_active_user, get_current_active_user_from_token
+from app.core.logging import audit_logger
 from app.core.security import TokenData
 from app.models.base import get_db
 from app.models.instance import Instance
@@ -29,6 +32,7 @@ class InstanceSummary(BaseModel):
     rows: int | None
     columns: int | None
     bits_allocated: int | None
+    number_of_frames: int | None = None
 
     class Config:
         from_attributes = True
@@ -72,6 +76,40 @@ class SeriesDetailResponse(BaseModel):
     has_3d_data: bool = False
 
 
+class TrackPoint(BaseModel):
+    x: float
+    y: float
+
+
+class TrackMeasurementRequest(BaseModel):
+    start_index: int = Field(0, ge=0, description="Start frame index in series order")
+    max_frames: int | None = Field(None, ge=1, description="Optional maximum frames to track")
+    track_full_loop: bool = Field(
+        True, description="Track backwards and forwards to cover the full cine loop"
+    )
+    points: list[TrackPoint] = Field(..., min_length=2, max_length=2)
+
+
+class TrackMeasurementFrame(BaseModel):
+    frame_index: int
+    points: list[TrackPoint]
+    length_mm: float | None = None
+    valid: bool = True
+
+
+class TrackMeasurementSummary(BaseModel):
+    min_mm: float | None = None
+    max_mm: float | None = None
+    mean_mm: float | None = None
+
+
+class TrackMeasurementResponse(BaseModel):
+    series_uid: str
+    total_frames: int
+    frames: list[TrackMeasurementFrame]
+    summary: TrackMeasurementSummary
+
+
 def _series_to_metadata(series: Series) -> SeriesMetadata:
     """Convert Series model to SeriesMetadata response."""
     return SeriesMetadata(
@@ -93,7 +131,7 @@ def _series_to_metadata(series: Series) -> SeriesMetadata:
 
 @router.get("", response_model=SeriesListResponse)
 async def list_series(
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
     study_uid: str | None = Query(None, description="Filter by study UID"),
     modality: str | None = Query(None, description="Filter by modality"),
@@ -143,6 +181,13 @@ async def get_series(
             detail=f"Series not found: {series_uid}",
         )
 
+    audit_logger.log_access(
+        user_id=current_user.user_id,
+        resource_type="series",
+        resource_id=series_uid,
+        action="VIEW",
+    )
+
     # Build instance list
     instances = [
         InstanceSummary(
@@ -152,6 +197,7 @@ async def get_series(
             rows=inst.rows,
             columns=inst.columns,
             bits_allocated=inst.bits_allocated,
+            number_of_frames=inst.number_of_frames,
         )
         for inst in sorted(series.instances, key=lambda i: i.instance_number or 0)
     ]
@@ -285,3 +331,287 @@ async def get_volume_info(
         "supports_mpr": True,
         "supports_vr": True,
     }
+
+
+@router.get("/{series_uid}/mpr")
+async def get_mpr_slice(
+    series_uid: str,
+    request: Request,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    plane: str = Query("axial", description="MPR plane: axial, coronal, sagittal"),
+    index: int = Query(0, ge=0, description="Slice index for the requested plane"),
+    format: str = Query("png", enum=["png", "jpeg"], description="Output format"),
+    quality: int = Query(90, ge=1, le=100, description="JPEG quality"),
+    window_center: float | None = Query(None, description="Override window center"),
+    window_width: float | None = Query(None, description="Override window width"),
+) -> StreamingResponse:
+    """Render an MPR slice for a 3D series."""
+    import numpy as np
+    from io import BytesIO
+    from PIL import Image
+
+    from app.services.ai.dicom_loader import DicomLoader
+
+    query = (
+        select(Series)
+        .options(selectinload(Series.instances))
+        .where(Series.series_instance_uid == series_uid)
+    )
+    result = await db.execute(query)
+    series = result.scalar_one_or_none()
+
+    if not series:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Series not found: {series_uid}",
+        )
+
+    if not series.study_instance_uid_fk:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Series is missing study reference",
+        )
+
+    if (series.num_instances or 0) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Series does not contain enough slices for MPR",
+        )
+
+    loader = DicomLoader(request.app.state.dicom_storage)
+    try:
+        volume = await loader.load_series(series.study_instance_uid_fk, series_uid, apply_rescale=False)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to load series volume",
+        ) from exc
+
+    data = volume.pixel_data
+    if data.ndim == 2:
+        slice_data = data
+    elif data.ndim == 3:
+        depth, rows, cols = data.shape
+        plane_lower = plane.lower()
+        if plane_lower == "axial":
+            if index >= depth:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Index out of range (0-{depth - 1}) for axial plane",
+                )
+            slice_data = data[index, :, :]
+        elif plane_lower == "coronal":
+            if index >= rows:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Index out of range (0-{rows - 1}) for coronal plane",
+                )
+            slice_data = data[:, index, :]
+        elif plane_lower == "sagittal":
+            if index >= cols:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Index out of range (0-{cols - 1}) for sagittal plane",
+                )
+            slice_data = data[:, :, index]
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Plane must be axial, coronal, or sagittal",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unsupported volume dimensions for MPR rendering",
+        )
+
+    wc = window_center if window_center is not None else (volume.metadata.window_center or 40)
+    ww = window_width if window_width is not None else (volume.metadata.window_width or 400)
+    slice_u8 = loader._apply_windowing(
+        slice_data,
+        window_center=wc,
+        window_width=ww,
+        rescale_slope=volume.metadata.rescale_slope,
+        rescale_intercept=volume.metadata.rescale_intercept,
+    )
+
+    if slice_u8.ndim != 2:
+        slice_u8 = np.squeeze(slice_u8)
+
+    img = Image.fromarray(slice_u8, mode="L")
+    buffer = BytesIO()
+    if format == "png":
+        img.save(buffer, format="PNG")
+        media_type = "image/png"
+    else:
+        img.save(buffer, format="JPEG", quality=quality)
+        media_type = "image/jpeg"
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type=media_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+@router.post("/{series_uid}/track-measurement", response_model=TrackMeasurementResponse)
+async def track_measurement(
+    series_uid: str,
+    payload: TrackMeasurementRequest,
+    request: Request,
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> TrackMeasurementResponse:
+    """Track a 2-point measurement across cine frames using optical flow."""
+    import cv2
+    import numpy as np
+    import pydicom
+
+    query = (
+        select(Series)
+        .options(selectinload(Series.instances))
+        .where(Series.series_instance_uid == series_uid)
+    )
+    result = await db.execute(query)
+    series = result.scalar_one_or_none()
+
+    if not series:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Series not found: {series_uid}",
+        )
+
+    instances = sorted(series.instances, key=lambda inst: inst.instance_number or 0)
+    if not instances:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Series has no instances to track",
+        )
+
+    frame_refs: list[tuple[Instance, int]] = []
+    for inst in instances:
+        frame_count = max(1, inst.number_of_frames or 1)
+        for frame_idx in range(frame_count):
+            frame_refs.append((inst, frame_idx))
+
+    total_frames = len(frame_refs)
+    if total_frames == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Series has no frames to track",
+        )
+
+    start_index = min(payload.start_index, total_frames - 1)
+    end_index = total_frames
+    if payload.max_frames:
+        end_index = min(end_index, start_index + payload.max_frames)
+
+    points = np.array([[p.x, p.y] for p in payload.points], dtype=np.float32).reshape(-1, 1, 2)
+
+    pixel_spacing = instances[0].pixel_spacing or [1.0, 1.0]
+    spacing_row = float(pixel_spacing[0]) if len(pixel_spacing) > 0 else 1.0
+    spacing_col = float(pixel_spacing[1]) if len(pixel_spacing) > 1 else 1.0
+
+    def _load_frame_pixel(instance: Instance, frame_idx: int, cached: dict) -> np.ndarray:
+        if cached.get("instance_uid") != instance.sop_instance_uid:
+            if not instance.file_path or not Path(instance.file_path).exists():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="DICOM file not available on server",
+                )
+            ds = pydicom.dcmread(instance.file_path)
+            cached["instance_uid"] = instance.sop_instance_uid
+            cached["pixel_array"] = ds.pixel_array
+            cached["samples_per_pixel"] = int(getattr(ds, "SamplesPerPixel", 1))
+        pixel_array = cached["pixel_array"]
+        samples_per_pixel = cached["samples_per_pixel"]
+
+        frame = pixel_array
+        if pixel_array.ndim == 4:
+            frame = pixel_array[frame_idx]
+        elif pixel_array.ndim == 3 and samples_per_pixel == 1:
+            frame = pixel_array[frame_idx]
+        return frame
+
+    def _to_gray(frame: np.ndarray) -> np.ndarray:
+        if frame.ndim == 3 and frame.shape[-1] in (3, 4):
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
+        frame_u8 = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+        return frame_u8.astype(np.uint8)
+
+    cached = {}
+
+    lk_params = dict(
+        winSize=(21, 21),
+        maxLevel=3,
+        criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
+    )
+
+    def _track_indices(indices: list[int]) -> dict[int, TrackMeasurementFrame]:
+        local_prev_gray = None
+        local_prev_points = points.copy()
+        results: dict[int, TrackMeasurementFrame] = {}
+
+        for idx in indices:
+            inst, frame_idx = frame_refs[idx]
+            frame = _load_frame_pixel(inst, frame_idx, cached)
+            gray = _to_gray(frame)
+
+            if local_prev_gray is None:
+                tracked = local_prev_points.copy()
+                status_ok = True
+            else:
+                next_points, status, _ = cv2.calcOpticalFlowPyrLK(
+                    local_prev_gray, gray, local_prev_points, None, **lk_params
+                )
+                status_ok = bool(status is not None and status.all())
+                if next_points is None or not status_ok:
+                    next_points = local_prev_points.copy()
+                tracked = next_points
+
+            local_prev_gray = gray
+            local_prev_points = tracked
+
+            tracked = np.clip(tracked, [0, 0], [gray.shape[1] - 1, gray.shape[0] - 1])
+            p0 = tracked[0][0]
+            p1 = tracked[1][0]
+            dx_mm = (p1[0] - p0[0]) * spacing_col
+            dy_mm = (p1[1] - p0[1]) * spacing_row
+            length_mm = float(np.sqrt(dx_mm * dx_mm + dy_mm * dy_mm))
+
+            results[idx] = TrackMeasurementFrame(
+                frame_index=idx,
+                points=[
+                    TrackPoint(x=float(p0[0]), y=float(p0[1])),
+                    TrackPoint(x=float(p1[0]), y=float(p1[1])),
+                ],
+                length_mm=length_mm,
+                valid=status_ok,
+            )
+
+        return results
+
+    forward_indices = list(range(start_index, end_index))
+    tracked_map = _track_indices(forward_indices)
+
+    if payload.track_full_loop and start_index > 0:
+        backward_indices = list(range(start_index, -1, -1))
+        tracked_map.update(_track_indices(backward_indices))
+
+    tracked_frames = [tracked_map[idx] for idx in sorted(tracked_map.keys())]
+    lengths = [frame.length_mm for frame in tracked_frames if frame.valid and frame.length_mm is not None]
+    summary = TrackMeasurementSummary()
+    if lengths:
+        summary = TrackMeasurementSummary(
+            min_mm=float(min(lengths)),
+            max_mm=float(max(lengths)),
+            mean_mm=float(sum(lengths) / len(lengths)),
+        )
+
+    return TrackMeasurementResponse(
+        series_uid=series_uid,
+        total_frames=total_frames,
+        frames=tracked_frames,
+        summary=summary,
+    )

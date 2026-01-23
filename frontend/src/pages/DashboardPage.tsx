@@ -161,37 +161,39 @@ const DashboardPage: React.FC = () => {
   }, []);
 
   const getStatusIcon = (status: string) => {
-    switch (status) {
-      case 'completed':
-      case 'complete':
-        return <SuccessIcon color="success" fontSize="small" />;
-      case 'running':
-      case 'processing':
-        return <PendingIcon color="warning" fontSize="small" />;
-      case 'failed':
-      case 'error':
-        return <ErrorIcon color="error" fontSize="small" />;
-      case 'pending':
-        return <QueuedIcon color="disabled" fontSize="small" />;
-      default:
-        return <PendingIcon color="disabled" fontSize="small" />;
-    }
+      switch (status) {
+        case 'completed':
+        case 'complete':
+          return <SuccessIcon color="success" fontSize="small" />;
+        case 'running':
+        case 'processing':
+          return <PendingIcon color="warning" fontSize="small" />;
+        case 'failed':
+        case 'error':
+          return <ErrorIcon color="error" fontSize="small" />;
+        case 'queued':
+        case 'pending':
+          return <QueuedIcon color="disabled" fontSize="small" />;
+        default:
+          return <PendingIcon color="disabled" fontSize="small" />;
+      }
   };
 
   const getStatusColor = (status: string): 'success' | 'warning' | 'error' | 'default' => {
-    switch (status) {
-      case 'completed':
-      case 'complete':
-        return 'success';
-      case 'running':
-      case 'processing':
-        return 'warning';
-      case 'failed':
-      case 'error':
-        return 'error';
-      default:
-        return 'default';
-    }
+      switch (status) {
+        case 'completed':
+        case 'complete':
+          return 'success';
+        case 'running':
+        case 'processing':
+          return 'warning';
+        case 'failed':
+        case 'error':
+          return 'error';
+        case 'queued':
+        default:
+          return 'default';
+      }
   };
 
   const formatBytes = (bytes: number): string => {

@@ -5,15 +5,25 @@ Provides system administration, configuration, and monitoring capabilities.
 
 from datetime import datetime
 from typing import Annotated, Any
+import shutil
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from pydantic import BaseModel
 
 from app.api.v1.endpoints.auth import require_roles
+from app.core.config import get_settings
 from app.core.logging import audit_logger
 from app.core.security import TokenData
+from app.models.audit import AuditLog
+from app.models.base import get_db
+from app.models.job import AIJob, JobStatus
+from app.models.user import User
 
 router = APIRouter()
+settings = get_settings()
 
 
 class SystemStatus(BaseModel):
@@ -85,53 +95,83 @@ SYSTEM_START_TIME = datetime.now()
 @router.get("/status", response_model=SystemStatus)
 async def get_system_status(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SystemStatus:
     """Get system status and health metrics."""
     uptime = (datetime.now() - SYSTEM_START_TIME).total_seconds()
+
+    cpu_usage = 0.0
+    memory_usage = 0.0
+    disk_usage = 0.0
+    storage_path = "/"
+    try:
+        if hasattr(settings, "dicom"):
+            storage_path = str(settings.dicom.storage_dir)
+        usage = shutil.disk_usage(storage_path)
+        disk_usage = (usage.used / usage.total) * 100 if usage.total else 0.0
+    except Exception:
+        disk_usage = 0.0
+
+    try:
+        import psutil
+
+        cpu_usage = psutil.cpu_percent(interval=0.1)
+        memory_usage = psutil.virtual_memory().percent
+        if storage_path:
+            disk_usage = psutil.disk_usage(storage_path).percent
+    except Exception:
+        cpu_usage = cpu_usage or 0.0
+        memory_usage = memory_usage or 0.0
+
+    active_users = (
+        await db.scalar(select(func.count()).select_from(User).where(User.is_active.is_(True)))
+        or 0
+    )
+    pending_jobs = (
+        await db.scalar(
+            select(func.count())
+            .select_from(AIJob)
+            .where(AIJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]))
+        )
+        or 0
+    )
 
     return SystemStatus(
         status="healthy",
         version="1.0.0",
         uptime_seconds=uptime,
-        cpu_usage_percent=25.5,
-        memory_usage_percent=42.0,
-        disk_usage_percent=35.0,
-        active_users=3,
-        pending_jobs=2,
+        cpu_usage_percent=cpu_usage,
+        memory_usage_percent=memory_usage,
+        disk_usage_percent=disk_usage,
+        active_users=active_users,
+        pending_jobs=pending_jobs,
     )
 
 
 @router.get("/ai/status", response_model=list[AIModelStatus])
 async def get_ai_model_status(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    request: Request,
 ) -> list[AIModelStatus]:
     """Get status of all AI models."""
-    return [
-        AIModelStatus(
-            model_name="nnunet",
-            is_loaded=False,
-            memory_usage_mb=0,
-            inference_count=0,
-            average_inference_time_ms=0,
-            last_used=None,
-        ),
-        AIModelStatus(
-            model_name="medsam",
-            is_loaded=False,
-            memory_usage_mb=0,
-            inference_count=0,
-            average_inference_time_ms=0,
-            last_used=None,
-        ),
-        AIModelStatus(
-            model_name="yolov8",
-            is_loaded=False,
-            memory_usage_mb=0,
-            inference_count=0,
-            average_inference_time_ms=0,
-            last_used=None,
-        ),
-    ]
+    registry = getattr(request.app.state, "model_registry", None)
+    if not registry:
+        return []
+
+    availability = registry.get_model_availability()
+    models: list[AIModelStatus] = []
+    for name, status in availability.items():
+        models.append(
+            AIModelStatus(
+                model_name=name,
+                is_loaded=bool(status.get("loaded", False)),
+                memory_usage_mb=0.0,
+                inference_count=0,
+                average_inference_time_ms=0.0,
+                last_used=None,
+            )
+        )
+    return models
 
 
 @router.post("/ai/models/{model_name}/load")
@@ -163,15 +203,39 @@ async def unload_ai_model(
 @router.get("/storage", response_model=StorageInfo)
 async def get_storage_info(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    request: Request,
 ) -> StorageInfo:
     """Get storage information."""
+    dicom_storage = getattr(request.app.state, "dicom_storage", None)
+    total_bytes = 0
+    used_bytes = 0
+    free_bytes = 0
+    study_count = 0
+    series_count = 0
+    instance_count = 0
+
+    if dicom_storage:
+        stats = await dicom_storage.get_storage_stats()
+        used_bytes = int(stats.get("total_size_bytes", 0))
+        study_count = int(stats.get("study_count", 0))
+        series_count = int(stats.get("series_count", 0))
+        instance_count = int(stats.get("instance_count", 0))
+
+        try:
+            usage = shutil.disk_usage(str(dicom_storage.storage_dir))
+            total_bytes = usage.total
+            free_bytes = usage.free
+        except Exception:
+            total_bytes = used_bytes
+            free_bytes = 0
+
     return StorageInfo(
-        total_bytes=1000000000000,  # 1TB
-        used_bytes=350000000000,  # 350GB
-        free_bytes=650000000000,  # 650GB
-        study_count=1250,
-        series_count=8500,
-        instance_count=425000,
+        total_bytes=total_bytes,
+        used_bytes=used_bytes,
+        free_bytes=free_bytes,
+        study_count=study_count,
+        series_count=series_count,
+        instance_count=instance_count,
     )
 
 
@@ -231,6 +295,7 @@ async def update_configuration(
 @router.get("/audit-logs", response_model=AuditLogResponse)
 async def get_audit_logs(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
     user_id: str | None = None,
     action: str | None = None,
     resource_type: str | None = None,
@@ -243,28 +308,41 @@ async def get_audit_logs(
 
     Supports filtering by user, action, resource type, and date range.
     """
-    # Return sample audit logs
+    query = select(AuditLog)
+
+    if user_id:
+        query = query.where(AuditLog.user_id == user_id)
+    if action:
+        query = query.where(AuditLog.action == action)
+    if resource_type:
+        query = query.where(AuditLog.resource_type == resource_type)
+    if from_date:
+        query = query.where(AuditLog.timestamp >= from_date)
+    if to_date:
+        query = query.where(AuditLog.timestamp <= to_date)
+
+    total_result = await db.execute(select(func.count()).select_from(query.subquery()))
+    total = total_result.scalar() or 0
+
+    result = await db.execute(
+        query.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit)
+    )
+    logs = result.scalars().all()
+
     entries = [
         AuditLogEntry(
-            timestamp=datetime.now(),
-            user_id="user_001",
-            action="VIEW",
-            resource_type="study",
-            resource_id="1.2.840.113619.2.55.3.123456789.1",
-            ip_address="192.168.1.100",
-        ),
-        AuditLogEntry(
-            timestamp=datetime.now(),
-            user_id="user_002",
-            action="EXPORT",
-            resource_type="study",
-            resource_id="1.2.840.113619.2.55.3.123456789.2",
-            details={"format": "DICOM", "anonymized": True},
-            ip_address="192.168.1.101",
-        ),
+            timestamp=log.timestamp,
+            user_id=log.user_id or "",
+            action=log.action.value if hasattr(log.action, "value") else str(log.action),
+            resource_type=log.resource_type or "",
+            resource_id=log.resource_id or "",
+            details=log.details or {},
+            ip_address=log.ip_address,
+        )
+        for log in logs
     ]
 
-    return AuditLogResponse(total=len(entries), entries=entries)
+    return AuditLogResponse(total=total, entries=entries)
 
 
 @router.post("/audit-logs/export")
@@ -285,19 +363,20 @@ async def export_audit_logs(
 @router.get("/users")
 async def list_users(
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[dict]:
     """List all users."""
-    from app.api.v1.endpoints.auth import USERS_DB
-
+    result = await db.execute(select(User))
+    users = result.scalars().all()
     return [
         {
-            "id": u["id"],
-            "username": u["username"],
-            "email": u["email"],
-            "roles": u["roles"],
-            "is_active": u["is_active"],
+            "id": user.user_id,
+            "username": user.username,
+            "email": user.email,
+            "roles": user.roles_list,
+            "is_active": user.is_active,
         }
-        for u in USERS_DB.values()
+        for user in users
     ]
 
 
@@ -306,29 +385,38 @@ async def update_user_roles(
     user_id: str,
     roles: list[str],
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Update user roles."""
-    from app.api.v1.endpoints.auth import USERS_DB
+    valid_roles = {"admin", "radiologist", "technologist", "referring_physician", "researcher"}
+    invalid_roles = set(roles) - valid_roles
+    if invalid_roles:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid roles: {', '.join(sorted(invalid_roles))}",
+        )
 
-    for user in USERS_DB.values():
-        if user["id"] == user_id:
-            old_roles = user["roles"]
-            user["roles"] = roles
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User not found: {user_id}",
+        )
 
-            audit_logger.log_configuration_change(
-                user_id=current_user.user_id,
-                setting_name=f"user_{user_id}_roles",
-                old_value=old_roles,
-                new_value=roles,
-                component="auth",
-            )
+    old_roles = user.roles_list
+    user.roles_list = roles
+    await db.commit()
 
-            return {"message": "Roles updated", "user_id": user_id, "roles": roles}
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"User not found: {user_id}",
+    audit_logger.log_configuration_change(
+        user_id=current_user.user_id,
+        setting_name=f"user_{user_id}_roles",
+        old_value=old_roles,
+        new_value=roles,
+        component="auth",
     )
+
+    return {"message": "Roles updated", "user_id": user_id, "roles": roles}
 
 
 @router.put("/users/{user_id}/status")
@@ -336,19 +424,20 @@ async def update_user_status(
     user_id: str,
     is_active: bool,
     current_user: Annotated[TokenData, Depends(require_roles("admin"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     """Activate or deactivate a user."""
-    from app.api.v1.endpoints.auth import USERS_DB
+    result = await db.execute(select(User).where(User.user_id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User not found: {user_id}",
+        )
 
-    for user in USERS_DB.values():
-        if user["id"] == user_id:
-            user["is_active"] = is_active
-            return {"message": "Status updated", "user_id": user_id, "is_active": is_active}
-
-    raise HTTPException(
-        status_code=status.HTTP_404_NOT_FOUND,
-        detail=f"User not found: {user_id}",
-    )
+    user.is_active = is_active
+    await db.commit()
+    return {"message": "Status updated", "user_id": user_id, "is_active": is_active}
 
 
 @router.post("/maintenance/cleanup")

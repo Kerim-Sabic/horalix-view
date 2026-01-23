@@ -89,6 +89,14 @@ class AIModelSettings(BaseSettings):
     hipt_enabled: bool = Field(default=True, description="Enable HIPT")
     ctranspath_enabled: bool = Field(default=True, description="Enable CTransPath")
     chief_enabled: bool = Field(default=True, description="Enable CHIEF")
+    hovernet_enabled: bool = Field(
+        default=True, description="Enable HoVer-Net pathology inference (external command)"
+    )
+
+    # Cardiac models
+    echonet_measurements_enabled: bool = Field(
+        default=True, description="Enable EchoNet measurements (external command)"
+    )
 
     # Inference settings
     device: str = Field(
@@ -142,6 +150,27 @@ class AIModelSettings(BaseSettings):
         default=True, description="Log SHA256 hash of weights for reproducibility tracking"
     )
 
+    # External model command settings
+    external_timeout_seconds: int = Field(
+        default=900, ge=30, description="Timeout in seconds for external model commands"
+    )
+    external_workdir: Path | None = Field(
+        default=None,
+        description="Optional working directory for external model commands",
+    )
+    echonet_measurements_command: str | None = Field(
+        default=None,
+        description="Command template for EchoNet measurements inference",
+    )
+    gigapath_command: str | None = Field(
+        default=None,
+        description="Command template for Prov-GigaPath inference",
+    )
+    hovernet_command: str | None = Field(
+        default=None,
+        description="Command template for HoVer-Net inference",
+    )
+
 
 class DICOMSettings(BaseSettings):
     """Configuration for DICOM networking and processing."""
@@ -159,6 +188,13 @@ class DICOMSettings(BaseSettings):
         default=Path("./storage/dicom"), description="DICOM storage directory"
     )
     temp_dir: Path = Field(default=Path("./temp"), description="Temporary file directory")
+
+    # Upload limits
+    max_upload_size_gb: float = Field(
+        default=10.0,
+        ge=0.1,
+        description="Maximum upload size per request in GB",
+    )
 
     # DICOMweb settings
     dicomweb_enabled: bool = Field(default=True, description="Enable DICOMweb services")
@@ -258,6 +294,9 @@ class Settings(BaseSettings):
         default="development", description="Deployment environment"
     )
     debug: bool = Field(default=False, description="Enable debug mode")
+    enable_demo_data: bool = Field(
+        default=False, description="Enable demo data seeding (development only)"
+    )
 
     # Server settings
     host: str = Field(default="0.0.0.0", description="Server host")

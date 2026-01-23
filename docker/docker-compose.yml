@@ -3,6 +3,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile.backend
+      args:
+        AI_EXTRAS: ${AI_EXTRAS:-ai}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
     ports:
       - "8000:8000"
     # Load environment from .env file (supports both repo root and docker/ locations)
@@ -27,15 +30,19 @@ services:
       - SECRET_KEY=${SECRET_KEY:-}
       # AI settings
       - AI_DEVICE=${AI_DEVICE:-cpu}
+      - AI_MODELS_DIR=${AI_MODELS_DIR:-/app/models}
+      - AI_RESULTS_DIR=${AI_RESULTS_DIR:-/app/results}
       # DICOM settings
       - DICOM_AE_TITLE=${DICOM_AE_TITLE:-HORALIX_VIEW}
       - DICOM_PORT=${DICOM_PORT:-11112}
       # Environment
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DEBUG=${DEBUG:-true}
+      - ENABLE_DEMO_DATA=${ENABLE_DEMO_DATA:-false}
     volumes:
       - dicom-storage:/app/storage
-      - model-cache:/app/models
+      - ../models:/app/models
+      - ../results:/app/results
     depends_on:
       postgres:
         condition: service_healthy
@@ -89,4 +96,3 @@ volumes:
   postgres-data:
   redis-data:
   dicom-storage:
-  model-cache:

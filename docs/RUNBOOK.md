@@ -14,6 +14,7 @@ This document provides operational procedures for running Horalix View in produc
 | Health check | `curl localhost:8000/health` |
 | Database backup | `docker compose exec postgres pg_dump -U horalix horalix_view > backup.sql` |
 | Run migrations | `docker compose exec backend alembic upgrade head` |
+| Run full checks | `scripts/doctor.sh` |
 
 ---
 
@@ -57,6 +58,67 @@ curl http://localhost:8000/ready
 curl -I http://localhost:3000
 # Expected: HTTP 200
 ```
+
+---
+
+## Upload Limits
+
+Horalix View is configured for large DICOM studies by default.
+
+- Default max upload size: 10 GB
+- Backend limit: `DICOM_MAX_UPLOAD_SIZE_GB` (see `.env.example`)
+- Nginx limits: `client_max_body_size 10g` in `docker/nginx.conf` and `frontend/docker/nginx.conf`
+
+If uploads fail with 413 or timeouts:
+
+1. Verify `DICOM_MAX_UPLOAD_SIZE_GB` in `.env`.
+2. Confirm Nginx config values and restart containers.
+3. Confirm `proxy_read_timeout` and `proxy_request_buffering off` are set.
+
+---
+
+## Demo Data
+
+Demo data is disabled by default. Production deployments should keep it disabled.
+
+- Enable demo seeding (development only): `ENABLE_DEMO_DATA=true`
+- Default (recommended): `ENABLE_DEMO_DATA=false`
+
+To remove demo records safely:
+
+```bash
+python scripts/purge_demo_data.py --apply
+```
+
+---
+
+## Storage Volumes
+
+Production storage is configured with bind mounts so weights and results can be
+updated without rebuilding images:
+
+- `./storage` -> `/app/storage` (DICOM files)
+- `./models` -> `/app/models` (AI weights)
+- `./results` -> `/app/results` (AI outputs)
+- `postgres-data` (database data)
+- `redis-data` (redis cache)
+
+---
+
+## GPU Notes
+
+If you enable GPU inference, ensure the host has NVIDIA drivers and the NVIDIA Container Toolkit installed.
+
+1. Verify the host GPU:
+   `nvidia-smi`
+2. Install NVIDIA Container Toolkit (host-level) and restart Docker.
+3. Set `AI_DEVICE=cuda` (or `cuda:0`) in `.env`.
+4. For CUDA builds, set `TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121`
+   and `AI_EXTRAS=ai` (or `ai-full` if needed).
+5. Confirm the backend container can see the GPU:
+   `docker compose exec backend nvidia-smi`
+
+If GPU access is not available, keep `AI_DEVICE=cpu`.
 
 ---
 

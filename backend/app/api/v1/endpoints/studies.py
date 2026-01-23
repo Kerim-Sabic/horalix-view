@@ -7,16 +7,19 @@ filtering, pagination, and metadata retrieval.
 from datetime import date, datetime
 from datetime import time as dt_time
 from enum import Enum
-from io import BytesIO
+import hashlib
 from typing import Annotated, Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
+import aiofiles
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
+from app.core.config import get_settings
 from app.core.logging import audit_logger
 from app.core.security import TokenData
 from app.models.annotation import Annotation
@@ -271,6 +274,7 @@ async def get_study(
 
 
 @router.post("", response_model=StudyMetadata, status_code=status.HTTP_201_CREATED)
+@router.post("/upload", response_model=StudyMetadata, status_code=status.HTTP_201_CREATED)
 async def upload_study(
     request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist"))],
@@ -280,7 +284,7 @@ async def upload_study(
     """Upload a new DICOM study.
 
     Accepts multiple DICOM files and creates a new study entry.
-    Files are parsed and stored in the configured storage location.
+    Files are streamed to disk, validated, and then indexed.
     """
     import pydicom
 
@@ -290,46 +294,109 @@ async def upload_study(
             detail="No files provided",
         )
 
-    # Validate file types and sizes
-    MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB per file
-    for file in files:
-        if file.size and file.size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File {file.filename} exceeds maximum size of 500MB",
-            )
+    settings = get_settings()
+    max_upload_bytes = int(settings.dicom.max_upload_size_gb * 1024 * 1024 * 1024)
+    chunk_size = 4 * 1024 * 1024  # 4MB
 
-    # Process DICOM files
     dicom_storage = request.app.state.dicom_storage
 
     study_uid = None
-    patient_data = {}
-    study_data = {}
-    series_map = {}
-    instances = []
+    patient_data: dict[str, Any] = {}
+    study_data: dict[str, Any] = {}
+    series_map: dict[str, Any] = {}
+    total_bytes = 0
+    stored_files: list[str] = []
+
+    async def _cleanup_temp(temp_path: Any) -> None:
+        try:
+            await aiofiles.os.remove(temp_path)
+        except Exception:
+            pass
 
     try:
         for file in files:
-            content = await file.read()
+            file_name = file.filename or "upload.dcm"
+            temp_path = dicom_storage.temp_dir / f"{uuid4().hex}.dcm"
+            file_bytes = 0
+            checksum = hashlib.sha256()
+
+            try:
+                async with aiofiles.open(temp_path, "wb") as out_file:
+                    while True:
+                        chunk = await file.read(chunk_size)
+                        if not chunk:
+                            break
+                        file_bytes += len(chunk)
+                        total_bytes += len(chunk)
+
+                        if max_upload_bytes and (
+                            file_bytes > max_upload_bytes or total_bytes > max_upload_bytes
+                        ):
+                            await _cleanup_temp(temp_path)
+                            raise HTTPException(
+                                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                                detail=(
+                                    f"Upload exceeds max size of {settings.dicom.max_upload_size_gb}GB"
+                                ),
+                            )
+
+                        checksum.update(chunk)
+                        await out_file.write(chunk)
+            finally:
+                await file.close()
+
+            if file_bytes == 0:
+                await _cleanup_temp(temp_path)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"File {file_name} is empty",
+                )
 
             # Parse DICOM to extract metadata
             try:
-                ds = pydicom.dcmread(BytesIO(content), stop_before_pixels=True)
+                ds = pydicom.dcmread(str(temp_path), stop_before_pixels=True)
             except Exception as e:
+                await _cleanup_temp(temp_path)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Invalid DICOM file {file.filename}: {str(e)}",
+                    detail=f"Invalid DICOM file {file_name}: {str(e)}",
                 )
 
-            # Extract UIDs
-            current_study_uid = str(ds.StudyInstanceUID)
-            series_uid = str(ds.SeriesInstanceUID)
-            instance_uid = str(ds.SOPInstanceUID)
+            # Extract required UIDs
+            current_study_uid_value = getattr(ds, "StudyInstanceUID", None)
+            series_uid_value = getattr(ds, "SeriesInstanceUID", None)
+            instance_uid_value = getattr(ds, "SOPInstanceUID", None)
+            sop_class_uid_value = getattr(ds, "SOPClassUID", None) or getattr(
+                getattr(ds, "file_meta", None), "MediaStorageSOPClassUID", None
+            )
+
+            missing_fields = []
+            if not current_study_uid_value:
+                missing_fields.append("StudyInstanceUID")
+            if not series_uid_value:
+                missing_fields.append("SeriesInstanceUID")
+            if not instance_uid_value:
+                missing_fields.append("SOPInstanceUID")
+            if not sop_class_uid_value:
+                missing_fields.append("SOPClassUID")
+
+            if missing_fields:
+                await _cleanup_temp(temp_path)
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Missing required DICOM fields: {', '.join(missing_fields)}",
+                )
+
+            current_study_uid = str(current_study_uid_value)
+            series_uid = str(series_uid_value)
+            instance_uid = str(instance_uid_value)
+            sop_class_uid = str(sop_class_uid_value)
 
             # Ensure all files belong to the same study
             if study_uid is None:
                 study_uid = current_study_uid
             elif study_uid != current_study_uid:
+                await _cleanup_temp(temp_path)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="All files must belong to the same study",
@@ -359,19 +426,43 @@ async def upload_study(
 
             # Extract series data
             if series_uid not in series_map:
+                pixel_spacing_value = None
+                if hasattr(ds, "PixelSpacing") and ds.PixelSpacing:
+                    pixel_spacing_value = (
+                        float(ds.PixelSpacing[0]),
+                        float(ds.PixelSpacing[1]),
+                    )
+                elif hasattr(ds, "ImagerPixelSpacing") and ds.ImagerPixelSpacing:
+                    pixel_spacing_value = (
+                        float(ds.ImagerPixelSpacing[0]),
+                        float(ds.ImagerPixelSpacing[1]),
+                    )
+
                 series_map[series_uid] = {
                     "series_instance_uid": series_uid,
                     "series_number": ds.get("SeriesNumber"),
                     "series_description": str(ds.get("SeriesDescription", "")),
                     "modality": str(ds.get("Modality", "OT")),
+                    "series_date": _parse_dicom_date(ds.get("SeriesDate")),
+                    "series_time": _parse_dicom_time(ds.get("SeriesTime")),
                     "body_part_examined": str(ds.get("BodyPartExamined", "")),
                     "patient_position": str(ds.get("PatientPosition", "")),
                     "protocol_name": str(ds.get("ProtocolName", "")),
                     "slice_thickness": (
                         float(ds.SliceThickness) if hasattr(ds, "SliceThickness") else None
                     ),
+                    "spacing_between_slices": (
+                        float(ds.SpacingBetweenSlices)
+                        if hasattr(ds, "SpacingBetweenSlices")
+                        else None
+                    ),
                     "rows": ds.Rows if hasattr(ds, "Rows") else None,
                     "columns": ds.Columns if hasattr(ds, "Columns") else None,
+                    "pixel_spacing": (
+                        f"{pixel_spacing_value[0]}\\{pixel_spacing_value[1]}"
+                        if pixel_spacing_value
+                        else None
+                    ),
                     "window_center": (
                         float(ds.WindowCenter[0])
                         if hasattr(ds, "WindowCenter") and ds.WindowCenter
@@ -388,13 +479,40 @@ async def upload_study(
             # Extract instance data
             instance_data = {
                 "sop_instance_uid": instance_uid,
-                "sop_class_uid": str(ds.SOPClassUID),
+                "sop_class_uid": sop_class_uid,
                 "instance_number": ds.get("InstanceNumber"),
                 "rows": ds.Rows if hasattr(ds, "Rows") else None,
                 "columns": ds.Columns if hasattr(ds, "Columns") else None,
                 "bits_allocated": ds.BitsAllocated if hasattr(ds, "BitsAllocated") else None,
                 "bits_stored": ds.BitsStored if hasattr(ds, "BitsStored") else None,
+                "high_bit": ds.HighBit if hasattr(ds, "HighBit") else None,
+                "pixel_representation": (
+                    ds.PixelRepresentation if hasattr(ds, "PixelRepresentation") else None
+                ),
+                "samples_per_pixel": (
+                    ds.SamplesPerPixel if hasattr(ds, "SamplesPerPixel") else None
+                ),
                 "photometric_interpretation": str(ds.get("PhotometricInterpretation", "")),
+                "transfer_syntax_uid": (
+                    str(ds.file_meta.TransferSyntaxUID)
+                    if getattr(ds, "file_meta", None) and getattr(ds.file_meta, "TransferSyntaxUID", None)
+                    else None
+                ),
+                "pixel_spacing": (
+                    f"{float(ds.PixelSpacing[0])}\\{float(ds.PixelSpacing[1])}"
+                    if hasattr(ds, "PixelSpacing") and ds.PixelSpacing
+                    else None
+                ),
+                "image_position_patient": (
+                    "\\".join(str(v) for v in ds.ImagePositionPatient)
+                    if hasattr(ds, "ImagePositionPatient") and ds.ImagePositionPatient
+                    else None
+                ),
+                "image_orientation_patient": (
+                    "\\".join(str(v) for v in ds.ImageOrientationPatient)
+                    if hasattr(ds, "ImageOrientationPatient") and ds.ImageOrientationPatient
+                    else None
+                ),
                 "window_center": (
                     float(ds.WindowCenter[0])
                     if hasattr(ds, "WindowCenter") and ds.WindowCenter
@@ -410,15 +528,27 @@ async def upload_study(
                 ),
                 "rescale_slope": float(ds.RescaleSlope) if hasattr(ds, "RescaleSlope") else 1.0,
                 "slice_location": float(ds.SliceLocation) if hasattr(ds, "SliceLocation") else None,
+                "slice_thickness": (
+                    float(ds.SliceThickness) if hasattr(ds, "SliceThickness") else None
+                ),
+                "number_of_frames": int(ds.NumberOfFrames)
+                if hasattr(ds, "NumberOfFrames") and ds.NumberOfFrames
+                else 1,
             }
 
             series_map[series_uid]["instances"].append(instance_data)
 
-            # Store file
-            storage_result = await dicom_storage.store_instance(content)
+            # Store file from disk
+            storage_result = await dicom_storage.store_instance_file(
+                temp_path,
+                ds,
+                checksum.hexdigest(),
+                file_bytes,
+            )
             instance_data["file_path"] = storage_result["file_path"]
             instance_data["file_size"] = storage_result["file_size"]
             instance_data["file_checksum"] = storage_result["checksum"]
+            stored_files.append(storage_result["file_path"])
 
         # Create or get patient
         patient_query = select(Patient).where(Patient.patient_id == patient_data["patient_id"])
@@ -474,9 +604,20 @@ async def upload_study(
         return _study_to_metadata(study, patient)
 
     except HTTPException:
+        await db.rollback()
+        for path in stored_files:
+            try:
+                await aiofiles.os.remove(path)
+            except Exception:
+                pass
         raise
     except Exception as e:
         await db.rollback()
+        for path in stored_files:
+            try:
+                await aiofiles.os.remove(path)
+            except Exception:
+                pass
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to process uploaded files: {str(e)}",

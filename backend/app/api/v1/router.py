@@ -10,6 +10,7 @@ from app.api.v1.endpoints import (
     dashboard,
     dicomweb,
     export,
+    health,
     instances,
     patients,
     series,
@@ -93,4 +94,10 @@ api_router.include_router(
     dashboard.router,
     prefix="/dashboard",
     tags=["Dashboard"],
+)
+
+# Health / client error reporting
+api_router.include_router(
+    health.router,
+    tags=["Health"],
 )

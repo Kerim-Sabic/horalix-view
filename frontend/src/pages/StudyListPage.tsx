@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import axios from 'axios';
 import {
   Box,
   Card,
@@ -55,6 +56,7 @@ const StudyListPage: React.FC = () => {
   const [totalStudies, setTotalStudies] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [shapeError, setShapeError] = useState<string | null>(null);
 
   // Pagination state
   const [page, setPage] = useState(0);
@@ -73,6 +75,7 @@ const StudyListPage: React.FC = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgress[]>([]);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
 
   // Delete state
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
@@ -92,6 +95,7 @@ const StudyListPage: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
+      setShapeError(null);
 
       const response = await api.studies.list({
         patient_name: debouncedSearch || undefined,
@@ -99,11 +103,16 @@ const StudyListPage: React.FC = () => {
         page_size: rowsPerPage,
       });
 
-      setStudies(response.studies);
-      setTotalStudies(response.total);
+      const safeStudies = Array.isArray(response.studies) ? response.studies : [];
+      setStudies(safeStudies);
+      setTotalStudies(typeof response.total === 'number' ? response.total : 0);
+      if (!Array.isArray(response.studies)) {
+        setShapeError('Studies response did not match the expected schema.');
+      }
     } catch (err) {
       console.error('Failed to fetch studies:', err);
       setError('Failed to load studies. Please try again.');
+      setShapeError(null);
     } finally {
       setLoading(false);
     }
@@ -132,17 +141,39 @@ const StudyListPage: React.FC = () => {
     setUploadDialogOpen(true);
     setUploadError(null);
     setUploadProgress([]);
+    setSelectedFiles([]);
   };
 
-  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) return;
+  const getUploadErrorMessage = (err: unknown): string => {
+    if (axios.isAxiosError(err)) {
+      const status = err.response?.status;
+      if (status === 413) {
+        return 'Upload exceeds the server size limit. Please split the study or contact IT.';
+      }
+      if (status === 400) {
+        const detail = (err.response?.data as { detail?: string })?.detail;
+        return detail || 'Invalid DICOM file detected.';
+      }
+      if (status === 424) {
+        return 'Required dependencies are missing for this upload.';
+      }
+      if (err.code === 'ECONNABORTED') {
+        return 'Upload timed out. Please retry on a stable connection.';
+      }
+      if (err.message === 'Network Error') {
+        return 'Network interruption detected. Please retry.';
+      }
+    }
+    return 'Failed to upload files. Please try again.';
+  };
+
+  const handleUpload = async (fileArray: File[]) => {
+    if (fileArray.length === 0) return;
 
     try {
       setUploading(true);
       setUploadError(null);
 
-      const fileArray = Array.from(files);
       setUploadProgress(
         fileArray.map((f) => ({
           file_name: f.name,
@@ -165,10 +196,11 @@ const StudyListPage: React.FC = () => {
       setTimeout(() => {
         setUploadDialogOpen(false);
         setUploadProgress([]);
+        setSelectedFiles([]);
       }, 1500);
     } catch (err) {
       console.error('Upload failed:', err);
-      setUploadError('Failed to upload files. Please try again.');
+      setUploadError(getUploadErrorMessage(err));
       setUploadProgress((prev) =>
         prev.map((p) => ({ ...p, status: 'error' as const }))
       );
@@ -178,6 +210,19 @@ const StudyListPage: React.FC = () => {
         fileInputRef.current.value = '';
       }
     }
+  };
+
+  const handleRetryUpload = async () => {
+    await handleUpload(selectedFiles);
+  };
+
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const fileArray = Array.from(files);
+    setSelectedFiles(fileArray);
+    await handleUpload(fileArray);
   };
 
   const handleDeleteStudy = async () => {
@@ -251,6 +296,12 @@ const StudyListPage: React.FC = () => {
       {error && (
         <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError(null)}>
           {error}
+        </Alert>
+      )}
+
+      {shapeError && (
+        <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setShapeError(null)}>
+          {shapeError}
         </Alert>
       )}
 
@@ -340,7 +391,7 @@ const StudyListPage: React.FC = () => {
                     <TableCell>{study.study_description || '-'}</TableCell>
                     <TableCell>{study.study_date || '-'}</TableCell>
                     <TableCell>
-                      {study.modalities.map((mod) => (
+                      {(Array.isArray(study.modalities) ? study.modalities : []).map((mod) => (
                         <Chip key={mod} label={mod} size="small" sx={{ mr: 0.5 }} />
                       ))}
                     </TableCell>
@@ -486,9 +537,26 @@ const StudyListPage: React.FC = () => {
           )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setUploadDialogOpen(false)} disabled={uploading}>
+          <Button
+            onClick={() => {
+              setUploadDialogOpen(false);
+              setUploadProgress([]);
+              setUploadError(null);
+              setSelectedFiles([]);
+            }}
+            disabled={uploading}
+          >
             Cancel
           </Button>
+          {uploadError && selectedFiles.length > 0 && (
+            <Button
+              variant="outlined"
+              onClick={handleRetryUpload}
+              disabled={uploading}
+            >
+              Retry Upload
+            </Button>
+          )}
           <Button
             variant="contained"
             onClick={() => fileInputRef.current?.click()}

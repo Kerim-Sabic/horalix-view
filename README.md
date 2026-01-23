@@ -4,38 +4,33 @@
 
 Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference platform designed for clinical environments. It provides advanced medical image visualization, AI-powered analysis, and HIPAA-compliant workflow management.
 
-## ✨ Features
-
+## Features
 ### Core DICOM Capabilities
-- 📁 **Full DICOMweb Support** - WADO-RS, QIDO-RS, STOW-RS protocols
-- 🔍 **Advanced Viewer** - Multi-series, cine playback, window/level, MPR, 3D volume rendering
-- 📊 **Annotation Tools** - Measurements (length, angle, area, volume), ROIs, text labels with database persistence
-- 🏥 **Study Management** - Patient demographics, study organization, series browsing
-- 📤 **Export Formats** - DICOM, NIfTI, PNG with configurable parameters
-
+- DICOM upload with metadata indexing (patients, studies, series, instances)
+- DICOMweb endpoints (WADO-RS, QIDO-RS, STOW-RS)
+- Viewer: multi-series navigation, cine playback, window/level, pan/zoom/rotate
+- Measurements: length ruler with per-frame or cine tracking
+- Study management: patient demographics, study organization, series browsing
 ### AI & Machine Learning
-- 🤖 **Multiple AI Models** - YOLOv8 detection, MONAI segmentation, MedSAM interactive segmentation
-- ⚡ **Async Job Processing** - Background inference with real-time status tracking
-- 🎯 **Task-Specific Models** - Liver segmentation, spleen segmentation, pathology detection
-- 📈 **Results Management** - Mask overlays, confidence scores, exportable reports
-
+- Built-in models: YOLOv8, MONAI segmentation, MedSAM prompts
+- External command models: EchoNet Measurements, Prov-GigaPath, HoVer-Net
+- Async job processing with progress and status tracking
+- Results management: overlays and exportable artifacts
 ### Clinical Features
-- 🔐 **HIPAA Compliant** - Audit logging, encryption at rest, role-based access control
-- 👥 **Multi-User Support** - Radiologist, technician, admin roles with permissions
-- 🔍 **Search & Filter** - Patient name, study date, modality, accession number
-- 📋 **Workflow Management** - Study status tracking, assignment, reporting
-
+- HIPAA-aligned workflows: audit logging, PHI-safe error reports, RBAC
+- Multi-user roles: radiologist, technologist, admin
+- Search and filter by patient, study, modality, accession
+- Workflow management: study status tracking and reporting
+### 3D/MPR
+- MPR slice views (axial/coronal/sagittal) for CT/MR/PT series
+- Volume metadata endpoints for MPR navigation
 ### Technical Excellence
-- ⚙️ **Modern Architecture** - FastAPI backend, React TypeScript frontend
-- 🚀 **High Performance** - Async operations, connection pooling, Redis caching
-- 🐳 **Docker Ready** - Complete containerization with docker-compose
-- 📊 **Production Monitoring** - Prometheus metrics, structured logging, health checks
-- 🧪 **Comprehensive Tests** - Unit tests, integration tests, E2E coverage
-
----
-
-## 📋 Table of Contents
-
+- Modern architecture: FastAPI backend, React + TypeScript frontend
+- High performance: async operations, Redis caching, connection pooling
+- Dockerized for reproducible deployments
+- Monitoring: health checks, structured logs, metrics
+- Comprehensive tests: unit, integration, E2E
+## Table of Contents
 - [Architecture](#-architecture)
 - [Prerequisites](#-prerequisites)
 - [Quick Start](#-quick-start)
@@ -51,31 +46,25 @@ Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference
 
 ---
 
-## 🏗 Architecture
-
+## Architecture
 ### System Components
 
-```
-┌─────────────────┐      ┌──────────────────┐      ┌─────────────────┐
-│  React Frontend │◄────►│  FastAPI Backend │◄────►│   PostgreSQL    │
-│   (TypeScript)  │      │     (Python)     │      │    Database     │
-└─────────────────┘      └──────────────────┘      └─────────────────┘
-        │                         │                          │
-        │                         ▼                          │
-        │                  ┌─────────────┐                  │
-        │                  │    Redis    │                  │
-        │                  │   (Cache)   │                  │
-        │                  └─────────────┘                  │
-        │                         │                          │
-        ▼                         ▼                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Docker Infrastructure                     │
-│  ┌────────────┐  ┌─────────┐  ┌─────────┐  ┌───────────┐  │
-│  │   Nginx    │  │  DICOM  │  │   AI    │  │  Storage  │  │
-│  │   Proxy    │  │ Storage │  │ Models  │  │  Volume   │  │
-│  └────────────┘  └─────────┘  └─────────┘  └───────────┘  │
-└─────────────────────────────────────────────────────────────┘
-```
+~~~
++------------------+    +-------------------+    +------------------+
+| React Frontend   | -> | FastAPI Backend   | -> | PostgreSQL       |
++------------------+    +-------------------+    +------------------+
+        |                       |
+        v                       v
+   +---------+             +-------------+
+   |  Nginx  |             |   Redis     |
+   +---------+             +-------------+
+
+Storage (bind mounts):
+- ./storage (DICOM files)
+- ./models (AI weights)
+- ./results (AI outputs)
+~~~
+
 
 ### Technology Stack
 
@@ -90,9 +79,8 @@ Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference
 **Frontend:**
 - React 18 + TypeScript
 - Material-UI 5 (component library)
-- Cornerstone.js (DICOM rendering)
-- VTK.js (3D visualization)
-- TanStack Query (data fetching)
+- Custom viewer (server-rendered pixel data + SVG overlays)
+- React Router
 - Axios (HTTP client)
 
 **Infrastructure:**
@@ -103,8 +91,7 @@ Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference
 
 ---
 
-## 📦 Prerequisites
-
+## Prerequisites
 ### Required Software
 
 - **Docker** 24.0+ and **Docker Compose** 2.0+ (recommended for all platforms)
@@ -130,8 +117,7 @@ Horalix View is a production-ready, hospital-grade DICOM viewer and AI inference
 
 ---
 
-## 🚀 Quick Start
-
+## Quick Start
 ### Using Docker Compose (Recommended)
 
 1. **Clone the repository:**
@@ -160,17 +146,22 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 ```bash
 # From the repo root (recommended):
-docker compose -f docker/docker-compose.yml up -d
+docker compose -f docker/docker-compose.yml up -d --build
 
 # OR from the docker/ directory:
 cd docker
-docker compose up -d
+docker compose up -d --build
 ```
+
+**AI build profiles (Docker):**
+- Default (fast CPU build): `AI_EXTRAS=ai`, `TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu`
+- Full research stack: `AI_EXTRAS=ai-full` (slower build, heavier image)
+- GPU builds (CUDA): `TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121` and set `AI_DEVICE=cuda:0`
 
 The backend will automatically:
 - Wait for PostgreSQL to be ready
 - Run database migrations
-- Create default users (admin/admin123, radiologist/rad123, technologist/tech123)
+- Create default users in non-production environments (admin/admin123, radiologist/rad123, technologist/tech123)
 
 Wait for containers to be healthy (30-60 seconds):
 
@@ -210,8 +201,7 @@ docker compose exec backend python -m app.cli create-admin \
 
 ---
 
-## 💻 Development Setup
-
+## Development Setup
 > **Windows Users:** See [WINDOWS_SETUP.md](WINDOWS_SETUP.md) for detailed Windows-specific instructions, including PostgreSQL, Redis, and troubleshooting.
 
 ### Backend Development
@@ -329,27 +319,34 @@ npm run test:coverage          # With coverage
 
 ---
 
-## 🤖 AI Models Setup
-
+## AI Models Setup
 Horalix View supports multiple AI models for medical image analysis. Models must be downloaded separately and placed in the configured directory.
 
 ### Model Directory Structure
 
 ```
 models/
-├── yolov8/
-│   └── model.pt              # YOLOv8 weights
-├── monai_segmentation/
-│   ├── model.pt              # MONAI model weights
-│   └── config.json           # Model configuration
-├── medsam/
-│   └── medsam_vit_b.pth      # MedSAM weights
-├── liver_segmentation/
-│   ├── model.pt
-│   └── config.json
-└── spleen_segmentation/
-    ├── model.pt
-    └── config.json
+|-- yolov8/
+|   |-- model.pt              # YOLOv8 weights
+|-- monai_segmentation/
+|   |-- model.pt              # MONAI model weights
+|   |-- config.json           # Model configuration
+|-- medsam/
+|   |-- medsam_vit_b.pth      # MedSAM weights
+|-- echonet_measurements/
+|   |-- <weights files>       # EchoNet Measurements weights (Git LFS)
+|-- prov_gigapath/
+|   |-- <weights files>       # Prov-GigaPath weights
+|-- hovernet/
+|   |-- <weights files>       # HoVer-Net weights
+|-- liver_segmentation/
+|   |-- model.pt
+|   |-- config.json
+|-- spleen_segmentation/
+|   |-- model.pt
+|   |-- config.json
+results/
+|-- <inference outputs per study>
 ```
 
 ### Downloading Model Weights
@@ -380,18 +377,58 @@ wget -P models/medsam https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_
 mv models/medsam/sam_vit_b_01ec64.pth models/medsam/medsam_vit_b.pth
 ```
 
+**External Models (EchoNet Measurements, Prov-GigaPath, HoVer-Net):**
+
+These models run via a configured command and must write a JSON file to `$OUTPUT_JSON`.
+
+Command placeholders (available in `AI_*_CMD`):
+`$INPUT_NPZ`, `$INPUT_JSON`, `$INPUT_DIR`, `$OUTPUT_JSON`, `$DEVICE`, `$WEIGHTS_PATH`, `$RESULTS_DIR`, `$MODEL_NAME`
+
+Environment variables with the same paths are exported as well:
+`HORALIX_INPUT_NPZ`, `HORALIX_INPUT_JSON`, `HORALIX_INPUT_DIR`, `HORALIX_OUTPUT_JSON`,
+`HORALIX_DEVICE`, `HORALIX_WEIGHTS_PATH`, `HORALIX_RESULTS_DIR`
+
+Command templates (default runner entrypoints shipped with the backend):
+
+```bash
+AI_ECHONET_MEASUREMENTS_CMD="python -m app.services.ai.external_runners.echonet_measurements"
+AI_GIGAPATH_CMD="python -m app.services.ai.external_runners.prov_gigapath"
+AI_HOVERNET_CMD="python -m app.services.ai.external_runners.hovernet"
+```
+
+EchoNet Measurements requires Git LFS for weights:
+
+```bash
+git lfs install
+git lfs pull
+```
+
+Prov-GigaPath weights are hosted on Hugging Face (set `HF_TOKEN` before download). Expected files:
+`models/prov_gigapath/tile_encoder.bin` and `models/prov_gigapath/slide_encoder.pth`.
+
+HoVer-Net weights are available from the project releases (PanNuke fast checkpoint).
+HoVer-Net inference requires CUDA.
+
 ### Configuration
 
 Set the models directory in `.env`:
 
 ```bash
 AI_MODELS_DIR=./models
-AI_DEVICE=cuda              # or 'cpu' for CPU inference
+AI_RESULTS_DIR=./results
+AI_DEVICE=cpu               # set cuda:0 for GPU
+AI_EXTRAS=ai                # ai (default) or ai-full (heavy)
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 AI_ENABLED=true
 AI_BATCH_SIZE=4
 AI_MIXED_PRECISION=true
 AI_CONFIDENCE_THRESHOLD=0.5
 AI_MAX_CONCURRENT_JOBS=2
+AI_EXTERNAL_TIMEOUT_SECONDS=900
+AI_EXTERNAL_WORKDIR=
+AI_ECHONET_MEASUREMENTS_CMD=python -m app.services.ai.external_runners.echonet_measurements
+AI_GIGAPATH_CMD=python -m app.services.ai.external_runners.prov_gigapath
+AI_HOVERNET_CMD=python -m app.services.ai.external_runners.hovernet
 ```
 
 ### Model Status Check
@@ -412,8 +449,7 @@ If models are not loaded, check logs for errors. The API will return HTTP 424 or
 
 ---
 
-## 🗄 Database Migrations
-
+## Database Migrations
 ### Creating Migrations
 
 When you modify database models:
@@ -457,8 +493,7 @@ alembic current            # Show current version
 
 ---
 
-## ⚙️ Configuration
-
+## Configuration
 ### Environment Variables
 
 Create `backend/.env` from `backend/.env.example`:
@@ -508,18 +543,28 @@ REDIS_DB=0
 DICOM_AE_TITLE=HORALIX_VIEW
 DICOM_PORT=11112
 DICOM_STORAGE_DIR=./storage/dicom
+DICOM_MAX_UPLOAD_SIZE_GB=10
+ENABLE_DEMO_DATA=false
 ```
 
 #### AI Configuration
 
 ```bash
 AI_MODELS_DIR=./models
-AI_DEVICE=cuda                    # cuda, cpu, or cuda:0
+AI_RESULTS_DIR=./results
+AI_DEVICE=cpu                     # cuda, cpu, or cuda:0
+AI_EXTRAS=ai                      # ai or ai-full
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 AI_BATCH_SIZE=4
 AI_MIXED_PRECISION=true
 AI_ENABLED=true
 AI_CONFIDENCE_THRESHOLD=0.5
 AI_MAX_CONCURRENT_JOBS=2
+AI_EXTERNAL_TIMEOUT_SECONDS=900
+AI_EXTERNAL_WORKDIR=
+AI_ECHONET_MEASUREMENTS_CMD=python -m app.services.ai.external_runners.echonet_measurements
+AI_GIGAPATH_CMD=python -m app.services.ai.external_runners.prov_gigapath
+AI_HOVERNET_CMD=python -m app.services.ai.external_runners.hovernet
 ```
 
 #### HIPAA Compliance
@@ -538,8 +583,7 @@ CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 
 ---
 
-## 🚢 Deployment
-
+## Deployment
 ### Production Deployment with Docker
 
 1. **Prepare environment:**
@@ -576,7 +620,7 @@ docker compose -f docker/docker-compose.yml up -d
 # The entrypoint script automatically:
 # - Waits for PostgreSQL
 # - Runs database migrations
-# - Creates default users (if none exist)
+# - Creates default users in non-production environments (if none exist)
 ```
 
 4. **Verify services:**
@@ -670,8 +714,7 @@ docker cp $(docker-compose ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backu
 
 ---
 
-## 📚 API Documentation
-
+## API Documentation
 ### Interactive API Docs
 
 - **Swagger UI:** http://localhost:8000/docs
@@ -680,13 +723,13 @@ docker cp $(docker-compose ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backu
 ### Key Endpoints
 
 **Authentication:**
-- `POST /api/v1/auth/login` - Obtain JWT token
+- `POST /api/v1/auth/token` - Obtain JWT token
 - `GET /api/v1/auth/me` - Get current user info
 
 **Studies:**
 - `GET /api/v1/studies` - List studies
 - `GET /api/v1/studies/{uid}` - Get study details
-- `POST /api/v1/studies/upload` - Upload DICOM files
+- `POST /api/v1/studies` (or `/api/v1/studies/upload`) - Upload DICOM files
 - `GET /api/v1/studies/{uid}/export` - Export study
 
 **AI Inference:**
@@ -702,10 +745,20 @@ docker cp $(docker-compose ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backu
 - `DELETE /api/v1/annotations/{id}` - Delete annotation
 - `GET /api/v1/annotations/study/{uid}/export` - Export annotations
 
+**Observability:**
+- `POST /api/v1/health/client-error` - Report client-side errors (no PHI)
+
+## Operational Docs
+
+- `docs/RUNBOOK.md` - Deployment and operational procedures
+- `docs/SECURITY.md` - Security controls and PHI handling
+- `docs/ARCHITECTURE.md` - System architecture and data flow
+- `docs/TROUBLESHOOTING.md` - Common issues and fixes
+
+
 ---
 
-## 🔍 Smoke Testing
-
+## Smoke Tests
 After deploying Horalix View, run the smoke test to verify all services are working:
 
 **Linux/macOS:**
@@ -745,8 +798,7 @@ curl -I http://localhost:3000
 
 ---
 
-## 🧪 Testing
-
+## Testing
 ### Running Tests
 
 **Backend:**
@@ -782,27 +834,32 @@ npm run test:coverage
 npm run test:watch
 ```
 
+**E2E (Playwright):**
+
+Requires running backend and frontend (docker compose or dev servers).
+
+```bash
+cd e2e
+npm ci
+npx playwright install --with-deps
+BASE_URL=http://localhost:3000 npx playwright test
+```
+
 ### Test Structure
 
 ```
 backend/tests/
-├── unit/                    # Unit tests
-│   ├── test_config.py
-│   └── test_models.py
-├── services/               # Service tests
-│   ├── ai/
-│   │   └── test_ai_models.py
-│   └── dicom/
-│       └── test_dicom_parser.py
-└── integration/            # Integration tests
-    ├── test_upload.py
-    └── test_ai_inference.py
+  api/                         # API tests
+  services/                    # Service tests
+    ai/
+  unit/                        # Unit tests
+  conftest.py
+e2e/tests/                     # Playwright E2E tests
 ```
 
 ---
 
-## 🤝 Contributing
-
+## Contributing
 We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ### Development Workflow
@@ -852,12 +909,11 @@ Use the doctor script to run all quality checks at once:
 .\scripts\doctor.ps1 -All
 ```
 
-This script runs: environment check, frontend lint/typecheck/build/tests, backend lint/typecheck/tests, and security checks.
+This script runs environment checks, backend lint/typecheck/tests, and frontend lint/typecheck/tests. `--all` also runs Docker Compose smoke checks and Playwright E2E.
 
 ---
 
-## 🔧 Troubleshooting
-
+## Troubleshooting
 ### Common Issues
 
 **Blank Screen After Login**
@@ -879,7 +935,7 @@ For detailed root cause analysis, see [docs/BLANK_SCREEN_ROOT_CAUSE.md](docs/BLA
 
 **Login Fails**
 
-1. Verify default users exist (admin/admin123, radiologist/rad123)
+1. Verify default users exist in non-production environments (admin/admin123, radiologist/rad123)
 2. Check if account is locked (5 failed attempts triggers 30-minute lockout)
 3. Verify backend is running: `curl http://localhost:8000/health`
 
@@ -896,14 +952,12 @@ For detailed root cause analysis, see [docs/BLANK_SCREEN_ROOT_CAUSE.md](docs/BLA
 
 ---
 
-## 📄 License
-
+## License
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🆘 Support
-
+## Support
 - **Documentation:** https://horalix.io/docs
 - **Issues:** https://github.com/horalix/horalix-view/issues
 - **Discussions:** https://github.com/horalix/horalix-view/discussions
@@ -911,8 +965,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ---
 
-## 🎯 Roadmap
-
+## Roadmap
 - [ ] Real-time collaboration for annotations
 - [ ] DICOM networking (C-MOVE, C-FIND)
 - [ ] Advanced 3D rendering (volume ray casting)
@@ -923,8 +976,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ---
 
-## 🙏 Acknowledgments
-
+## Acknowledgments
 - **Cornerstone.js** - DICOM image rendering
 - **MONAI** - Medical imaging AI framework
 - **FastAPI** - Modern Python web framework
@@ -933,4 +985,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 
 ---
 
-**Built with ❤️ for healthcare professionals**
+Built for healthcare professionals.
+
+
+

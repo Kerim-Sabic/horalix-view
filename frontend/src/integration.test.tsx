@@ -13,6 +13,7 @@ import { SnackbarProvider } from 'notistack';
 import { AuthProvider } from './contexts/AuthContext';
 import { ThemeProvider } from './themes/ThemeProvider';
 import App from './App';
+import { apiClient } from './services/apiClient';
 
 // Mock fetch and axios for API calls
 const mockFetch = vi.fn();
@@ -181,6 +182,78 @@ describe('Error Boundary', () => {
   });
 });
 
+describe('AI Models Page', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  it('renders empty state when API returns empty models list', async () => {
+    const mockGet = apiClient.get as unknown as { mockResolvedValueOnce: (value: unknown) => void };
+    mockGet.mockResolvedValueOnce({ data: { models: [] } });
+
+    const { default: AIModelsPage } = await import('./pages/AIModelsPage');
+
+    render(
+      <TestWrapper>
+        <AIModelsPage />
+      </TestWrapper>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/no ai models available/i)).toBeTruthy();
+    });
+  });
+
+  it('renders when models have missing nested fields', async () => {
+    const mockGet = apiClient.get as unknown as { mockResolvedValueOnce: (value: unknown) => void };
+    mockGet.mockResolvedValueOnce({
+      data: {
+        models: [
+          {
+            name: 'Test Model',
+            available: false,
+            status: 'missing_weights',
+            details: null,
+            requirements: null,
+            weights: null,
+            errors: null,
+          },
+        ],
+      },
+    });
+
+    const { default: AIModelsPage } = await import('./pages/AIModelsPage');
+
+    render(
+      <TestWrapper>
+        <AIModelsPage />
+      </TestWrapper>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText('Test Model')).toBeTruthy();
+    });
+  });
+
+  it('shows schema warning when API response is malformed', async () => {
+    const mockGet = apiClient.get as unknown as { mockResolvedValueOnce: (value: unknown) => void };
+    mockGet.mockResolvedValueOnce({ data: { models: null } });
+
+    const { default: AIModelsPage } = await import('./pages/AIModelsPage');
+
+    render(
+      <TestWrapper>
+        <AIModelsPage />
+      </TestWrapper>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/response did not match the expected schema/i)).toBeTruthy();
+    });
+  });
+});
+
 describe('Dashboard Page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -232,6 +305,54 @@ describe('Dashboard Page', () => {
     await waitFor(() => {
       const dashboardText = screen.queryByText('Dashboard');
       expect(dashboardText).toBeTruthy();
+    });
+  });
+});
+
+describe('Study List Page', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorageMock.clear();
+  });
+
+  it('renders modalities when API returns modalities_in_study', async () => {
+    const mockGet = apiClient.get as unknown as { mockResolvedValueOnce: (value: unknown) => void };
+    mockGet.mockResolvedValueOnce({
+      data: {
+        total: 1,
+        page: 1,
+        page_size: 10,
+        studies: [
+          {
+            study_instance_uid: '1.2.3',
+            patient_name: 'Test Patient',
+            patient_id: 'TEST001',
+            study_date: '2026-01-21',
+            study_time: null,
+            study_description: 'CT Chest',
+            accession_number: 'ACC123',
+            modalities_in_study: ['CT'],
+            num_series: 1,
+            num_instances: 1,
+            status: 'complete',
+            referring_physician_name: 'Dr. Test',
+            institution_name: 'Test Hospital',
+            created_at: '2026-01-21T00:00:00Z',
+          },
+        ],
+      },
+    });
+
+    const { default: StudyListPage } = await import('./pages/StudyListPage');
+
+    render(
+      <TestWrapper>
+        <StudyListPage />
+      </TestWrapper>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/CT/)).toBeTruthy();
     });
   });
 });
