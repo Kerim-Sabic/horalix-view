@@ -62,14 +62,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.db_session_maker = async_session_maker
     logger.info("Database connection pool initialized")
 
-    # Initialize default users (development only)
-    if settings.environment != "production":
+    # Initialize default users (development only unless explicitly enabled)
+    if settings.environment != "production" or settings.init_default_users:
         try:
             from app.api.v1.endpoints.auth import init_default_users
 
             async with async_session_maker() as session:
                 await init_default_users(session)
-                logger.info("Default users initialized (or already exist)")
+                logger.info(
+                    "Default users initialized (or already exist)",
+                    forced=settings.environment == "production" and settings.init_default_users,
+                )
         except Exception as e:
             # Log but don't fail startup - users may be created later via CLI
             logger.warning(f"Could not initialize default users: {e}")
@@ -100,6 +103,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     model_registry = ModelRegistry(settings.ai)
     await model_registry.initialize()
     app.state.model_registry = model_registry
+    if settings.ai.auto_load_models:
+        await model_registry.preload_available_models()
 
     logger.info("Horalix View started successfully")
 

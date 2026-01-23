@@ -320,131 +320,18 @@ npm run test:coverage          # With coverage
 ---
 
 ## AI Models Setup
-Horalix View supports multiple AI models for medical image analysis. Models must be downloaded separately and placed in the configured directory.
+Horalix View supports real AI inference. Models are only available if weights
+exist under `models/` (bind-mounted into Docker).
 
-### Model Directory Structure
+For detailed, step-by-step installation (EchoNet Measurements, Prov-GigaPath,
+HoVer-Net, plus command templates and GPU tips), see:
 
-```
-models/
-|-- yolov8/
-|   |-- model.pt              # YOLOv8 weights
-|-- monai_segmentation/
-|   |-- model.pt              # MONAI model weights
-|   |-- config.json           # Model configuration
-|-- medsam/
-|   |-- medsam_vit_b.pth      # MedSAM weights
-|-- echonet_measurements/
-|   |-- <weights files>       # EchoNet Measurements weights (Git LFS)
-|-- prov_gigapath/
-|   |-- <weights files>       # Prov-GigaPath weights
-|-- hovernet/
-|   |-- <weights files>       # HoVer-Net weights
-|-- liver_segmentation/
-|   |-- model.pt
-|   |-- config.json
-|-- spleen_segmentation/
-|   |-- model.pt
-|   |-- config.json
-results/
-|-- <inference outputs per study>
-```
+`docs/AI_MODELS.md`
 
-### Downloading Model Weights
-
-**YOLOv8 (Object Detection):**
-
-```bash
-pip install ultralytics
-python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
-mkdir -p models/yolov8
-mv yolov8n.pt models/yolov8/model.pt
-```
-
-**MONAI Models (Segmentation):**
-
-```bash
-pip install monai
-python -m monai.bundle download \
-  --name "spleen_ct_segmentation" \
-  --bundle_dir models/spleen_segmentation
-```
-
-**MedSAM (Interactive Segmentation):**
-
-```bash
-mkdir -p models/medsam
-wget -P models/medsam https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth
-mv models/medsam/sam_vit_b_01ec64.pth models/medsam/medsam_vit_b.pth
-```
-
-**External Models (EchoNet Measurements, Prov-GigaPath, HoVer-Net):**
-
-These models run via a configured command and must write a JSON file to `$OUTPUT_JSON`.
-
-Command placeholders (available in `AI_*_CMD`):
-`$INPUT_NPZ`, `$INPUT_JSON`, `$INPUT_DIR`, `$OUTPUT_JSON`, `$DEVICE`, `$WEIGHTS_PATH`, `$RESULTS_DIR`, `$MODEL_NAME`
-
-Environment variables with the same paths are exported as well:
-`HORALIX_INPUT_NPZ`, `HORALIX_INPUT_JSON`, `HORALIX_INPUT_DIR`, `HORALIX_OUTPUT_JSON`,
-`HORALIX_DEVICE`, `HORALIX_WEIGHTS_PATH`, `HORALIX_RESULTS_DIR`
-
-Command templates (default runner entrypoints shipped with the backend):
-
-```bash
-AI_ECHONET_MEASUREMENTS_CMD="python -m app.services.ai.external_runners.echonet_measurements"
-AI_GIGAPATH_CMD="python -m app.services.ai.external_runners.prov_gigapath"
-AI_HOVERNET_CMD="python -m app.services.ai.external_runners.hovernet"
-```
-
-EchoNet Measurements requires Git LFS for weights:
-
-```bash
-git lfs install
-git lfs pull
-```
-
-Prov-GigaPath weights are hosted on Hugging Face (set `HF_TOKEN` before download). Expected files:
-`models/prov_gigapath/tile_encoder.bin` and `models/prov_gigapath/slide_encoder.pth`.
-
-HoVer-Net weights are available from the project releases (PanNuke fast checkpoint).
-HoVer-Net inference requires CUDA.
-
-### Configuration
-
-Set the models directory in `.env`:
-
-```bash
-AI_MODELS_DIR=./models
-AI_RESULTS_DIR=./results
-AI_DEVICE=cpu               # set cuda:0 for GPU
-AI_EXTRAS=ai                # ai (default) or ai-full (heavy)
-TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-AI_ENABLED=true
-AI_BATCH_SIZE=4
-AI_MIXED_PRECISION=true
-AI_CONFIDENCE_THRESHOLD=0.5
-AI_MAX_CONCURRENT_JOBS=2
-AI_EXTERNAL_TIMEOUT_SECONDS=900
-AI_EXTERNAL_WORKDIR=
-AI_ECHONET_MEASUREMENTS_CMD=python -m app.services.ai.external_runners.echonet_measurements
-AI_GIGAPATH_CMD=python -m app.services.ai.external_runners.prov_gigapath
-AI_HOVERNET_CMD=python -m app.services.ai.external_runners.hovernet
-```
-
-### Model Status Check
-
-After starting the backend, check model status:
+Quick status check:
 
 ```bash
 curl http://localhost:8000/api/v1/ai/models
-```
-
-If models are not loaded, check logs for errors. The API will return HTTP 424 or 503 with instructions if weights are missing:
-
-```json
-{
-  "detail": "Model weights not found at models/yolov8/model.pt. Please download model weights and place them in the configured AI_MODELS_DIR."
-}
 ```
 
 ---

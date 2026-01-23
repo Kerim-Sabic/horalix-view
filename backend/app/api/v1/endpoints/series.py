@@ -13,7 +13,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.api.v1.endpoints.auth import get_current_active_user, get_current_active_user_from_token
+from app.api.v1.endpoints.auth import (
+    get_current_active_user,
+    get_current_active_user_from_token,
+    require_roles,
+)
 from app.core.logging import audit_logger
 from app.core.security import TokenData
 from app.models.base import get_db
@@ -57,6 +61,20 @@ class SeriesMetadata(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class SeriesUpdate(BaseModel):
+    """Editable series metadata fields."""
+
+    series_number: int | None = Field(None, description="Series number")
+    series_description: str | None = Field(None, description="Series description")
+    body_part_examined: str | None = Field(None, description="Body part")
+    patient_position: str | None = Field(None, description="Patient position")
+    protocol_name: str | None = Field(None, description="Protocol name")
+    slice_thickness: float | None = Field(None, description="Slice thickness in mm")
+    spacing_between_slices: float | None = Field(None, description="Spacing between slices")
+    window_center: float | None = Field(None, description="Default window center")
+    window_width: float | None = Field(None, description="Default window width")
 
 
 class SeriesListResponse(BaseModel):
@@ -129,6 +147,13 @@ def _series_to_metadata(series: Series) -> SeriesMetadata:
     )
 
 
+def _normalize_optional_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
+
+
 @router.get("", response_model=SeriesListResponse)
 async def list_series(
     current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
@@ -160,7 +185,9 @@ async def list_series(
 @router.get("/{series_uid}", response_model=SeriesDetailResponse)
 async def get_series(
     series_uid: str,
-    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    current_user: Annotated[
+        TokenData, Depends(require_roles("admin", "technologist", "radiologist"))
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> SeriesDetailResponse:
     """Get detailed series information.
@@ -189,6 +216,90 @@ async def get_series(
     )
 
     # Build instance list
+    instances = [
+        InstanceSummary(
+            sop_instance_uid=inst.sop_instance_uid,
+            instance_number=inst.instance_number,
+            sop_class_uid=inst.sop_class_uid,
+            rows=inst.rows,
+            columns=inst.columns,
+            bits_allocated=inst.bits_allocated,
+            number_of_frames=inst.number_of_frames,
+        )
+        for inst in sorted(series.instances, key=lambda i: i.instance_number or 0)
+    ]
+
+    return SeriesDetailResponse(
+        series=_series_to_metadata(series),
+        instances=instances,
+        window_center=series.window_center,
+        window_width=series.window_width,
+        has_3d_data=series.modality in ["CT", "MR", "PT"],
+    )
+
+
+@router.patch("/{series_uid}", response_model=SeriesDetailResponse)
+async def update_series(
+    series_uid: str,
+    payload: SeriesUpdate,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> SeriesDetailResponse:
+    """Update series metadata."""
+    query = (
+        select(Series)
+        .options(selectinload(Series.instances))
+        .where(Series.series_instance_uid == series_uid)
+    )
+    result = await db.execute(query)
+    series = result.scalar_one_or_none()
+
+    if not series:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Series not found: {series_uid}",
+        )
+
+    updated_fields: list[str] = []
+    if payload.series_number is not None:
+        series.series_number = payload.series_number
+        updated_fields.append("series_number")
+    if payload.series_description is not None:
+        series.series_description = _normalize_optional_str(payload.series_description)
+        updated_fields.append("series_description")
+    if payload.body_part_examined is not None:
+        series.body_part_examined = _normalize_optional_str(payload.body_part_examined)
+        updated_fields.append("body_part_examined")
+    if payload.patient_position is not None:
+        series.patient_position = _normalize_optional_str(payload.patient_position)
+        updated_fields.append("patient_position")
+    if payload.protocol_name is not None:
+        series.protocol_name = _normalize_optional_str(payload.protocol_name)
+        updated_fields.append("protocol_name")
+    if payload.slice_thickness is not None:
+        series.slice_thickness = payload.slice_thickness
+        updated_fields.append("slice_thickness")
+    if payload.spacing_between_slices is not None:
+        series.spacing_between_slices = payload.spacing_between_slices
+        updated_fields.append("spacing_between_slices")
+    if payload.window_center is not None:
+        series.window_center = payload.window_center
+        updated_fields.append("window_center")
+    if payload.window_width is not None:
+        series.window_width = payload.window_width
+        updated_fields.append("window_width")
+
+    await db.commit()
+    await db.refresh(series)
+
+    audit_logger.log_access(
+        user_id=current_user.user_id,
+        resource_type="series",
+        resource_id=series_uid,
+        action="UPDATE_METADATA",
+        details={"fields": updated_fields},
+    )
+
     instances = [
         InstanceSummary(
             sop_instance_uid=inst.sop_instance_uid,
@@ -464,9 +575,15 @@ async def track_measurement(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TrackMeasurementResponse:
     """Track a 2-point measurement across cine frames using optical flow."""
-    import cv2
-    import numpy as np
-    import pydicom
+    try:
+        import cv2
+        import numpy as np
+        import pydicom
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Tracking dependencies unavailable: {exc}",
+        ) from exc
 
     query = (
         select(Series)
@@ -509,9 +626,20 @@ async def track_measurement(
 
     points = np.array([[p.x, p.y] for p in payload.points], dtype=np.float32).reshape(-1, 1, 2)
 
-    pixel_spacing = instances[0].pixel_spacing or [1.0, 1.0]
-    spacing_row = float(pixel_spacing[0]) if len(pixel_spacing) > 0 else 1.0
-    spacing_col = float(pixel_spacing[1]) if len(pixel_spacing) > 1 else 1.0
+    spacing_row = 1.0
+    spacing_col = 1.0
+    spacing_tuple = instances[0].pixel_spacing_tuple
+    if spacing_tuple:
+        spacing_row, spacing_col = spacing_tuple
+    elif instances[0].pixel_spacing:
+        try:
+            parts = str(instances[0].pixel_spacing).split("\\")
+            if len(parts) >= 2:
+                spacing_row = float(parts[0])
+                spacing_col = float(parts[1])
+        except (ValueError, TypeError):
+            spacing_row = 1.0
+            spacing_col = 1.0
 
     def _load_frame_pixel(instance: Instance, frame_idx: int, cached: dict) -> np.ndarray:
         if cached.get("instance_uid") != instance.sop_instance_uid:
@@ -520,10 +648,22 @@ async def track_measurement(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="DICOM file not available on server",
                 )
-            ds = pydicom.dcmread(instance.file_path)
+            try:
+                ds = pydicom.dcmread(instance.file_path)
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Failed to read DICOM pixel data for tracking",
+                ) from exc
             cached["instance_uid"] = instance.sop_instance_uid
-            cached["pixel_array"] = ds.pixel_array
-            cached["samples_per_pixel"] = int(getattr(ds, "SamplesPerPixel", 1))
+            try:
+                cached["pixel_array"] = ds.pixel_array
+                cached["samples_per_pixel"] = int(getattr(ds, "SamplesPerPixel", 1))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Failed to decode pixel data for tracking",
+                ) from exc
         pixel_array = cached["pixel_array"]
         samples_per_pixel = cached["samples_per_pixel"]
 
@@ -532,7 +672,7 @@ async def track_measurement(
             frame = pixel_array[frame_idx]
         elif pixel_array.ndim == 3 and samples_per_pixel == 1:
             frame = pixel_array[frame_idx]
-        return frame
+        return np.ascontiguousarray(frame)
 
     def _to_gray(frame: np.ndarray) -> np.ndarray:
         if frame.ndim == 3 and frame.shape[-1] in (3, 4):

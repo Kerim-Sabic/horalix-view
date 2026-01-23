@@ -64,6 +64,10 @@ class AIModelSettings(BaseSettings):
         default=Path("./results"),
         description="Directory for storing inference results (masks, etc.)",
     )
+    auto_load_models: bool = Field(
+        default=False,
+        description="Load all available AI models on startup (GPU heavy).",
+    )
 
     # Segmentation models
     nnunet_enabled: bool = Field(default=True, description="Enable MONAI/nnU-Net segmentation")
@@ -296,6 +300,10 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False, description="Enable debug mode")
     enable_demo_data: bool = Field(
         default=False, description="Enable demo data seeding (development only)"
+    )
+    init_default_users: bool = Field(
+        default=False,
+        description="Force default user initialization even in production (use with care)",
     )
 
     # Server settings

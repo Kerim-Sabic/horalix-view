@@ -29,6 +29,7 @@ import {
   Slider,
   Snackbar,
   Switch,
+  TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
@@ -61,9 +62,13 @@ import {
   api,
   AIModel,
   Instance,
+  Patient,
+  PatientUpdateRequest,
   Series,
   SeriesDetailResponse,
+  SeriesUpdateRequest,
   Study,
+  StudyUpdateRequest,
   VolumeInfo,
   TrackMeasurementResponse,
 } from '../services/api';
@@ -93,6 +98,39 @@ type Measurement = {
   lengthMm: number | null;
 };
 
+type MetadataDraft = {
+  patient: {
+    patient_id: string;
+    patient_name: string;
+    birth_date: string;
+    sex: string;
+    issuer_of_patient_id: string;
+    other_patient_ids: string;
+    ethnic_group: string;
+    comments: string;
+  };
+  study: {
+    study_id: string;
+    study_date: string;
+    study_time: string;
+    study_description: string;
+    accession_number: string;
+    referring_physician_name: string;
+    institution_name: string;
+  };
+  series: {
+    series_number: string;
+    series_description: string;
+    body_part_examined: string;
+    patient_position: string;
+    protocol_name: string;
+    slice_thickness: string;
+    spacing_between_slices: string;
+    window_center: string;
+    window_width: string;
+  };
+};
+
 type DragState = {
   tool: 'pan' | 'zoom' | 'wwwl' | 'measure';
   startX: number;
@@ -108,14 +146,27 @@ type DragState = {
 };
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const normalizeText = (value?: string | null) => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+};
+const parseOptionalNumber = (value?: string | null) => {
+  const normalized = normalizeText(value);
+  if (normalized === null) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+};
 
-const MAX_IMAGE_CACHE = 120;
+const MAX_IMAGE_CACHE = 160;
 const DEFAULT_CINE_FPS = 15;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 0.02;
-const WHEEL_ZOOM_SPEED = 0.0008;
-const DRAG_ZOOM_DENOMINATOR = 1200;
+const WHEEL_ZOOM_SPEED = 0.0005;
+const DRAG_ZOOM_DENOMINATOR = 1600;
+const WHEEL_SCROLL_THRESHOLD = 60;
+const WHEEL_MAX_SLICE_STEP = 8;
 
 const rotatePoint = (x: number, y: number, angle: number) => {
   const normalized = ((angle % 360) + 360) % 360;
@@ -212,6 +263,7 @@ const ViewerPage: React.FC = () => {
   const instanceCacheRef = useRef(new Map<string, Instance>());
   const viewportStateRef = useRef(new Map<string, ViewportState>());
   const thumbnailCacheRef = useRef(new Map<string, string>());
+  const prefetchedSeriesRef = useRef(new Set<string>());
   const activeSeriesUidRef = useRef<string | null>(null);
   const viewStateRef = useRef<ViewportState>({
     zoom: 1,
@@ -226,9 +278,12 @@ const ViewerPage: React.FC = () => {
   const latestImageUrlRef = useRef<string | null>(null);
   const overlayRef = useRef<SVGSVGElement>(null);
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const wheelAccumulatorRef = useRef(0);
+  const lastWheelTimeRef = useRef(0);
 
   // Data state
   const [study, setStudy] = useState<Study | null>(null);
+  const [patientDetails, setPatientDetails] = useState<Patient | null>(null);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeries, setSelectedSeries] = useState<SeriesDetailResponse | null>(null);
   const [aiModels, setAIModels] = useState<AIModel[]>([]);
@@ -305,11 +360,15 @@ const ViewerPage: React.FC = () => {
   const [viewerSettingsOpen, setViewerSettingsOpen] = useState(false);
   const [autoTrackCine, setAutoTrackCine] = useState(true);
   const [preferJpegForCine, setPreferJpegForCine] = useState(true);
+  const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
+  const [metadataDraft, setMetadataDraft] = useState<MetadataDraft | null>(null);
+  const [metadataSaving, setMetadataSaving] = useState(false);
 
   const currentFrame = frameIndex[currentSlice];
   const currentInstanceUid = currentFrame?.instanceUid;
   const currentFrameIndex = currentFrame?.frameIndex ?? 0;
-  const patientLabel = study?.patient_name || study?.patient_id || 'Unknown';
+  const patientLabel =
+    patientDetails?.patient_name || study?.patient_name || study?.patient_id || 'Unknown';
   const studyLabel = study?.study_description || study?.study_date || '-';
   const seriesLabel =
     selectedSeries?.series.series_description ||
@@ -425,6 +484,237 @@ const ViewerPage: React.FC = () => {
     const preset = presets[0] || defaultPreset;
     return { center: preset.center, width: preset.width };
   }, []);
+
+  const buildMetadataDraft = useCallback((): MetadataDraft | null => {
+    if (!study) return null;
+    const patient = patientDetails;
+    const series = selectedSeries?.series;
+    return {
+      patient: {
+        patient_id: patient?.patient_id ?? study.patient_id ?? '',
+        patient_name: patient?.patient_name ?? study.patient_name ?? '',
+        birth_date: patient?.birth_date ?? '',
+        sex: patient?.sex ?? '',
+        issuer_of_patient_id: patient?.issuer_of_patient_id ?? '',
+        other_patient_ids: patient?.other_patient_ids ?? '',
+        ethnic_group: patient?.ethnic_group ?? '',
+        comments: patient?.comments ?? '',
+      },
+      study: {
+        study_id: study.study_id ?? '',
+        study_date: study.study_date ?? '',
+        study_time: study.study_time ?? '',
+        study_description: study.study_description ?? '',
+        accession_number: study.accession_number ?? '',
+        referring_physician_name: study.referring_physician ?? '',
+        institution_name: study.institution_name ?? '',
+      },
+      series: {
+        series_number: series?.series_number?.toString() ?? '',
+        series_description: series?.series_description ?? '',
+        body_part_examined: series?.body_part_examined ?? '',
+        patient_position: series?.patient_position ?? '',
+        protocol_name: series?.protocol_name ?? '',
+        slice_thickness: series?.slice_thickness?.toString() ?? '',
+        spacing_between_slices: series?.spacing_between_slices?.toString() ?? '',
+        window_center: selectedSeries?.window_center?.toString() ?? '',
+        window_width: selectedSeries?.window_width?.toString() ?? '',
+      },
+    };
+  }, [study, patientDetails, selectedSeries]);
+
+  const openMetadataEditor = useCallback(() => {
+    const draft = buildMetadataDraft();
+    if (!draft) {
+      setSnackbarMessage('Metadata not available yet.');
+      return;
+    }
+    setMetadataDraft(draft);
+    setMetadataDialogOpen(true);
+  }, [buildMetadataDraft]);
+
+  const updateMetadataDraft = useCallback(
+    (section: keyof MetadataDraft, field: string, value: string) => {
+      setMetadataDraft((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          [section]: {
+            ...prev[section],
+            [field]: value,
+          },
+        } as MetadataDraft;
+      });
+    },
+    []
+  );
+
+  const handleSaveMetadata = useCallback(async () => {
+    if (!metadataDraft || !studyUid || !study) return;
+    setMetadataSaving(true);
+    try {
+      let updatedPatient: Patient | null = null;
+      let updatedSeries: SeriesDetailResponse | null = null;
+      let studyChanged = false;
+
+      const baselinePatientId = patientDetails?.patient_id ?? study.patient_id ?? '';
+      const patientPayload: PatientUpdateRequest = {};
+      const nextPatientId = normalizeText(metadataDraft.patient.patient_id);
+      if (nextPatientId !== normalizeText(baselinePatientId)) {
+        patientPayload.patient_id = nextPatientId;
+      }
+      const nextPatientName = normalizeText(metadataDraft.patient.patient_name);
+      if (
+        nextPatientName !==
+        normalizeText(patientDetails?.patient_name ?? study.patient_name ?? '')
+      ) {
+        patientPayload.patient_name = nextPatientName;
+      }
+      const nextBirthDate = normalizeText(metadataDraft.patient.birth_date);
+      if (nextBirthDate !== normalizeText(patientDetails?.birth_date ?? '')) {
+        patientPayload.birth_date = nextBirthDate;
+      }
+      const nextSex = normalizeText(metadataDraft.patient.sex);
+      if (nextSex !== normalizeText(patientDetails?.sex ?? '')) {
+        patientPayload.sex = nextSex;
+      }
+      const nextIssuer = normalizeText(metadataDraft.patient.issuer_of_patient_id);
+      if (nextIssuer !== normalizeText(patientDetails?.issuer_of_patient_id ?? '')) {
+        patientPayload.issuer_of_patient_id = nextIssuer;
+      }
+      const nextOtherIds = normalizeText(metadataDraft.patient.other_patient_ids);
+      if (nextOtherIds !== normalizeText(patientDetails?.other_patient_ids ?? '')) {
+        patientPayload.other_patient_ids = nextOtherIds;
+      }
+      const nextEthnicGroup = normalizeText(metadataDraft.patient.ethnic_group);
+      if (nextEthnicGroup !== normalizeText(patientDetails?.ethnic_group ?? '')) {
+        patientPayload.ethnic_group = nextEthnicGroup;
+      }
+      const nextComments = normalizeText(metadataDraft.patient.comments);
+      if (nextComments !== normalizeText(patientDetails?.comments ?? '')) {
+        patientPayload.comments = nextComments;
+      }
+
+      if (baselinePatientId && Object.keys(patientPayload).length > 0) {
+        updatedPatient = await api.patients.update(baselinePatientId, patientPayload);
+        setPatientDetails(updatedPatient);
+        studyChanged = true;
+      }
+
+      const studyPayload: StudyUpdateRequest = {};
+      const nextStudyId = normalizeText(metadataDraft.study.study_id);
+      if (nextStudyId !== normalizeText(study.study_id ?? '')) {
+        studyPayload.study_id = nextStudyId;
+      }
+      const nextStudyDate = normalizeText(metadataDraft.study.study_date);
+      if (nextStudyDate !== normalizeText(study.study_date ?? '')) {
+        studyPayload.study_date = nextStudyDate;
+      }
+      const nextStudyTime = normalizeText(metadataDraft.study.study_time);
+      if (nextStudyTime !== normalizeText(study.study_time ?? '')) {
+        studyPayload.study_time = nextStudyTime;
+      }
+      const nextStudyDesc = normalizeText(metadataDraft.study.study_description);
+      if (nextStudyDesc !== normalizeText(study.study_description ?? '')) {
+        studyPayload.study_description = nextStudyDesc;
+      }
+      const nextAccession = normalizeText(metadataDraft.study.accession_number);
+      if (nextAccession !== normalizeText(study.accession_number ?? '')) {
+        studyPayload.accession_number = nextAccession;
+      }
+      const nextReferring = normalizeText(metadataDraft.study.referring_physician_name);
+      if (nextReferring !== normalizeText(study.referring_physician ?? '')) {
+        studyPayload.referring_physician_name = nextReferring;
+      }
+      const nextInstitution = normalizeText(metadataDraft.study.institution_name);
+      if (nextInstitution !== normalizeText(study.institution_name ?? '')) {
+        studyPayload.institution_name = nextInstitution;
+      }
+
+      if (Object.keys(studyPayload).length > 0) {
+        await api.studies.update(studyUid, studyPayload);
+        studyChanged = true;
+      }
+
+      const seriesPayload: SeriesUpdateRequest = {};
+      if (selectedSeries && seriesKey) {
+        const series = selectedSeries.series;
+        const nextSeriesNumber = parseOptionalNumber(metadataDraft.series.series_number);
+        if (nextSeriesNumber !== (series.series_number ?? null)) {
+          seriesPayload.series_number = nextSeriesNumber;
+        }
+        const nextSeriesDesc = normalizeText(metadataDraft.series.series_description);
+        if (nextSeriesDesc !== normalizeText(series.series_description ?? '')) {
+          seriesPayload.series_description = nextSeriesDesc;
+        }
+        const nextBodyPart = normalizeText(metadataDraft.series.body_part_examined);
+        if (nextBodyPart !== normalizeText(series.body_part_examined ?? '')) {
+          seriesPayload.body_part_examined = nextBodyPart;
+        }
+        const nextPatientPosition = normalizeText(metadataDraft.series.patient_position);
+        if (nextPatientPosition !== normalizeText(series.patient_position ?? '')) {
+          seriesPayload.patient_position = nextPatientPosition;
+        }
+        const nextProtocol = normalizeText(metadataDraft.series.protocol_name);
+        if (nextProtocol !== normalizeText(series.protocol_name ?? '')) {
+          seriesPayload.protocol_name = nextProtocol;
+        }
+        const nextSliceThickness = parseOptionalNumber(metadataDraft.series.slice_thickness);
+        if (nextSliceThickness !== (series.slice_thickness ?? null)) {
+          seriesPayload.slice_thickness = nextSliceThickness;
+        }
+        const nextSpacing = parseOptionalNumber(metadataDraft.series.spacing_between_slices);
+        if (nextSpacing !== (series.spacing_between_slices ?? null)) {
+          seriesPayload.spacing_between_slices = nextSpacing;
+        }
+        const nextWindowCenter = parseOptionalNumber(metadataDraft.series.window_center);
+        if (nextWindowCenter !== (selectedSeries.window_center ?? null)) {
+          seriesPayload.window_center = nextWindowCenter;
+        }
+        const nextWindowWidth = parseOptionalNumber(metadataDraft.series.window_width);
+        if (nextWindowWidth !== (selectedSeries.window_width ?? null)) {
+          seriesPayload.window_width = nextWindowWidth;
+        }
+      }
+
+      if (seriesKey && Object.keys(seriesPayload).length > 0) {
+        updatedSeries = await api.series.update(seriesKey, seriesPayload);
+        seriesCacheRef.current.set(seriesKey, updatedSeries);
+        setSelectedSeries(updatedSeries);
+        setSeriesList((prev) =>
+          prev.map((item) =>
+            item.series_instance_uid === updatedSeries!.series.series_instance_uid
+              ? { ...item, ...updatedSeries!.series }
+              : item
+          )
+        );
+      }
+
+      if (studyChanged) {
+        const refreshedStudy = await api.studies.get(studyUid);
+        setStudy(refreshedStudy);
+      }
+
+      if (!studyChanged && !updatedSeries && !updatedPatient) {
+        setSnackbarMessage('No metadata changes detected.');
+      } else {
+        setSnackbarMessage('Metadata updated.');
+      }
+      setMetadataDialogOpen(false);
+    } catch (err) {
+      console.error('Failed to update metadata', err);
+      setSnackbarMessage('Failed to update metadata.');
+    } finally {
+      setMetadataSaving(false);
+    }
+  }, [
+    metadataDraft,
+    studyUid,
+    study,
+    patientDetails,
+    selectedSeries,
+    seriesKey,
+  ]);
 
   const saveViewportState = useCallback(() => {
     const seriesUid = activeSeriesUidRef.current;
@@ -656,6 +946,32 @@ const ViewerPage: React.FC = () => {
       active = false;
     };
   }, [study?.patient_id, study?.study_instance_uid]);
+
+  useEffect(() => {
+    let active = true;
+    if (!study?.patient_id) {
+      setPatientDetails(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    api.patients
+      .get(study.patient_id)
+      .then((patient) => {
+        if (!active) return;
+        setPatientDetails(patient);
+      })
+      .catch((err) => {
+        if (!active) return;
+        console.warn('Failed to load patient details', err);
+        setPatientDetails(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [study?.patient_id]);
 
   // Load thumbnails for series list
   useEffect(() => {
@@ -935,6 +1251,34 @@ const ViewerPage: React.FC = () => {
     isUltrasound,
   ]);
 
+  useEffect(() => {
+    if (!seriesKey || frameIndex.length === 0) return;
+    if (prefetchedSeriesRef.current.has(seriesKey)) return;
+    const warmCount = Math.min(frameIndex.length, isUltrasound ? 12 : 6);
+    for (let i = 0; i < warmCount; i += 1) {
+      const nextFrame = frameIndex[i];
+      if (!nextFrame) continue;
+      const url = api.instances.getPixelDataUrl(nextFrame.instanceUid, {
+        frame: nextFrame.frameIndex,
+        windowCenter: windowLevel.center,
+        windowWidth: windowLevel.width,
+        format: renderFormat,
+        quality: renderFormat === 'jpeg' ? renderQuality : undefined,
+      });
+      preloadImage(url);
+    }
+    prefetchedSeriesRef.current.add(seriesKey);
+  }, [
+    seriesKey,
+    frameIndex,
+    windowLevel.center,
+    windowLevel.width,
+    renderFormat,
+    renderQuality,
+    preloadImage,
+    isUltrasound,
+  ]);
+
   const screenToImage = useCallback(
     (clientX: number, clientY: number) => {
       const svg = overlayRef.current;
@@ -1067,8 +1411,12 @@ const ViewerPage: React.FC = () => {
           setSnackbarMessage('Cine measurement recorded.');
         }
       } catch (err) {
+        const detail =
+          typeof (err as any)?.response?.data?.detail === 'string'
+            ? (err as any).response.data.detail
+            : null;
         console.error('Failed to track cine measurement:', err);
-        setSnackbarMessage('Failed to track cine measurement.');
+        setSnackbarMessage(detail ? `Failed to track cine measurement: ${detail}` : 'Failed to track cine measurement.');
       } finally {
         setTrackingMeasurementId(null);
       }
@@ -1238,14 +1586,22 @@ const ViewerPage: React.FC = () => {
 
   const handleWheel = (event: React.WheelEvent) => {
     if (!currentInstanceUid) return;
+    let delta = event.deltaY;
+    if (event.deltaMode === 1) {
+      delta *= 16;
+    } else if (event.deltaMode === 2) {
+      delta *= viewportSize.height || 1;
+    }
+    if (delta === 0) return;
+
     const shouldZoom = event.ctrlKey || activeTool === 'zoom' || totalSlices <= 1;
     if (shouldZoom) {
       if (!isPointInImage(event.clientX, event.clientY)) {
         return;
       }
       event.preventDefault();
-      const delta = Math.sign(event.deltaY) * Math.min(200, Math.abs(event.deltaY));
-      const factor = Math.exp(-delta * WHEEL_ZOOM_SPEED);
+      const clamped = Math.sign(delta) * Math.min(200, Math.abs(delta));
+      const factor = Math.exp(-clamped * WHEEL_ZOOM_SPEED);
       const nextZoom = clamp(zoom * factor, MIN_ZOOM, MAX_ZOOM);
       applyZoomAt(event.clientX, event.clientY, nextZoom);
       return;
@@ -1255,8 +1611,17 @@ const ViewerPage: React.FC = () => {
     if (isPlaying) {
       setIsPlaying(false);
     }
-    const direction = event.deltaY > 0 ? 1 : -1;
-    setCurrentSlice((prev) => clamp(prev + direction, 0, totalSlices - 1));
+    const now = performance.now();
+    if (now - lastWheelTimeRef.current > 400) {
+      wheelAccumulatorRef.current = 0;
+    }
+    lastWheelTimeRef.current = now;
+    wheelAccumulatorRef.current += delta;
+    const steps = Math.trunc(wheelAccumulatorRef.current / WHEEL_SCROLL_THRESHOLD);
+    if (steps === 0) return;
+    const clampedSteps = clamp(steps, -WHEEL_MAX_SLICE_STEP, WHEEL_MAX_SLICE_STEP);
+    wheelAccumulatorRef.current -= clampedSteps * WHEEL_SCROLL_THRESHOLD;
+    setCurrentSlice((prev) => clamp(prev + clampedSteps, 0, totalSlices - 1));
   };
 
   const handleResetView = () => {
@@ -2096,9 +2461,20 @@ const ViewerPage: React.FC = () => {
                 Study Information
               </Typography>
               <Typography variant="body2">Patient: {patientLabel}</Typography>
-              <Typography variant="body2">Patient ID: {study?.patient_id || '-'}</Typography>
+              <Typography variant="body2">
+                Patient ID: {patientDetails?.patient_id || study?.patient_id || '-'}
+              </Typography>
               <Typography variant="body2">Study Date: {study?.study_date || '-'}</Typography>
               <Typography variant="body2">Accession: {study?.accession_number || '-'}</Typography>
+              <Button
+                variant="outlined"
+                size="small"
+                onClick={openMetadataEditor}
+                sx={{ mt: 1 }}
+                disabled={!study}
+              >
+                Edit Metadata
+              </Button>
 
               <Divider sx={{ my: 2 }} />
 
@@ -2403,6 +2779,263 @@ const ViewerPage: React.FC = () => {
         </DialogContent>
         <DialogActions>
           <Button onClick={closeVolumeViewer}>Close</Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog
+        open={metadataDialogOpen}
+        onClose={() => setMetadataDialogOpen(false)}
+        maxWidth="md"
+        fullWidth
+      >
+        <DialogTitle>Edit Metadata</DialogTitle>
+        <DialogContent dividers>
+          {!metadataDraft ? (
+            <Typography color="text.secondary">Metadata not available.</Typography>
+          ) : (
+            <>
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Patient
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 2,
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                }}
+              >
+                <TextField
+                  label="Patient ID"
+                  value={metadataDraft.patient.patient_id}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'patient_id', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Patient Name"
+                  value={metadataDraft.patient.patient_name}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'patient_name', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Birth Date"
+                  type="date"
+                  value={metadataDraft.patient.birth_date}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'birth_date', event.target.value)
+                  }
+                  InputLabelProps={{ shrink: true }}
+                />
+                <TextField
+                  label="Sex"
+                  value={metadataDraft.patient.sex}
+                  onChange={(event) => updateMetadataDraft('patient', 'sex', event.target.value)}
+                />
+                <TextField
+                  label="Issuer of Patient ID"
+                  value={metadataDraft.patient.issuer_of_patient_id}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'issuer_of_patient_id', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Other Patient IDs"
+                  value={metadataDraft.patient.other_patient_ids}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'other_patient_ids', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Ethnic Group"
+                  value={metadataDraft.patient.ethnic_group}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'ethnic_group', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Comments"
+                  value={metadataDraft.patient.comments}
+                  onChange={(event) =>
+                    updateMetadataDraft('patient', 'comments', event.target.value)
+                  }
+                  multiline
+                  minRows={2}
+                />
+              </Box>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Study
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 2,
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                }}
+              >
+                <TextField
+                  label="Study ID"
+                  value={metadataDraft.study.study_id}
+                  onChange={(event) => updateMetadataDraft('study', 'study_id', event.target.value)}
+                />
+                <TextField
+                  label="Study Date"
+                  type="date"
+                  value={metadataDraft.study.study_date}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'study_date', event.target.value)
+                  }
+                  InputLabelProps={{ shrink: true }}
+                />
+                <TextField
+                  label="Study Time"
+                  value={metadataDraft.study.study_time}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'study_time', event.target.value)
+                  }
+                  placeholder="HH:MM:SS"
+                />
+                <TextField
+                  label="Study Description"
+                  value={metadataDraft.study.study_description}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'study_description', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Accession Number"
+                  value={metadataDraft.study.accession_number}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'accession_number', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Referring Physician"
+                  value={metadataDraft.study.referring_physician_name}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'referring_physician_name', event.target.value)
+                  }
+                />
+                <TextField
+                  label="Institution"
+                  value={metadataDraft.study.institution_name}
+                  onChange={(event) =>
+                    updateMetadataDraft('study', 'institution_name', event.target.value)
+                  }
+                />
+              </Box>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Series
+              </Typography>
+              <Box
+                sx={{
+                  display: 'grid',
+                  gap: 2,
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                }}
+              >
+                <TextField
+                  label="Series Number"
+                  type="number"
+                  value={metadataDraft.series.series_number}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'series_number', event.target.value)
+                  }
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Series Description"
+                  value={metadataDraft.series.series_description}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'series_description', event.target.value)
+                  }
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Body Part Examined"
+                  value={metadataDraft.series.body_part_examined}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'body_part_examined', event.target.value)
+                  }
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Patient Position"
+                  value={metadataDraft.series.patient_position}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'patient_position', event.target.value)
+                  }
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Protocol Name"
+                  value={metadataDraft.series.protocol_name}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'protocol_name', event.target.value)
+                  }
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Slice Thickness (mm)"
+                  type="number"
+                  value={metadataDraft.series.slice_thickness}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'slice_thickness', event.target.value)
+                  }
+                  inputProps={{ step: 'any' }}
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Spacing Between Slices (mm)"
+                  type="number"
+                  value={metadataDraft.series.spacing_between_slices}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'spacing_between_slices', event.target.value)
+                  }
+                  inputProps={{ step: 'any' }}
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Window Center"
+                  type="number"
+                  value={metadataDraft.series.window_center}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'window_center', event.target.value)
+                  }
+                  inputProps={{ step: 'any' }}
+                  disabled={!selectedSeries}
+                />
+                <TextField
+                  label="Window Width"
+                  type="number"
+                  value={metadataDraft.series.window_width}
+                  onChange={(event) =>
+                    updateMetadataDraft('series', 'window_width', event.target.value)
+                  }
+                  inputProps={{ step: 'any' }}
+                  disabled={!selectedSeries}
+                />
+              </Box>
+            </>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setMetadataDialogOpen(false)} disabled={metadataSaving}>
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleSaveMetadata}
+            disabled={metadataSaving || !metadataDraft}
+          >
+            Save
+          </Button>
         </DialogActions>
       </Dialog>
 

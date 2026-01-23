@@ -84,6 +84,21 @@ class StudyMetadata(BaseModel):
         from_attributes = True
 
 
+class StudyUpdate(BaseModel):
+    """Editable study metadata fields."""
+
+    study_id: str | None = Field(None, description="Study ID")
+    study_date: date | None = Field(None, description="Study date")
+    study_time: dt_time | None = Field(None, description="Study time")
+    study_description: str | None = Field(None, description="Study description")
+    accession_number: str | None = Field(None, description="Accession number")
+    referring_physician_name: str | None = Field(None, description="Referring physician")
+    institution_name: str | None = Field(None, description="Institution name")
+    modalities_in_study: list[str] | None = Field(
+        None, description="Modalities in study (e.g., ['CT', 'MR'])"
+    )
+
+
 class StudyListResponse(BaseModel):
     """Paginated study list response."""
 
@@ -122,6 +137,13 @@ def _study_to_metadata(study: Study, patient: Patient | None = None) -> StudyMet
         created_at=study.created_at,
         updated_at=study.updated_at,
     )
+
+
+def _normalize_optional_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 @router.get("", response_model=StudyListResponse)
@@ -271,6 +293,69 @@ async def get_study(
         ai_results_available=ai_results_available,
         annotations_count=annotations_count,
     )
+
+
+@router.patch("/{study_uid}", response_model=StudyMetadata)
+async def update_study(
+    study_uid: str,
+    payload: StudyUpdate,
+    current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist", "radiologist"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StudyMetadata:
+    """Update study metadata."""
+    query = (
+        select(Study)
+        .options(selectinload(Study.patient))
+        .where(Study.study_instance_uid == study_uid)
+    )
+    result = await db.execute(query)
+    study = result.scalar_one_or_none()
+
+    if not study:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Study not found: {study_uid}",
+        )
+
+    updated_fields: list[str] = []
+    if payload.study_id is not None:
+        study.study_id = _normalize_optional_str(payload.study_id)
+        updated_fields.append("study_id")
+    if payload.study_date is not None:
+        study.study_date = payload.study_date
+        updated_fields.append("study_date")
+    if payload.study_time is not None:
+        study.study_time = payload.study_time
+        updated_fields.append("study_time")
+    if payload.study_description is not None:
+        study.study_description = _normalize_optional_str(payload.study_description)
+        updated_fields.append("study_description")
+    if payload.accession_number is not None:
+        study.accession_number = _normalize_optional_str(payload.accession_number)
+        updated_fields.append("accession_number")
+    if payload.referring_physician_name is not None:
+        study.referring_physician_name = _normalize_optional_str(payload.referring_physician_name)
+        updated_fields.append("referring_physician_name")
+    if payload.institution_name is not None:
+        study.institution_name = _normalize_optional_str(payload.institution_name)
+        updated_fields.append("institution_name")
+    if payload.modalities_in_study is not None:
+        filtered = [m.strip() for m in payload.modalities_in_study if m and m.strip()]
+        study.modalities_list = filtered
+        updated_fields.append("modalities_in_study")
+
+    await db.commit()
+    await db.refresh(study)
+
+    audit_logger.log_access(
+        user_id=current_user.user_id,
+        resource_type="study",
+        resource_id=study_uid,
+        action="UPDATE_METADATA",
+        details={"fields": updated_fields},
+    )
+
+    return _study_to_metadata(study, study.patient)
 
 
 @router.post("", response_model=StudyMetadata, status_code=status.HTTP_201_CREATED)

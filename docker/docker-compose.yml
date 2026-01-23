@@ -39,6 +39,8 @@ services:
       - ENVIRONMENT=${ENVIRONMENT:-development}
       - DEBUG=${DEBUG:-true}
       - ENABLE_DEMO_DATA=${ENABLE_DEMO_DATA:-false}
+      - INIT_DEFAULT_USERS=${INIT_DEFAULT_USERS:-true}
+      - AI_AUTO_LOAD_MODELS=${AI_AUTO_LOAD_MODELS:-false}
     volumes:
       - dicom-storage:/app/storage
       - ../models:/app/models

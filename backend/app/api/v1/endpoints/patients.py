@@ -29,8 +29,30 @@ class PatientMetadata(BaseModel):
     weight: float | None = Field(None, description="Patient weight in kg")
     ethnic_group: str | None = Field(None, description="Ethnic group")
     comments: str | None = Field(None, description="Patient comments")
+    issuer_of_patient_id: str | None = Field(None, description="Issuer of patient ID")
+    other_patient_ids: str | None = Field(None, description="Other patient IDs")
     study_count: int = Field(0, description="Number of studies")
     last_study_date: date | None = Field(None, description="Most recent study date")
+
+
+class PatientUpdate(BaseModel):
+    """Editable patient fields."""
+
+    patient_id: str | None = Field(None, description="Patient ID")
+    patient_name: str | None = Field(None, description="Patient name")
+    birth_date: date | None = Field(None, description="Date of birth")
+    sex: str | None = Field(None, description="Patient sex (M/F/O)")
+    ethnic_group: str | None = Field(None, description="Ethnic group")
+    comments: str | None = Field(None, description="Patient comments")
+    issuer_of_patient_id: str | None = Field(None, description="Issuer of patient ID")
+    other_patient_ids: str | None = Field(None, description="Other patient IDs")
+
+
+def _normalize_optional_str(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = value.strip()
+    return stripped or None
 
 
 class PatientListResponse(BaseModel):
@@ -114,6 +136,8 @@ async def list_patients(
                 weight=None,
                 ethnic_group=patient.ethnic_group,
                 comments=patient.comments,
+                issuer_of_patient_id=patient.issuer_of_patient_id,
+                other_patient_ids=patient.other_patient_ids,
                 study_count=study_count or 0,
                 last_study_date=last_study_date,
             )
@@ -167,6 +191,98 @@ async def get_patient(
         weight=None,
         ethnic_group=patient.ethnic_group,
         comments=patient.comments,
+        issuer_of_patient_id=patient.issuer_of_patient_id,
+        other_patient_ids=patient.other_patient_ids,
+        study_count=study_count or 0,
+        last_study_date=last_study_date,
+    )
+
+
+@router.patch("/{patient_id}", response_model=PatientMetadata)
+async def update_patient(
+    patient_id: str,
+    payload: PatientUpdate,
+    current_user: Annotated[TokenData, Depends(require_roles("admin", "technologist", "radiologist"))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> PatientMetadata:
+    """Update patient metadata."""
+    patient_result = await db.execute(
+        select(Patient).where(Patient.patient_id == patient_id)
+    )
+    patient = patient_result.scalar_one_or_none()
+    if not patient:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Patient not found: {patient_id}",
+        )
+
+    updated_fields: list[str] = []
+
+    if payload.patient_id is not None:
+        new_id = _normalize_optional_str(payload.patient_id)
+        if new_id and new_id != patient.patient_id:
+            existing = await db.execute(
+                select(Patient).where(Patient.patient_id == new_id)
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Patient ID already exists",
+                )
+            patient.patient_id = new_id
+            updated_fields.append("patient_id")
+
+    if payload.patient_name is not None:
+        patient.patient_name = _normalize_optional_str(payload.patient_name)
+        updated_fields.append("patient_name")
+    if payload.birth_date is not None:
+        patient.birth_date = payload.birth_date
+        updated_fields.append("birth_date")
+    if payload.sex is not None:
+        patient.sex = _normalize_optional_str(payload.sex)
+        updated_fields.append("sex")
+    if payload.ethnic_group is not None:
+        patient.ethnic_group = _normalize_optional_str(payload.ethnic_group)
+        updated_fields.append("ethnic_group")
+    if payload.comments is not None:
+        patient.comments = _normalize_optional_str(payload.comments)
+        updated_fields.append("comments")
+    if payload.issuer_of_patient_id is not None:
+        patient.issuer_of_patient_id = _normalize_optional_str(payload.issuer_of_patient_id)
+        updated_fields.append("issuer_of_patient_id")
+    if payload.other_patient_ids is not None:
+        patient.other_patient_ids = _normalize_optional_str(payload.other_patient_ids)
+        updated_fields.append("other_patient_ids")
+
+    await db.commit()
+    await db.refresh(patient)
+
+    study_stats_result = await db.execute(
+        select(func.count(Study.id), func.max(Study.study_date)).where(
+            Study.patient_id_fk == patient.id
+        )
+    )
+    study_count, last_study_date = study_stats_result.one()
+
+    audit_logger.log_access(
+        user_id=current_user.user_id,
+        resource_type="patient",
+        resource_id=patient.patient_id,
+        action="UPDATE_METADATA",
+        details={"fields": updated_fields},
+    )
+
+    return PatientMetadata(
+        patient_id=patient.patient_id,
+        patient_name=patient.patient_name,
+        birth_date=patient.birth_date,
+        sex=patient.sex,
+        age=None,
+        weight=None,
+        ethnic_group=patient.ethnic_group,
+        comments=patient.comments,
+        issuer_of_patient_id=patient.issuer_of_patient_id,
+        other_patient_ids=patient.other_patient_ids,
         study_count=study_count or 0,
         last_study_date=last_study_date,
     )

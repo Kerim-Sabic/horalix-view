@@ -12,6 +12,7 @@ import { apiClient } from './apiClient';
 
 export interface Study {
   study_instance_uid: string;
+  study_id: string | null;
   patient_name: string;
   patient_id: string;
   study_date: string | null;
@@ -50,6 +51,7 @@ const normalizeStudy = (study: StudyPayload): Study => {
 
   return {
     ...study,
+    study_id: typeof study.study_id === 'string' ? study.study_id : null,
     patient_name: typeof study.patient_name === 'string' ? study.patient_name : '',
     patient_id: typeof study.patient_id === 'string' ? study.patient_id : '',
     modalities,
@@ -75,6 +77,17 @@ export interface StudySearchParams {
   page_size?: number;
 }
 
+export interface StudyUpdateRequest {
+  study_id?: string | null;
+  study_date?: string | null;
+  study_time?: string | null;
+  study_description?: string | null;
+  accession_number?: string | null;
+  referring_physician_name?: string | null;
+  institution_name?: string | null;
+  modalities_in_study?: string[] | null;
+}
+
 export interface Series {
   series_instance_uid: string;
   study_instance_uid: string;
@@ -89,6 +102,18 @@ export interface Series {
   num_instances: number;
   slice_thickness: number | null;
   spacing_between_slices: number | null;
+}
+
+export interface SeriesUpdateRequest {
+  series_number?: number | null;
+  series_description?: string | null;
+  body_part_examined?: string | null;
+  patient_position?: string | null;
+  protocol_name?: string | null;
+  slice_thickness?: number | null;
+  spacing_between_slices?: number | null;
+  window_center?: number | null;
+  window_width?: number | null;
 }
 
 export interface SeriesListResponse {
@@ -171,11 +196,23 @@ export interface Patient {
   patient_name: string;
   birth_date: string | null;
   sex: string | null;
+  issuer_of_patient_id: string | null;
   other_patient_ids: string | null;
   ethnic_group: string | null;
   comments: string | null;
   study_count: number;
   last_study_date: string | null;
+}
+
+export interface PatientUpdateRequest {
+  patient_id?: string | null;
+  patient_name?: string | null;
+  birth_date?: string | null;
+  sex?: string | null;
+  issuer_of_patient_id?: string | null;
+  other_patient_ids?: string | null;
+  ethnic_group?: string | null;
+  comments?: string | null;
 }
 
 export interface PatientListResponse {
@@ -447,6 +484,14 @@ export const api = {
     },
 
     /**
+     * Update study metadata.
+     */
+    async update(studyUid: string, payload: StudyUpdateRequest): Promise<Study> {
+      const response = await apiClient.patch<StudyPayload>(`/studies/${studyUid}`, payload);
+      return normalizeStudy(response.data as StudyPayload);
+    },
+
+    /**
      * Delete a study.
      */
     async delete(studyUid: string): Promise<void> {
@@ -494,6 +539,14 @@ export const api = {
       const response = await apiClient.get<FrameInfo>(`/series/${seriesUid}/frames`, {
         params: { start, count },
       });
+      return response.data;
+    },
+
+    /**
+     * Update series metadata.
+     */
+    async update(seriesUid: string, payload: SeriesUpdateRequest): Promise<SeriesDetailResponse> {
+      const response = await apiClient.patch<SeriesDetailResponse>(`/series/${seriesUid}`, payload);
       return response.data;
     },
 
@@ -647,6 +700,14 @@ export const api = {
         page_size: typeof payload.page_size === 'number' ? payload.page_size : rawStudies.length,
         studies: rawStudies.map((study) => normalizeStudy(study)),
       };
+    },
+
+    /**
+     * Update patient metadata.
+     */
+    async update(patientId: string, payload: PatientUpdateRequest): Promise<Patient> {
+      const response = await apiClient.patch<Patient>(`/patients/${patientId}`, payload);
+      return response.data;
     },
   },
 

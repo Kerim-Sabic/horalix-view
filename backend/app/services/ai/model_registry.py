@@ -116,6 +116,41 @@ class ModelRegistry:
         """Check if registry is ready."""
         return self._ready
 
+    async def preload_available_models(self) -> dict[str, str]:
+        """Preload all enabled models with available weights.
+
+        Returns:
+            Mapping of model name to status (loaded/disabled/missing_weights/error).
+        """
+        results: dict[str, str] = {}
+        for model_name in self._model_factories.keys():
+            if not self._model_enabled.get(model_name, False):
+                results[model_name] = "disabled"
+                continue
+            try:
+                await self.load_model(model_name)
+                results[model_name] = "loaded"
+            except FileNotFoundError:
+                results[model_name] = "missing_weights"
+            except Exception as exc:  # pragma: no cover - defensive
+                results[model_name] = "error"
+                logger.warning(
+                    "Failed to preload model",
+                    model_name=model_name,
+                    error=str(exc),
+                )
+
+        loaded = [name for name, status in results.items() if status == "loaded"]
+        failed = [name for name, status in results.items() if status == "error"]
+        skipped = [name for name, status in results.items() if status != "loaded"]
+        logger.info(
+            "Model preload complete",
+            loaded_models=loaded,
+            failed_models=failed,
+            skipped_models=skipped,
+        )
+        return results
+
     async def shutdown(self) -> None:
         """Shutdown registry and unload all models."""
         for model_name in list(self._loaded_models.keys()):
