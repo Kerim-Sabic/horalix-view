@@ -88,6 +88,6 @@ frontend/.vite/
 *.onnx
 *.h5
 *.pb
-/models/
+# /models/
 weights/
 checkpoints/
