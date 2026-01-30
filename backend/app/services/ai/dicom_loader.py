@@ -398,14 +398,14 @@ class DicomLoader:
                 slice_data = data[i]
                 if target_size:
                     slice_data = cv2.resize(slice_data, target_size[::-1])  # cv2 uses (w, h)
-                if convert_to_rgb:
+                if convert_to_rgb and slice_data.ndim == 2:
                     slice_data = np.stack([slice_data] * 3, axis=-1)
                 processed_slices.append(slice_data)
             data = np.stack(processed_slices, axis=0)
         else:
             if target_size:
                 data = cv2.resize(data, target_size[::-1])
-            if convert_to_rgb:
+            if convert_to_rgb and data.ndim == 2:
                 data = np.stack([data] * 3, axis=-1)
 
         return data

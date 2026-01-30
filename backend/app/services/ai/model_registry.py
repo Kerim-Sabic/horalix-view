@@ -65,6 +65,18 @@ class ModelRegistry:
         # Create directories
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure common model subdirectories exist for clear setup paths
+        for subdir in (
+            "medsam",
+            "yolov8",
+            "monai_segmentation",
+            "liver_segmentation",
+            "spleen_segmentation",
+            "echonet_measurements",
+            "prov_gigapath",
+            "hovernet",
+        ):
+            (self.models_dir / subdir).mkdir(parents=True, exist_ok=True)
 
         # Register real model implementations
         await self._register_real_models()
@@ -88,6 +100,14 @@ class ModelRegistry:
 
     def _get_weights_path(self, model_name: str) -> Path:
         """Get the expected weights path for a model."""
+        if model_name == "medsam":
+            nested = self.models_dir / "medsam" / self.settings.medsam_checkpoint
+            if nested.exists():
+                return nested
+            direct = self.models_dir / self.settings.medsam_checkpoint
+            if direct.exists():
+                return direct
+            return self.models_dir / "medsam"
         return self.models_dir / model_name
 
     def _weights_exist(self, weights_path: Path) -> bool:
@@ -491,11 +511,16 @@ class ModelRegistry:
         )
 
         # MedSAM Interactive Segmentation
+        medsam_checkpoint = self.models_dir / "medsam" / self.settings.medsam_checkpoint
+        if not medsam_checkpoint.exists():
+            direct_checkpoint = self.models_dir / self.settings.medsam_checkpoint
+            if direct_checkpoint.exists():
+                medsam_checkpoint = direct_checkpoint
         self.register_model(
             model_name="medsam",
             factory=lambda: MedSAMModel(
-                checkpoint_path=self.models_dir / "medsam",
-                model_type="vit_b",
+                checkpoint_path=medsam_checkpoint,
+                model_type=self.settings.medsam_model_type,
             ),
             metadata=ModelMetadata(
                 name="medsam",

@@ -17,6 +17,12 @@ import {
   CircularProgress,
   IconButton,
   Tooltip,
+  Stack,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
 } from '@mui/material';
 import {
   Psychology as AIIcon,
@@ -33,6 +39,7 @@ const AIModelsPage: React.FC = () => {
   const [loadingModelId, setLoadingModelId] = useState<string | null>(null);
   const [shapeError, setShapeError] = useState<string | null>(null);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
+  const [detailsModel, setDetailsModel] = useState<AIModel | null>(null);
 
   const fetchModels = useCallback(async () => {
     try {
@@ -86,6 +93,17 @@ const AIModelsPage: React.FC = () => {
     }
   };
 
+  const handleCopy = async (value: string) => {
+    try {
+      if (!value) return;
+      await navigator.clipboard.writeText(value);
+      setServerMessage('Copied weights path to clipboard.');
+    } catch (err) {
+      console.error('Failed to copy to clipboard:', err);
+      setError('Unable to copy weights path.');
+    }
+  };
+
   const getTypeColor = (type: string): 'primary' | 'secondary' | 'success' | 'warning' | 'info' | 'default' => {
     const normalized = typeof type === 'string' ? type.toLowerCase() : '';
     switch (normalized) {
@@ -102,6 +120,14 @@ const AIModelsPage: React.FC = () => {
       default:
         return 'default';
     }
+  };
+
+  const handleOpenDetails = (model: AIModel) => {
+    setDetailsModel(model);
+  };
+
+  const handleCloseDetails = () => {
+    setDetailsModel(null);
   };
 
   if (loading && models.length === 0) {
@@ -199,6 +225,8 @@ const AIModelsPage: React.FC = () => {
               : [];
             const isLoaded = model.status === 'loaded';
             const canLoad = model.status === 'available';
+            const weightsPath = model.weights?.path || model.requirements?.weights_path || '';
+            const weightsReady = Boolean(model.weights?.exists || model.available);
             const statusLabel = isLoaded
               ? 'Loaded'
               : model.status === 'available'
@@ -257,6 +285,20 @@ const AIModelsPage: React.FC = () => {
                     {details.description || 'No description available.'}
                   </Typography>
 
+                  <Stack spacing={0.5} sx={{ mb: 2 }}>
+                    <Typography variant="caption" color="text.secondary">
+                      Weights Path
+                    </Typography>
+                    <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                      {weightsPath || 'Not configured'}
+                    </Typography>
+                    {!weightsReady && weightsPath && (
+                      <Typography variant="caption" color="warning.main">
+                        Weights missing. Place the checkpoint at the path above.
+                      </Typography>
+                    )}
+                  </Stack>
+
                   <Box sx={{ mb: 2 }}>
                     <Typography variant="caption" color="text.secondary">
                       Supported Modalities
@@ -294,6 +336,13 @@ const AIModelsPage: React.FC = () => {
                   )}
                 </CardContent>
                 <CardActions>
+                  <Button
+                    size="small"
+                    onClick={() => handleCopy(weightsPath)}
+                    disabled={!weightsPath}
+                  >
+                    Copy Path
+                  </Button>
                   {isLoaded ? (
                     <Button
                       size="small"
@@ -327,7 +376,7 @@ const AIModelsPage: React.FC = () => {
                       {loadingModelId === model.name ? 'Loading...' : 'Load Model'}
                     </Button>
                   )}
-                  <Button size="small" disabled>
+                  <Button size="small" onClick={() => handleOpenDetails(model)}>
                     Documentation
                   </Button>
                 </CardActions>
@@ -337,6 +386,105 @@ const AIModelsPage: React.FC = () => {
           })}
         </Grid>
       )}
+
+      <Dialog open={!!detailsModel} onClose={handleCloseDetails} maxWidth="sm" fullWidth>
+        <DialogTitle>Model Details</DialogTitle>
+        <DialogContent dividers>
+          {detailsModel && (
+            <Box>
+              <Typography variant="subtitle1" gutterBottom>
+                {detailsModel.name}
+              </Typography>
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                {detailsModel.details?.description || 'No description available.'}
+              </Typography>
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" gutterBottom>
+                Configuration
+              </Typography>
+              <Typography variant="body2">
+                Type: {detailsModel.details?.model_type || 'Unknown'}
+              </Typography>
+              {detailsModel.details?.version && (
+                <Typography variant="body2">Version: {detailsModel.details.version}</Typography>
+              )}
+              {detailsModel.requirements?.device && (
+                <Typography variant="body2">Device: {detailsModel.requirements.device}</Typography>
+              )}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" gutterBottom>
+                Weights
+              </Typography>
+              <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>
+                {detailsModel.weights?.path || detailsModel.requirements?.weights_path || 'Not configured'}
+              </Typography>
+              <Typography variant="caption" color={detailsModel.weights?.exists ? 'success.main' : 'warning.main'}>
+                {detailsModel.weights?.exists ? 'Weights available' : 'Weights missing'}
+              </Typography>
+              {detailsModel.weights?.size_bytes && (
+                <Typography variant="body2">
+                  Size: {(detailsModel.weights.size_bytes / (1024 * 1024)).toFixed(1)} MB
+                </Typography>
+              )}
+              {detailsModel.weights?.sha256 && (
+                <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                  SHA256: {detailsModel.weights.sha256}
+                </Typography>
+              )}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" gutterBottom>
+                Supported Modalities
+              </Typography>
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
+                {(detailsModel.details?.supported_modalities ?? []).length > 0 ? (
+                  detailsModel.details.supported_modalities.map((modality) => (
+                    <Chip key={modality} label={modality} size="small" />
+                  ))
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    None listed
+                  </Typography>
+                )}
+              </Box>
+
+              {detailsModel.details?.reference && (
+                <>
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle2" gutterBottom>
+                    Reference
+                  </Typography>
+                  <Typography variant="body2" sx={{ wordBreak: 'break-word' }}>
+                    {detailsModel.details.reference}
+                  </Typography>
+                </>
+              )}
+
+              {detailsModel.errors?.length > 0 && (
+                <>
+                  <Divider sx={{ my: 2 }} />
+                  <Typography variant="subtitle2" gutterBottom>
+                    Errors
+                  </Typography>
+                  {detailsModel.errors.map((err, idx) => (
+                    <Typography key={`err-${idx}`} variant="body2" color="error">
+                      {err}
+                    </Typography>
+                  ))}
+                </>
+              )}
+            </Box>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleCloseDetails}>Close</Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 };

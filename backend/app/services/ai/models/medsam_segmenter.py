@@ -173,8 +173,41 @@ class MedSAMModel(InteractiveSegmentationModel):
 
             self._device = device
 
-            # Load SAM model
-            sam = sam_model_registry[self.model_type](checkpoint=str(self.checkpoint_path))
+            # Load SAM model (explicit map_location to support CPU-only runtimes)
+            # Some MedSAM checkpoints were saved on CUDA devices; torch.load must map to CPU.
+            map_location = torch.device("cpu")
+            checkpoint = torch.load(self.checkpoint_path, map_location=map_location)
+
+            # Build model without loading weights (we load state_dict explicitly).
+            try:
+                sam = sam_model_registry[self.model_type](checkpoint=None)
+            except TypeError:
+                # Older segment-anything builds may not accept checkpoint=None
+                sam = sam_model_registry[self.model_type]()
+
+            # Unwrap common checkpoint formats
+            state_dict = checkpoint
+            if isinstance(checkpoint, dict):
+                if "model" in checkpoint:
+                    state_dict = checkpoint["model"]
+                elif "state_dict" in checkpoint:
+                    state_dict = checkpoint["state_dict"]
+
+            # Strip DataParallel prefix if present
+            if isinstance(state_dict, dict) and state_dict:
+                sample_key = next(iter(state_dict.keys()))
+                if sample_key.startswith("module."):
+                    state_dict = {k.replace("module.", "", 1): v for k, v in state_dict.items()}
+
+            load_result = sam.load_state_dict(state_dict, strict=False)
+            if hasattr(load_result, "missing_keys") and hasattr(load_result, "unexpected_keys"):
+                if load_result.missing_keys or load_result.unexpected_keys:
+                    logger.warning(
+                        "MedSAM checkpoint mismatch",
+                        missing_keys=len(load_result.missing_keys),
+                        unexpected_keys=len(load_result.unexpected_keys),
+                    )
+
             sam.to(device)
             sam.eval()
 

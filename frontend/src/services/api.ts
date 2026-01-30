@@ -186,9 +186,45 @@ export interface TrackMeasurementResponse {
     frame_index: number;
     points: Array<{ x: number; y: number }>;
     length_mm: number | null;
+    area_mm2: number | null;
     valid: boolean;
   }>;
-  summary: { min_mm: number | null; max_mm: number | null; mean_mm: number | null };
+  summary: {
+    min_mm: number | null;
+    max_mm: number | null;
+    mean_mm: number | null;
+    min_area_mm2: number | null;
+    max_area_mm2: number | null;
+    mean_area_mm2: number | null;
+  };
+}
+
+export interface AdminSystemStatus {
+  status: string;
+  version: string;
+  uptime_seconds: number;
+  cpu_usage_percent: number;
+  memory_usage_percent: number;
+  disk_usage_percent: number;
+  active_users: number;
+  pending_jobs: number;
+}
+
+export interface AdminStorageInfo {
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  study_count: number;
+  series_count: number;
+  instance_count: number;
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  email: string;
+  roles: string[];
+  is_active: boolean;
 }
 
 export interface Patient {
@@ -297,6 +333,20 @@ export interface AIModelsResponse {
   total_available?: number;
   message?: string;
   shape_error?: string | null;
+}
+
+export interface InteractiveSegmentationResponse {
+  instance_uid: string;
+  mask_shape: number[];
+  mask_url: string;
+  confidence: number;
+  inference_time_ms: number;
+  model_name: string;
+  model_version: string;
+  contours: Array<Array<{ x: number; y: number }>>;
+  primary_contour: Array<{ x: number; y: number }>;
+  mask_area_px?: number | null;
+  mask_area_mm2?: number | null;
 }
 
 const normalizeAIModelDetails = (details: Partial<AIModelDetails> | null | undefined): AIModelDetails => {
@@ -741,6 +791,39 @@ export const api = {
     },
 
     /**
+     * Run interactive MedSAM segmentation.
+     */
+    async interactiveMedsam(params: {
+      studyUid: string;
+      seriesUid: string;
+      instanceUid: string;
+      frameIndex?: number;
+      prompt: {
+        points: Array<[number, number]>;
+        pointLabels?: number[];
+        box?: [number, number, number, number];
+      };
+    }): Promise<InteractiveSegmentationResponse> {
+      const response = await apiClient.post<InteractiveSegmentationResponse>(
+        '/ai/interactive/medsam',
+        {
+          points: params.prompt.points,
+          point_labels: params.prompt.pointLabels ?? [],
+          box: params.prompt.box,
+        },
+        {
+          params: {
+            study_uid: params.studyUid,
+            series_uid: params.seriesUid,
+            instance_uid: params.instanceUid,
+            frame_index: params.frameIndex,
+          },
+        }
+      );
+      return response.data;
+    },
+
+    /**
      * Unload an AI model.
      */
     async unloadModel(modelId: string): Promise<void> {
@@ -930,6 +1013,186 @@ export const api = {
         console.error('Failed to fetch recent jobs:', error);
         throw error; // Let caller handle error - don't silently return empty array
       }
+    },
+  },
+
+  // --------------------------------------------------------------------------
+  // Export
+  // --------------------------------------------------------------------------
+  export: {
+    /**
+     * Export study with measurements as real DICOM files (SR + SEG).
+     * Returns a ZIP file containing DICOM Structured Reports and Segmentation objects.
+     */
+    async exportDicomWithMeasurements(params: {
+      studyUid: string;
+      seriesUid: string;
+      patientId?: string;
+      patientName?: string;
+      patientBirthDate?: string;
+      patientSex?: string;
+      issuerOfPatientId?: string;
+      otherPatientIds?: string;
+      ethnicGroup?: string;
+      patientComments?: string;
+      studyId?: string;
+      studyDate?: string;
+      studyTime?: string;
+      studyDescription?: string;
+      accessionNumber?: string;
+      referringPhysicianName?: string;
+      seriesDescription?: string;
+      seriesNumber?: number | null;
+      bodyPartExamined?: string;
+      patientPosition?: string;
+      protocolName?: string;
+      sliceThickness?: number | null;
+      spacingBetweenSlices?: number | null;
+      windowCenter?: number | null;
+      windowWidth?: number | null;
+      modality?: string;
+      measurements: Array<{
+        id: string;
+        type: string;
+        label?: string;
+        points: Array<{ x: number; y: number }>;
+        lengthMm?: number | null;
+        areaMm2?: number | null;
+        perimeterMm?: number | null;
+        frameIndex?: number;
+        seriesUid?: string;
+        instanceUid?: string;
+      }>;
+      trackingData?: Array<{
+        measurementId: string;
+        label?: string;
+        frames: Array<{ frameIndex: number; value: number }>;
+        minMm?: number | null;
+        maxMm?: number | null;
+        meanMm?: number | null;
+        unit: string;
+      }>;
+      segmentations?: Array<{
+        id: string;
+        label: string;
+        color?: [number, number, number];
+        maskData: number[][];
+        frameIndex?: number;
+        instanceUid?: string;
+      }>;
+      includeSr?: boolean;
+      includeSeg?: boolean;
+      includeOriginal?: boolean;
+      authorName?: string;
+      institutionName?: string;
+    }): Promise<Blob> {
+      const response = await apiClient.post('/export/dicom-measurements', {
+        study_uid: params.studyUid,
+        series_uid: params.seriesUid,
+        patient_id: params.patientId,
+        patient_name: params.patientName,
+        patient_birth_date: params.patientBirthDate,
+        patient_sex: params.patientSex,
+        issuer_of_patient_id: params.issuerOfPatientId,
+        other_patient_ids: params.otherPatientIds,
+        ethnic_group: params.ethnicGroup,
+        patient_comments: params.patientComments,
+        study_id: params.studyId,
+        study_date: params.studyDate,
+        study_time: params.studyTime,
+        study_description: params.studyDescription,
+        accession_number: params.accessionNumber,
+        referring_physician_name: params.referringPhysicianName,
+        series_description: params.seriesDescription,
+        series_number: params.seriesNumber,
+        body_part_examined: params.bodyPartExamined,
+        patient_position: params.patientPosition,
+        protocol_name: params.protocolName,
+        slice_thickness: params.sliceThickness,
+        spacing_between_slices: params.spacingBetweenSlices,
+        window_center: params.windowCenter,
+        window_width: params.windowWidth,
+        modality: params.modality || 'US',
+        measurements: params.measurements.map((m) => ({
+          id: m.id,
+          type: m.type,
+          label: m.label,
+          points: m.points,
+          length_mm: m.lengthMm,
+          area_mm2: m.areaMm2,
+          perimeter_mm: m.perimeterMm,
+          frame_index: m.frameIndex,
+          series_uid: m.seriesUid || params.seriesUid,
+          instance_uid: m.instanceUid,
+        })),
+        tracking_data: params.trackingData?.map((t) => ({
+          measurement_id: t.measurementId,
+          label: t.label,
+          frames: t.frames.map((f) => ({
+            frame_index: f.frameIndex,
+            value: f.value,
+          })),
+          min_value: t.minMm,
+          max_value: t.maxMm,
+          mean_value: t.meanMm,
+          unit: t.unit,
+        })) || [],
+        segmentations: params.segmentations?.map((s) => ({
+          id: s.id,
+          label: s.label,
+          color: s.color || [255, 0, 0],
+          mask_data: s.maskData,
+          frame_index: s.frameIndex,
+          instance_uid: s.instanceUid,
+        })) || [],
+        include_sr: params.includeSr ?? true,
+        include_seg: params.includeSeg ?? true,
+        include_original: params.includeOriginal ?? true,
+        author_name: params.authorName,
+        institution_name: params.institutionName,
+      }, {
+        responseType: 'blob',
+        timeout: 120000, // 2 minutes for large exports
+      });
+      return response.data;
+    },
+
+    /**
+     * Download a blob as a file.
+     */
+    downloadBlob(blob: Blob, filename: string): void {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    },
+  },
+
+  // --------------------------------------------------------------------------
+  // Admin
+  // --------------------------------------------------------------------------
+  admin: {
+    async getSystemStatus(): Promise<AdminSystemStatus> {
+      const response = await apiClient.get('/admin/status');
+      return response.data;
+    },
+    async getStorageInfo(): Promise<AdminStorageInfo> {
+      const response = await apiClient.get('/admin/storage');
+      return response.data;
+    },
+    async getUsers(): Promise<AdminUser[]> {
+      const response = await apiClient.get('/admin/users');
+      return response.data;
+    },
+    async updateUserRoles(userId: string, roles: string[]): Promise<void> {
+      await apiClient.put(`/admin/users/${userId}/roles`, roles);
+    },
+    async updateUserStatus(userId: string, isActive: boolean): Promise<void> {
+      await apiClient.put(`/admin/users/${userId}/status`, isActive);
     },
   },
 

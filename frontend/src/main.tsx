@@ -16,10 +16,6 @@ import { AuthProvider } from './contexts/AuthContext';
 import './i18n';
 import './index.css';
 
-// Initialize Cornerstone
-import { initializeCornerstone } from './utils/cornerstone';
-initializeCornerstone();
-
 // Create React Query client
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -331,3 +331,200 @@ async def process_export(job_id: str, request: ExportRequest) -> None:
     except Exception as e:
         job["status"] = ExportStatus.FAILED.value
         job["error_message"] = str(e)
+
+
+# ============================================================================
+# DICOM Export with Measurements (Real DICOM Files)
+# ============================================================================
+
+
+class DicomMeasurementExportRequest(BaseModel):
+    """Request for DICOM export with measurements."""
+
+    study_uid: str
+    series_uid: str
+    patient_id: str | None = None
+    patient_name: str | None = None
+    patient_birth_date: str | None = None
+    patient_sex: str | None = None
+    issuer_of_patient_id: str | None = None
+    other_patient_ids: str | None = None
+    ethnic_group: str | None = None
+    patient_comments: str | None = None
+    study_id: str | None = None
+    study_date: str | None = None
+    study_time: str | None = None
+    study_description: str | None = None
+    accession_number: str | None = None
+    referring_physician_name: str | None = None
+    series_description: str | None = None
+    series_number: int | None = None
+    body_part_examined: str | None = None
+    patient_position: str | None = None
+    protocol_name: str | None = None
+    slice_thickness: float | None = None
+    spacing_between_slices: float | None = None
+    window_center: float | None = None
+    window_width: float | None = None
+    modality: str = "US"
+    measurements: list[dict] = Field(default_factory=list)
+    tracking_data: list[dict] = Field(default_factory=list)
+    segmentations: list[dict] = Field(default_factory=list)
+    include_sr: bool = True
+    include_seg: bool = True
+    include_original: bool = True
+    author_name: str | None = None
+    institution_name: str | None = None
+
+
+@router.post("/dicom-measurements")
+async def export_dicom_with_measurements(
+    request: DicomMeasurementExportRequest,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+) -> StreamingResponse:
+    """Export measurements as real DICOM Structured Report.
+
+    Creates a ZIP package containing:
+    - DICOM SR (Structured Report) with all measurements
+    - DICOM SEG (Segmentation) for AI results (if provided)
+    - Original DICOM images (optional)
+
+    This produces REAL DICOM files that can be imported into any PACS system.
+    """
+    from pathlib import Path
+
+    from app.core.config import get_settings
+    from app.services.dicom.export import (
+        DicomExportService,
+        ExportRequest as DicomExportRequest,
+        MeasurementExport,
+        Point2D,
+        SegmentationExport,
+        TrackingExport,
+        TrackingFrameExport,
+    )
+
+    settings = get_settings()
+    storage_dir = Path(settings.dicom_storage_path)
+
+    # Initialize export service
+    export_service = DicomExportService(storage_dir)
+    await export_service.initialize()
+
+    # Convert measurements to export format
+    measurements = []
+    for m in request.measurements:
+        points = [Point2D(x=p["x"], y=p["y"]) for p in m.get("points", [])]
+        measurements.append(
+            MeasurementExport(
+                id=m.get("id", ""),
+                type=m.get("type", "line"),
+                label=m.get("label"),
+                points=points,
+                length_mm=m.get("length_mm") or m.get("lengthMm"),
+                area_mm2=m.get("area_mm2") or m.get("areaMm2"),
+                perimeter_mm=m.get("perimeter_mm") or m.get("perimeterMm"),
+                frame_index=m.get("frame_index") or m.get("frameIndex"),
+                series_uid=m.get("series_uid") or m.get("seriesUid") or request.series_uid,
+                instance_uid=m.get("instance_uid") or m.get("instanceUid"),
+            )
+        )
+
+    # Convert tracking data
+    tracking_data = []
+    for t in request.tracking_data:
+        frames = []
+        for f in t.get("frames", []):
+            frames.append(
+                TrackingFrameExport(
+                    frame_index=f.get("frame_index") or f.get("frameIndex", 0),
+                    value=f.get("value") or f.get("lengthMm") or f.get("areaMm2") or 0,
+                    unit=t.get("unit", "mm"),
+                )
+            )
+        tracking_data.append(
+            TrackingExport(
+                measurement_id=t.get("measurement_id") or t.get("measurementId", ""),
+                label=t.get("label"),
+                frames=frames,
+                min_value=t.get("min_value") or t.get("minMm"),
+                max_value=t.get("max_value") or t.get("maxMm"),
+                mean_value=t.get("mean_value") or t.get("meanMm"),
+                unit=t.get("unit", "mm"),
+            )
+        )
+
+    # Convert segmentations
+    segmentations = []
+    for s in request.segmentations:
+        segmentations.append(
+            SegmentationExport(
+                id=s.get("id", ""),
+                label=s.get("label", "Segmentation"),
+                color=tuple(s.get("color", [255, 0, 0])),
+                mask_data=s.get("mask_data") or s.get("maskData", []),
+                frame_index=s.get("frame_index") or s.get("frameIndex"),
+                instance_uid=s.get("instance_uid") or s.get("instanceUid"),
+            )
+        )
+
+    # Create export request
+    export_request = DicomExportRequest(
+        study_uid=request.study_uid,
+        series_uid=request.series_uid,
+        patient_id=request.patient_id,
+        patient_name=request.patient_name,
+        patient_birth_date=request.patient_birth_date,
+        patient_sex=request.patient_sex,
+        issuer_of_patient_id=request.issuer_of_patient_id,
+        other_patient_ids=request.other_patient_ids,
+        ethnic_group=request.ethnic_group,
+        patient_comments=request.patient_comments,
+        study_id=request.study_id,
+        study_date=request.study_date,
+        study_time=request.study_time,
+        study_description=request.study_description,
+        accession_number=request.accession_number,
+        referring_physician_name=request.referring_physician_name,
+        series_description=request.series_description,
+        series_number=request.series_number,
+        body_part_examined=request.body_part_examined,
+        patient_position=request.patient_position,
+        protocol_name=request.protocol_name,
+        slice_thickness=request.slice_thickness,
+        spacing_between_slices=request.spacing_between_slices,
+        window_center=request.window_center,
+        window_width=request.window_width,
+        modality=request.modality,
+        measurements=measurements,
+        tracking_data=tracking_data,
+        segmentations=segmentations,
+        include_sr=request.include_sr,
+        include_seg=request.include_seg and len(segmentations) > 0,
+        include_original=request.include_original,
+        author_name=request.author_name,
+        institution_name=request.institution_name,
+    )
+
+    # Create export package
+    zip_bytes, filename = await export_service.create_export_package(export_request)
+
+    # Log export
+    audit_logger.log_data_export(
+        user_id=current_user.user_id,
+        export_type="dicom_measurements",
+        resource_ids=[request.study_uid, request.series_uid],
+        format="dicom",
+        anonymized=False,
+    )
+
+    # Return as streaming response
+    from io import BytesIO
+
+    buffer = BytesIO(zip_bytes)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )

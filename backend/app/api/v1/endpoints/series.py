@@ -105,13 +105,14 @@ class TrackMeasurementRequest(BaseModel):
     track_full_loop: bool = Field(
         True, description="Track backwards and forwards to cover the full cine loop"
     )
-    points: list[TrackPoint] = Field(..., min_length=2, max_length=2)
+    points: list[TrackPoint] = Field(..., min_length=2, max_length=128, description="Points to track (2 for line, 3+ for polygon)")
 
 
 class TrackMeasurementFrame(BaseModel):
     frame_index: int
     points: list[TrackPoint]
     length_mm: float | None = None
+    area_mm2: float | None = None
     valid: bool = True
 
 
@@ -119,6 +120,9 @@ class TrackMeasurementSummary(BaseModel):
     min_mm: float | None = None
     max_mm: float | None = None
     mean_mm: float | None = None
+    min_area_mm2: float | None = None
+    max_area_mm2: float | None = None
+    mean_area_mm2: float | None = None
 
 
 class TrackMeasurementResponse(BaseModel):
@@ -700,33 +704,66 @@ async def track_measurement(
 
             if local_prev_gray is None:
                 tracked = local_prev_points.copy()
+                valid_count = len(tracked)
                 status_ok = True
             else:
                 next_points, status, _ = cv2.calcOpticalFlowPyrLK(
                     local_prev_gray, gray, local_prev_points, None, **lk_params
                 )
-                status_ok = bool(status is not None and status.all())
-                if next_points is None or not status_ok:
-                    next_points = local_prev_points.copy()
-                tracked = next_points
+                tracked = local_prev_points.copy()
+                valid_count = 0
+                if next_points is not None and status is not None:
+                    status_flat = status.reshape(-1)
+                    for i, ok in enumerate(status_flat):
+                        if ok:
+                            tracked[i] = next_points[i]
+                            valid_count += 1
+
+                if len(tracked) == 2:
+                    status_ok = valid_count == 2
+                else:
+                    required = max(3, int(len(tracked) * 0.6))
+                    status_ok = valid_count >= required
 
             local_prev_gray = gray
             local_prev_points = tracked
 
             tracked = np.clip(tracked, [0, 0], [gray.shape[1] - 1, gray.shape[0] - 1])
-            p0 = tracked[0][0]
-            p1 = tracked[1][0]
-            dx_mm = (p1[0] - p0[0]) * spacing_col
-            dy_mm = (p1[1] - p0[1]) * spacing_row
-            length_mm = float(np.sqrt(dx_mm * dx_mm + dy_mm * dy_mm))
+
+            # Build list of tracked points
+            tracked_points = [
+                TrackPoint(x=float(tracked[i][0][0]), y=float(tracked[i][0][1]))
+                for i in range(len(tracked))
+            ]
+
+            # Calculate length for 2-point measurements (lines)
+            length_mm = None
+            if len(tracked) == 2:
+                p0 = tracked[0][0]
+                p1 = tracked[1][0]
+                dx_mm = (p1[0] - p0[0]) * spacing_col
+                dy_mm = (p1[1] - p0[1]) * spacing_row
+                length_mm = float(np.sqrt(dx_mm * dx_mm + dy_mm * dy_mm))
+
+            # Calculate area for 3+ point measurements (polygons) using Shoelace formula
+            area_mm2 = None
+            if len(tracked) >= 3:
+                # Convert points to mm coordinates
+                pts_mm = [(tracked[i][0][0] * spacing_col, tracked[i][0][1] * spacing_row)
+                          for i in range(len(tracked))]
+                n = len(pts_mm)
+                area_sum = 0.0
+                for i in range(n):
+                    j = (i + 1) % n
+                    area_sum += pts_mm[i][0] * pts_mm[j][1]
+                    area_sum -= pts_mm[j][0] * pts_mm[i][1]
+                area_mm2 = abs(area_sum) / 2.0
 
             results[idx] = TrackMeasurementFrame(
                 frame_index=idx,
-                points=[
-                    TrackPoint(x=float(p0[0]), y=float(p0[1])),
-                    TrackPoint(x=float(p1[0]), y=float(p1[1])),
-                ],
+                points=tracked_points,
                 length_mm=length_mm,
+                area_mm2=area_mm2,
                 valid=status_ok,
             )
 
@@ -740,14 +777,20 @@ async def track_measurement(
         tracked_map.update(_track_indices(backward_indices))
 
     tracked_frames = [tracked_map[idx] for idx in sorted(tracked_map.keys())]
+
+    # Calculate summary statistics
     lengths = [frame.length_mm for frame in tracked_frames if frame.valid and frame.length_mm is not None]
+    areas = [frame.area_mm2 for frame in tracked_frames if frame.valid and frame.area_mm2 is not None]
+
     summary = TrackMeasurementSummary()
     if lengths:
-        summary = TrackMeasurementSummary(
-            min_mm=float(min(lengths)),
-            max_mm=float(max(lengths)),
-            mean_mm=float(sum(lengths) / len(lengths)),
-        )
+        summary.min_mm = float(min(lengths))
+        summary.max_mm = float(max(lengths))
+        summary.mean_mm = float(sum(lengths) / len(lengths))
+    if areas:
+        summary.min_area_mm2 = float(min(areas))
+        summary.max_area_mm2 = float(max(areas))
+        summary.mean_area_mm2 = float(sum(areas) / len(areas))
 
     return TrackMeasurementResponse(
         series_uid=series_uid,

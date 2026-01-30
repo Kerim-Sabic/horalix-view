@@ -135,6 +135,13 @@ class SAMPrompt(BaseModel):
     box: list[int] | None = Field(None, description="[x1, y1, x2, y2] bounding box")
 
 
+class Point2D(BaseModel):
+    """2D point coordinate."""
+
+    x: float
+    y: float
+
+
 class InteractiveSegmentationResponse(BaseModel):
     """Response from interactive segmentation."""
 
@@ -145,6 +152,10 @@ class InteractiveSegmentationResponse(BaseModel):
     inference_time_ms: float
     model_name: str
     model_version: str
+    contours: list[list[Point2D]] = Field(default_factory=list)
+    primary_contour: list[Point2D] = Field(default_factory=list)
+    mask_area_px: int | None = None
+    mask_area_mm2: float | None = None
 
 
 class JobListResponse(BaseModel):
@@ -699,6 +710,7 @@ async def interactive_medsam(
     http_request: Request,
     current_user: Annotated[TokenData, Depends(require_roles("admin", "radiologist"))],
     db: Annotated[AsyncSession, Depends(get_db)],
+    frame_index: int | None = Query(None, description="Frame index for multi-frame instances"),
 ) -> InteractiveSegmentationResponse:
     """Interactive MedSAM segmentation with prompts.
 
@@ -758,6 +770,27 @@ async def interactive_medsam(
             detail=str(e),
         )
 
+    # If this is a multi-frame instance, select the requested frame before inference
+    pixel_data = volume.pixel_data
+    if frame_index is None:
+        frame_index = 0
+
+    if pixel_data.ndim >= 4:
+        # Assume (frames, H, W, C) or similar
+        frame_index = max(0, min(frame_index, pixel_data.shape[0] - 1))
+        pixel_data = pixel_data[frame_index]
+    elif pixel_data.ndim == 3:
+        # Either (H, W, C) or (frames, H, W)
+        if pixel_data.shape[-1] in (3, 4):
+            # Treat as color image (H, W, C)
+            pixel_data = pixel_data
+        else:
+            # Treat first axis as frame dimension
+            frame_index = max(0, min(frame_index, pixel_data.shape[0] - 1))
+            pixel_data = pixel_data[frame_index]
+
+    volume.pixel_data = pixel_data
+
     # Prepare image for inference
     image = loader.prepare_for_inference(
         volume,
@@ -783,12 +816,50 @@ async def interactive_medsam(
 
     # Save mask result
     mask = result.output.mask
+    mask_bin = (mask > 0).astype(np.uint8)
     results_dir = Path(settings.ai.results_dir) / study_uid
     results_dir.mkdir(parents=True, exist_ok=True)
 
     mask_filename = f"medsam_interactive_{instance_uid}_{uuid4().hex[:8]}.npz"
     mask_path = results_dir / mask_filename
     np.savez_compressed(mask_path, mask=mask)
+
+    # Derive contours for interactive editing
+    contours_payload: list[list[Point2D]] = []
+    primary_contour: list[Point2D] = []
+    mask_area_px = int(mask_bin.sum())
+    mask_area_mm2: float | None = None
+
+    if volume.metadata.pixel_spacing:
+        row_spacing, col_spacing = volume.metadata.pixel_spacing
+        mask_area_mm2 = float(mask_area_px) * float(row_spacing) * float(col_spacing)
+
+    try:
+        import cv2
+
+        contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contour_info: list[tuple[float, list[Point2D]]] = []
+        for contour in contours:
+            if contour is None or len(contour) < 3:
+                continue
+            area = float(cv2.contourArea(contour))
+            if area <= 0:
+                continue
+            perimeter = float(cv2.arcLength(contour, True))
+            epsilon = max(1.0, perimeter * 0.002)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+            points = [
+                Point2D(x=float(pt[0][0]), y=float(pt[0][1]))
+                for pt in approx
+            ]
+            if len(points) >= 3:
+                contour_info.append((area, points))
+
+        contour_info.sort(key=lambda item: item[0], reverse=True)
+        contours_payload = [points for _, points in contour_info]
+        primary_contour = contour_info[0][1] if contour_info else []
+    except Exception as exc:
+        logger.warning("Failed to compute MedSAM contours", exc_info=exc)
 
     return InteractiveSegmentationResponse(
         instance_uid=instance_uid,
@@ -798,6 +869,10 @@ async def interactive_medsam(
         inference_time_ms=result.inference_time_ms,
         model_name=result.model_name,
         model_version=result.model_version,
+        contours=contours_payload,
+        primary_contour=primary_contour,
+        mask_area_px=mask_area_px,
+        mask_area_mm2=mask_area_mm2,
     )
 
 
