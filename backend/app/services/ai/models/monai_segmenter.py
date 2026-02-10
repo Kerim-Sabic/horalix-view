@@ -442,9 +442,10 @@ class MonaiSegmentationModel(SegmentationModel):
 
         return SegmentationOutput(
             mask=mask,
+            class_indices=list(range(len(self._class_names))),
             class_names=self._class_names,
             dice_scores=dice_scores,
-            volumes=volumes,
+            volumes_mm3=volumes,
             probabilities=probabilities,
         )
 

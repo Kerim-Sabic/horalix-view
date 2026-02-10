@@ -209,10 +209,14 @@ export const ViewerToolbar: React.FC<ViewerToolbarProps> = ({
       sx={{
         display: 'flex',
         alignItems: 'center',
-        px: 2,
-        py: 1,
+        px: 1.5,
+        py: 0.75,
         borderRadius: 0,
         bgcolor: 'background.paper',
+        borderBottom: 1,
+        borderColor: 'divider',
+        boxShadow: '0 1px 0 rgba(0,0,0,0.08)',
+        gap: 0.25,
       }}
       elevation={0}
     >
@@ -223,7 +227,7 @@ export const ViewerToolbar: React.FC<ViewerToolbarProps> = ({
         onClick={() => navigate('/studies')}
       />
 
-      <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+      <Divider orientation="vertical" flexItem sx={{ mx: 1, borderColor: 'divider', opacity: 0.6 }} />
 
       {/* Navigation tools */}
       {NAVIGATION_TOOLS.map((tool) => (
@@ -236,7 +240,7 @@ export const ViewerToolbar: React.FC<ViewerToolbarProps> = ({
         />
       ))}
 
-      <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+      <Divider orientation="vertical" flexItem sx={{ mx: 1, borderColor: 'divider', opacity: 0.6 }} />
 
       {/* Measurement tools */}
       {MEASUREMENT_TOOLS.map((tool) => (

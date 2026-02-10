@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile.backend
       args:
         AI_EXTRAS: ${AI_EXTRAS:-ai}
-        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
     ports:
       - "8000:8000"
     # Load environment from .env file (supports both repo root and docker/ locations)
@@ -29,9 +29,17 @@ services:
       # Security - MUST be set in .env or will use insecure default (dev only)
       - SECRET_KEY=${SECRET_KEY:-}
       # AI settings
-      - AI_DEVICE=${AI_DEVICE:-cpu}
+      - AI_DEVICE=${AI_DEVICE:-cuda}
       - AI_MODELS_DIR=${AI_MODELS_DIR:-/app/models}
       - AI_RESULTS_DIR=${AI_RESULTS_DIR:-/app/results}
+      - AI_HORALIX_AI_ENABLED=${AI_HORALIX_AI_ENABLED:-true}
+      - AI_HORALIX_AI_MODELS_DIR=${AI_HORALIX_AI_MODELS_DIR:-/app/models/horalix_ai}
+      - AI_HORALIX_AI_MODELS_ROOT=${AI_HORALIX_AI_MODELS_DIR:-/app/models/horalix_ai}
+      - AI_HORALIX_AI_JOB_QUEUE_DIR=/app/job_queue
+      - AI_HORALIX_AI_COMMAND=${AI_HORALIX_AI_COMMAND:-python -m app.services.ai.external_runners.horalix_ai --model $${MODEL_NAME}}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0,1}
       # DICOM settings
       - DICOM_AE_TITLE=${DICOM_AE_TITLE:-HORALIX_VIEW}
       - DICOM_PORT=${DICOM_PORT:-11112}
@@ -45,6 +53,15 @@ services:
       - dicom-storage:/app/storage
       - ../models:/app/models
       - ../results:/app/results
+      - ${HORALIX_AI_MODELS_HOST_PATH:-../models/horalix_ai}:/app/models/horalix_ai:ro
+      - ../job_queue:/app/job_queue
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     depends_on:
       postgres:
         condition: service_healthy
@@ -92,6 +109,133 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # Horalix AI Worker - GPU 0
+  horalix-ai-worker-0:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+      args:
+        AI_EXTRAS: ${AI_EXTRAS:-ai}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+    env_file:
+      - path: ../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      # Database connection (not strictly needed for worker, but needed for DicomLoader)
+      - DATABASE_URL=postgresql+asyncpg://horalix:horalix@postgres:5432/horalix_view
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      # Redis connection
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      # AI settings
+      - AI_DEVICE=cuda
+      - AI_MODELS_DIR=/app/models
+      - AI_RESULTS_DIR=/app/results
+      - AI_HORALIX_AI_MODELS_ROOT=${AI_HORALIX_AI_MODELS_DIR:-/app/models/horalix_ai}
+      - AI_HORALIX_AI_JOB_QUEUE_DIR=/app/job_queue
+      - AI_HORALIX_AI_PRELOAD=true
+      - AI_HORALIX_AI_NUM_WORKERS=2
+      # GPU settings - restrict to GPU 0
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+      # DICOM storage
+      - DICOM_STORAGE_DIR=/app/storage/dicom
+    volumes:
+      - dicom-storage:/app/storage:ro
+      - ../models:/app/models
+      - ../results:/app/results
+      - ${HORALIX_AI_MODELS_HOST_PATH:-../models/horalix_ai}:/app/models/horalix_ai:ro
+      - ../job_queue:/app/job_queue
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu]
+    command: python -m app.services.ai.horalix_ai.worker --gpu-id 0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; st=os.path.getmtime('/app/job_queue/status/worker_0_heartbeat') if os.path.exists('/app/job_queue/status/worker_0_heartbeat') else 0; assert time.time()-st<120, 'stale'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Horalix AI Worker - GPU 1 (for dual-GPU setups like 2x RTX 5080)
+  # Both workers run by default for maximum parallelism
+  horalix-ai-worker-1:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.backend
+      args:
+        AI_EXTRAS: ${AI_EXTRAS:-ai}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu124}
+    env_file:
+      - path: ../.env
+        required: false
+      - path: .env
+        required: false
+    environment:
+      # Database connection
+      - DATABASE_URL=postgresql+asyncpg://horalix:horalix@postgres:5432/horalix_view
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      # Redis connection
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      # AI settings
+      - AI_DEVICE=cuda
+      - AI_MODELS_DIR=/app/models
+      - AI_RESULTS_DIR=/app/results
+      - AI_HORALIX_AI_MODELS_ROOT=${AI_HORALIX_AI_MODELS_DIR:-/app/models/horalix_ai}
+      - AI_HORALIX_AI_JOB_QUEUE_DIR=/app/job_queue
+      - AI_HORALIX_AI_PRELOAD=true
+      - AI_HORALIX_AI_NUM_WORKERS=2
+      # GPU settings - restrict to GPU 1
+      - NVIDIA_VISIBLE_DEVICES=1
+      - CUDA_VISIBLE_DEVICES=1
+      # DICOM storage
+      - DICOM_STORAGE_DIR=/app/storage/dicom
+    volumes:
+      - dicom-storage:/app/storage:ro
+      - ../models:/app/models
+      - ../results:/app/results
+      - ${HORALIX_AI_MODELS_HOST_PATH:-../models/horalix_ai}:/app/models/horalix_ai:ro
+      - ../job_queue:/app/job_queue
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
+    command: python -m app.services.ai.horalix_ai.worker --gpu-id 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, time; st=os.path.getmtime('/app/job_queue/status/worker_1_heartbeat') if os.path.exists('/app/job_queue/status/worker_1_heartbeat') else 0; assert time.time()-st<120, 'stale'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

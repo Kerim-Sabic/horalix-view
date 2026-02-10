@@ -1,0 +1,10 @@
+{
+  "job_id": "79a38cda-b429-49e6-81f5-4e62f25635d3",
+  "study_uid": "3.3.333.3.3.4080808610983280439517444199864990438446541187622018",
+  "series_uid": null,
+  "instance_uid": "3.3.333.3.3.1086112780472177292170043693168225711381846619516433",
+  "enable_echonet": true,
+  "enable_measurements": true,
+  "priority": 5,
+  "submitted_at": "2026-02-09T13:15:17"
+}

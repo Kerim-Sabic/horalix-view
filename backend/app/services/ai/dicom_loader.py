@@ -169,6 +169,38 @@ class DicomLoader:
                 pixel_array = self._get_pixel_array(ds)
                 slices.append(pixel_array)
 
+            # Check if all slices have the same shape before stacking
+            shapes = [s.shape for s in slices]
+            if len(set(shapes)) > 1:
+                # Slices have different dimensions - resize all to the most common shape
+                from collections import Counter
+                shape_counts = Counter(shapes)
+                target_shape = shape_counts.most_common(1)[0][0]
+                logger.warning(
+                    f"Inconsistent slice shapes in series {series_uid}: {dict(shape_counts)}. "
+                    f"Resizing all to {target_shape}."
+                )
+                resized_slices = []
+                for s in slices:
+                    if s.shape != target_shape:
+                        try:
+                            import cv2  # type: ignore
+                            # cv2.resize expects (width, height)
+                            if s.ndim == 2:
+                                s = cv2.resize(s, (target_shape[1], target_shape[0]))
+                            elif s.ndim == 3:
+                                # Color image (H, W, C)
+                                s = cv2.resize(s, (target_shape[1], target_shape[0]))
+                        except ImportError:
+                            # Fallback: use numpy to crop/pad
+                            padded = np.zeros(target_shape, dtype=s.dtype)
+                            h = min(s.shape[0], target_shape[0])
+                            w = min(s.shape[1], target_shape[1])
+                            padded[:h, :w] = s[:h, :w]
+                            s = padded
+                    resized_slices.append(s)
+                slices = resized_slices
+
             # Stack into 3D volume (D, H, W)
             volume = np.stack(slices, axis=0)
             is_3d = True
@@ -276,9 +308,26 @@ class DicomLoader:
         )
 
     def _get_pixel_array(self, ds: Any) -> np.ndarray:
-        """Extract pixel array from dataset."""
+        """Extract pixel array from dataset.
+
+        Handles multi-frame DICOM (e.g. echocardiography cines) by returning
+        a consistent 2D (H, W) array. For multi-frame data, returns the first
+        frame to ensure all slices can be stacked.
+        """
         try:
             pixel_array = ds.pixel_array
+
+            # Handle multi-frame DICOM (cines) - pixel_array shape is (N, H, W) or (N, H, W, 3)
+            if pixel_array.ndim >= 3:
+                # For color images (H, W, 3), keep as-is
+                if pixel_array.ndim == 3 and pixel_array.shape[2] in (3, 4):
+                    # This is a single frame color image (H, W, C)
+                    pass
+                else:
+                    # Multi-frame: (N, H, W) or (N, H, W, C) - return first frame
+                    # The full multi-frame data should be loaded via load_multiframe_series
+                    pixel_array = pixel_array[0]
+
             return pixel_array.astype(np.float32)
         except Exception as e:
             logger.error(f"Failed to extract pixel data: {e}")
@@ -376,9 +425,16 @@ class DicomLoader:
             Preprocessed numpy array ready for inference
 
         """
-        import cv2
-
         data = volume.pixel_data.copy()
+
+        cv2 = None
+        if target_size is not None:
+            try:
+                import cv2  # type: ignore
+            except ImportError as exc:
+                raise ImportError(
+                    "OpenCV is required for resizing AI inputs. Install opencv-python."
+                ) from exc
 
         # Normalize to [0, 1]
         if normalize:

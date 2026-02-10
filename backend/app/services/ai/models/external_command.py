@@ -99,7 +99,8 @@ class ExternalCommandModel(BaseAIModel):
             raise RuntimeError("Model not loaded. Call load() first.")
 
         array, metadata, input_file = self._normalize_input(image, kwargs)
-        run_dir = self._create_run_dir()
+        study_uid = kwargs.get("study_uid") if isinstance(kwargs, dict) else None
+        run_dir = self._create_run_dir(study_uid)
 
         input_npz = run_dir / "input.npz"
         input_json = run_dir / "input.json"
@@ -214,11 +215,12 @@ class ExternalCommandModel(BaseAIModel):
             result[field_name] = value
         return result
 
-    def _create_run_dir(self) -> Path:
-        self.results_dir.mkdir(parents=True, exist_ok=True)
-        run_dir = Path(
-            tempfile.mkdtemp(prefix=f"{self.metadata.name}_", dir=str(self.results_dir))
-        )
+    def _create_run_dir(self, study_uid: str | None) -> Path:
+        base_dir = self.results_dir
+        if study_uid:
+            base_dir = self.results_dir / str(study_uid)
+        base_dir.mkdir(parents=True, exist_ok=True)
+        run_dir = Path(tempfile.mkdtemp(prefix=f"{self.metadata.name}_", dir=str(base_dir)))
         return run_dir
 
     def _render_command(self, tokens: dict[str, str]) -> list[str]:

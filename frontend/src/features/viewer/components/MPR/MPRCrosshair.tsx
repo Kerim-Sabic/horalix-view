@@ -30,13 +30,6 @@ export const MPRCrosshair: React.FC<MPRCrosshairProps> = ({
   const showCrosshair = useMPRStore((state) => state.views[plane].showCrosshair);
   const setCrosshairPosition = useMPRStore((state) => state.setCrosshairPosition);
 
-  // Don't render if crosshairs are hidden
-  if (!showCrosshairs || !showCrosshair || !volumeInfo) {
-    return null;
-  }
-
-  const lines = getCrosshairLinesForView(plane, crosshairPosition, volumeInfo.dimensions);
-
   const handleMouseDown = useCallback(
     (e: React.MouseEvent, line: CrosshairLine) => {
       e.stopPropagation();
@@ -50,7 +43,7 @@ export const MPRCrosshair: React.FC<MPRCrosshairProps> = ({
       if (!dragging || !containerRef.current || !volumeInfo) return;
 
       const rect = containerRef.current.getBoundingClientRect();
-      let newPosition: VolumeIndex = { ...crosshairPosition };
+      const newPosition: VolumeIndex = { ...crosshairPosition };
 
       if (dragging.orientation === 'horizontal') {
         // Moving horizontal line changes the axis perpendicular to view
@@ -92,6 +85,13 @@ export const MPRCrosshair: React.FC<MPRCrosshairProps> = ({
   const handleMouseLeave = useCallback(() => {
     setDragging(null);
   }, []);
+
+  // Don't render if crosshairs are hidden
+  if (!showCrosshairs || !showCrosshair || !volumeInfo) {
+    return null;
+  }
+
+  const lines = getCrosshairLinesForView(plane, crosshairPosition, volumeInfo.dimensions);
 
   return (
     <Box

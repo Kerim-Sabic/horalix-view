@@ -108,6 +108,21 @@ echo "Current migration status:"
 alembic current
 
 # -----------------------------------------------------------------------------
+# Initialize Job Queue (for AI workers)
+# -----------------------------------------------------------------------------
+
+if [ -n "$AI_HORALIX_AI_JOB_QUEUE_DIR" ]; then
+    echo ""
+    echo "Initializing job queue directories..."
+    mkdir -p "$AI_HORALIX_AI_JOB_QUEUE_DIR/pending"
+    mkdir -p "$AI_HORALIX_AI_JOB_QUEUE_DIR/processing"
+    mkdir -p "$AI_HORALIX_AI_JOB_QUEUE_DIR/completed"
+    mkdir -p "$AI_HORALIX_AI_JOB_QUEUE_DIR/failed"
+    mkdir -p "$AI_HORALIX_AI_JOB_QUEUE_DIR/status"
+    echo "  Job queue directories ready"
+fi
+
+# -----------------------------------------------------------------------------
 # Start Application
 # -----------------------------------------------------------------------------
 

@@ -89,9 +89,14 @@ const SettingsPage: React.FC = () => {
 
   return (
     <Box>
-      <Typography variant="h4" sx={{ mb: 3, fontWeight: 700 }}>
-        Settings
-      </Typography>
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          Settings
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Customize viewer defaults and clinical preferences.
+        </Typography>
+      </Box>
 
       <Card sx={{ mb: 3 }}>
         <CardContent>

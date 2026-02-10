@@ -6,9 +6,10 @@ supporting environment variables and .env files for different deployment environ
 
 import secrets
 import sys
+import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Any
 
 from dotenv import load_dotenv
 from pydantic import Field, model_validator
@@ -101,6 +102,162 @@ class AIModelSettings(BaseSettings):
     echonet_measurements_enabled: bool = Field(
         default=True, description="Enable EchoNet measurements (external command)"
     )
+    horalix_ai_enabled: bool = Field(
+        default=True,
+        description="Enable Horalix AI suite (PanEcho, EchoPrime, EchoNet Dynamic, Measurements)",
+    )
+    horalix_ai_models_root: Path = Field(
+        default=Path("./models/horalix_ai"),
+        description="Root path to Horalix AI model bundle (mounted from Windows in Docker)",
+    )
+
+    # Horalix AI - Model-Specific Paths (relative to horalix_ai_models_root)
+    horalix_ai_panecho_weights: str = Field(
+        default="PanEcho/weights/panecho.pt",
+        description="PanEcho model weights path (relative)",
+    )
+    horalix_ai_panecho_hub_dir: str = Field(
+        default="PanEcho",
+        description="PanEcho torch hub directory (contains hubconf.py)",
+    )
+    horalix_ai_echoprime_encoder: str = Field(
+        default="EchoPrime/model_data/weights/echo_prime_encoder.pt",
+        description="EchoPrime video encoder weights path (relative)",
+    )
+    horalix_ai_echoprime_text_encoder: str = Field(
+        default="EchoPrime/model_data/weights/echo_prime_text_encoder.pt",
+        description="EchoPrime text encoder weights path (relative)",
+    )
+    horalix_ai_view_classifier: str = Field(
+        default="EchoPrime/model_data/weights/view_classifier.pt",
+        description="EchoPrime view classifier weights path (relative)",
+    )
+    horalix_ai_measurements_dir: str = Field(
+        default="measurements/weights",
+        description="Measurements models directory path (relative, contains 2D_models/ and Doppler_models/)",
+    )
+    horalix_ai_echonet_weights: str = Field(
+        default="EchonetDynamic/output/segmentation/deeplabv3_resnet50_random/best.pt",
+        description="EchoNet-Dynamic model weights path (relative)",
+    )
+
+    @model_validator(mode="before")
+    def _compat_horalix_models_dir(cls, values: Any) -> Any:
+        """Back-compat: allow AI_HORALIX_AI_MODELS_DIR to populate horalix_ai_models_root."""
+        if not isinstance(values, dict):
+            return values
+        if values.get("horalix_ai_models_root"):
+            return values
+        env_dir = os.getenv("AI_HORALIX_AI_MODELS_DIR") or os.getenv("HORALIX_AI_MODELS_DIR")
+        if env_dir:
+            values["horalix_ai_models_root"] = env_dir
+        return values
+
+    # Horalix AI - Worker Configuration
+    horalix_ai_num_workers: int = Field(
+        default=2,
+        ge=1,
+        le=8,
+        description="Number of inference workers (typically 2 for 2-GPU setup)",
+    )
+    horalix_ai_preload: bool = Field(
+        default=True,
+        description="Load models at worker startup (eliminates first-inference latency)",
+    )
+    horalix_ai_warmup: bool = Field(
+        default=False,
+        description="Run dummy inference to warm up models at startup",
+    )
+    horalix_ai_job_queue_dir: Path = Field(
+        default=Path("./job_queue"),
+        description="Job queue directory (shared between backend and workers)",
+    )
+    horalix_ai_worker_timeout: int = Field(
+        default=1800,
+        ge=60,
+        description="Worker job timeout in seconds (30 minutes default)",
+    )
+    horalix_ai_retry_attempts: int = Field(
+        default=1,
+        ge=0,
+        le=3,
+        description="Retry attempts for queue-based Horalix AI jobs on timeout",
+    )
+    horalix_ai_worker_poll_interval: float = Field(
+        default=1.0,
+        ge=0.1,
+        description="Worker job polling interval in seconds",
+    )
+
+    # Horalix AI - Feature Flags
+    horalix_ai_enable_echonet_dynamic: bool = Field(
+        default=True,
+        description="Enable EchoNet-Dynamic LV segmentation (Stage 6 of pipeline)",
+    )
+    horalix_ai_enable_measurements_2d: bool = Field(
+        default=True,
+        description="Enable 2D measurements (IVS, LVID, LVPW, etc.)",
+    )
+    horalix_ai_enable_measurements_doppler: bool = Field(
+        default=False,
+        description="Enable Doppler measurements (Phase 2 feature)",
+    )
+    horalix_ai_view_aggregation: str = Field(
+        default="first",
+        description="View classification aggregation mode: 'first' or 'sampled_mean'",
+    )
+    horalix_ai_view_aggregation_k: int = Field(
+        default=5,
+        ge=1,
+        le=16,
+        description="Number of sampled frames for sampled_mean view aggregation",
+    )
+
+    # Horalix AI - Inference Parameters
+    horalix_ai_panecho_batch: int = Field(
+        default=8,
+        ge=1,
+        le=32,
+        description="PanEcho batch size (instances per batch)",
+    )
+    horalix_ai_measurements_batch: int = Field(
+        default=16,
+        ge=1,
+        le=64,
+        description="Measurements batch size (frames per batch)",
+    )
+    horalix_ai_echonet_batch: int = Field(
+        default=32,
+        ge=1,
+        le=128,
+        description="EchoNet-Dynamic batch size (frames per batch, increase for RTX 5080+)",
+    )
+    horalix_ai_echoprime_batch: int = Field(
+        default=1,
+        ge=1,
+        le=8,
+        description="EchoPrime batch size (typically 1, processes full study)",
+    )
+
+    # Horalix AI - Optimization
+    horalix_ai_cache_enabled: bool = Field(
+        default=True,
+        description="Enable caching (frame cache + embedding cache)",
+    )
+    horalix_ai_cache_max_size_gb: int = Field(
+        default=32,
+        ge=1,
+        le=100,
+        description="Maximum cache size in GB (increase for systems with >64GB RAM)",
+    )
+    horalix_ai_mixed_precision: bool = Field(
+        default=True,
+        description="Use FP16 mixed precision for faster inference (validate accuracy first)",
+    )
+    horalix_ai_dynamic_batch_sizing: bool = Field(
+        default=False,
+        description="Adjust batch sizes dynamically based on GPU memory (experimental)",
+    )
 
     # Inference settings
     device: str = Field(
@@ -165,6 +322,10 @@ class AIModelSettings(BaseSettings):
     echonet_measurements_command: str | None = Field(
         default=None,
         description="Command template for EchoNet measurements inference",
+    )
+    horalix_ai_command: str | None = Field(
+        default="python -m app.services.ai.external_runners.horalix_ai --model ${MODEL_NAME}",
+        description="Command template for Horalix AI inference",
     )
     gigapath_command: str | None = Field(
         default=None,

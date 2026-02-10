@@ -5,10 +5,12 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=180 \
+    PIP_RETRIES=5
 
 # Build args for AI dependencies
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
 ARG AI_EXTRAS=ai
 
 # Set working directory
@@ -19,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     postgresql-client \
+    ffmpeg \
     libgl1 \
     libglib2.0-0 \
     libgomp1 \
@@ -33,11 +36,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy requirements first for better caching
 COPY backend/pyproject.toml ./
 
-# Install PyTorch first (CPU by default to avoid CUDA bloat)
-RUN pip install torch torchvision --index-url ${TORCH_INDEX_URL}
+# Install PyTorch nightly for RTX 50 series (sm_120) support
+# Install only torch from nightly (has sm_120), torchvision will install from stable with pyproject.toml
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/cu124 \
+    --timeout 180 --retries 5 --no-cache-dir
 
 # Install Python dependencies (AI extras configurable via build args)
-RUN pip install -e ".[${AI_EXTRAS}]"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -e ".[${AI_EXTRAS}]" --timeout 180 --retries 5 --no-cache-dir
 
 # Copy application code
 COPY backend/app/ ./app/
@@ -51,7 +58,7 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Create storage directories (as root before switching user)
-RUN mkdir -p /app/storage/dicom /app/models /app/cache /app/results
+RUN mkdir -p /app/storage/dicom /app/models /app/cache /app/results /app/job_queue/pending /app/job_queue/processing /app/job_queue/completed /app/job_queue/failed /app/job_queue/status
 
 # Create non-root user and set ownership
 RUN useradd -m -u 1000 appuser && \

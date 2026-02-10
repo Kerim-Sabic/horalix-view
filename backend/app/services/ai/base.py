@@ -81,6 +81,11 @@ class SegmentationOutput:
     probabilities: np.ndarray | None = None
     dice_scores: dict[str, float] = field(default_factory=dict)
     volumes_mm3: dict[str, float] = field(default_factory=dict)
+    volumes: dict[str, float] | None = None
+
+    def __post_init__(self) -> None:
+        if self.volumes and not self.volumes_mm3:
+            self.volumes_mm3 = dict(self.volumes)
 
 
 @dataclass

@@ -31,7 +31,9 @@ from app.models.series import Series
 router = APIRouter()
 
 PIXEL_CACHE_MAX_BYTES = 512 * 1024 * 1024
-PIXEL_CACHE_MAX_ENTRIES = 6
+PIXEL_CACHE_MAX_ENTRIES = 16
+RENDER_CACHE_MAX_BYTES = 256 * 1024 * 1024
+RENDER_CACHE_MAX_ENTRIES = 256
 
 
 @dataclass
@@ -46,6 +48,10 @@ class CachedPixelData:
 _pixel_cache: "OrderedDict[str, CachedPixelData]" = OrderedDict()
 _pixel_cache_bytes = 0
 _pixel_cache_lock = threading.Lock()
+
+_render_cache: "OrderedDict[str, bytes]" = OrderedDict()
+_render_cache_bytes = 0
+_render_cache_lock = threading.Lock()
 
 
 def _get_cached_pixel_data(file_path: str) -> CachedPixelData | None:
@@ -77,6 +83,37 @@ def _set_cached_pixel_data(file_path: str, payload: CachedPixelData) -> None:
 
         _pixel_cache[file_path] = payload
         _pixel_cache_bytes += data_bytes
+
+
+def _get_cached_render(cache_key: str) -> bytes | None:
+    with _render_cache_lock:
+        cached = _render_cache.get(cache_key)
+        if cached:
+            _render_cache.move_to_end(cache_key)
+        return cached
+
+
+def _set_cached_render(cache_key: str, payload: bytes) -> None:
+    global _render_cache_bytes
+
+    data_bytes = len(payload)
+    if data_bytes > RENDER_CACHE_MAX_BYTES:
+        return
+
+    with _render_cache_lock:
+        existing = _render_cache.pop(cache_key, None)
+        if existing:
+            _render_cache_bytes -= len(existing)
+
+        while _render_cache and (
+            len(_render_cache) >= RENDER_CACHE_MAX_ENTRIES
+            or _render_cache_bytes + data_bytes > RENDER_CACHE_MAX_BYTES
+        ):
+            _, evicted = _render_cache.popitem(last=False)
+            _render_cache_bytes -= len(evicted)
+
+        _render_cache[cache_key] = payload
+        _render_cache_bytes += data_bytes
 
 
 def _load_pixel_data(file_path: str) -> CachedPixelData:
@@ -246,12 +283,16 @@ async def get_pixel_data(
             detail=f"Instance not found: {instance_uid}",
         )
 
-    # Get pixel data from stored DICOM file
+    # Get pixel data from stored DICOM file (run in thread pool to avoid
+    # blocking the async event loop during pydicom decode)
+    import asyncio
+
     settings = get_settings()
     payload = None
     if instance.file_path and Path(instance.file_path).exists():
         try:
-            payload = _load_pixel_data(instance.file_path)
+            loop = asyncio.get_running_loop()
+            payload = await loop.run_in_executor(None, _load_pixel_data, instance.file_path)
             pixel_data = payload.pixel_array
         except Exception as exc:
             raise HTTPException(
@@ -315,6 +356,7 @@ async def get_pixel_data(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Frame index provided for single-frame instance",
         )
+    frame_index = frame if frame is not None else 0
 
     # pydicom 3.x returns RGB for YBR photometric interpretations by default.
 
@@ -324,6 +366,22 @@ async def get_pixel_data(
 
     rows = pixel_data.shape[0]
     cols = pixel_data.shape[1]
+
+    render_cache_key = None
+    if format in ("png", "jpeg"):
+        # Key on instance, frame, windowing, and output format/quality
+        wc_key = f"{float(wc):.2f}"
+        ww_key = f"{float(ww):.2f}"
+        quality_key = str(quality if format == "jpeg" else 0)
+        render_cache_key = f"{instance_uid}:{frame_index}:{format}:{quality_key}:{wc_key}:{ww_key}"
+        cached = _get_cached_render(render_cache_key)
+        if cached:
+            media_type = "image/png" if format == "png" else "image/jpeg"
+            return Response(
+                content=cached,
+                media_type=media_type,
+                headers={"Cache-Control": "private, max-age=3600"},
+            )
 
     if format == "raw":
         # Return raw pixel data
@@ -380,10 +438,11 @@ async def get_pixel_data(
     else:
         img.save(buffer, format="JPEG", quality=quality)
         media_type = "image/jpeg"
-
-    buffer.seek(0)
-    return StreamingResponse(
-        buffer,
+    content = buffer.getvalue()
+    if render_cache_key:
+        _set_cached_render(render_cache_key, content)
+    return Response(
+        content=content,
         media_type=media_type,
         headers={"Cache-Control": "private, max-age=3600"},
     )
@@ -415,11 +474,14 @@ async def get_thumbnail(
             detail=f"Instance not found: {instance_uid}",
         )
 
-    # Get pixel data and create thumbnail
+    # Get pixel data and create thumbnail (thread pool for pydicom decode)
+    import asyncio
+
     settings = get_settings()
     if instance.file_path and Path(instance.file_path).exists():
         try:
-            payload = _load_pixel_data(instance.file_path)
+            loop = asyncio.get_running_loop()
+            payload = await loop.run_in_executor(None, _load_pixel_data, instance.file_path)
             pixel_data = payload.pixel_array
         except Exception as exc:
             raise HTTPException(

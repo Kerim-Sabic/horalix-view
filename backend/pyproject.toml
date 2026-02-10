@@ -87,10 +87,13 @@ ai = [
     "scikit-learn>=1.4.0",
     "timm>=0.9.12",
     "huggingface-hub>=0.20.2",
+    "transformers>=4.37.0",
     "docopt>=0.6.2",
     "psutil>=5.9.0",
     "matplotlib>=3.8.0",
     "scikit-image>=0.22.0",
+    "pandas>=2.1.0",
+    "tqdm>=4.66.0",
 ]
 
 # Extended AI dependencies for additional models

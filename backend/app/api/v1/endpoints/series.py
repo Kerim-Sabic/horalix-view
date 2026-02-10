@@ -77,11 +77,22 @@ class SeriesUpdate(BaseModel):
     window_width: float | None = Field(None, description="Default window width")
 
 
+class SeriesWithInstances(BaseModel):
+    """Series metadata with inline instances."""
+
+    series: SeriesMetadata
+    instances: list[InstanceSummary]
+    window_center: float | None = None
+    window_width: float | None = None
+    has_3d_data: bool = False
+
+
 class SeriesListResponse(BaseModel):
     """Series list response."""
 
     total: int
     series: list[SeriesMetadata]
+    details: list[SeriesWithInstances] | None = None
 
 
 class SeriesDetailResponse(BaseModel):
@@ -106,6 +117,22 @@ class TrackMeasurementRequest(BaseModel):
         True, description="Track backwards and forwards to cover the full cine loop"
     )
     points: list[TrackPoint] = Field(..., min_length=2, max_length=128, description="Points to track (2 for line, 3+ for polygon)")
+    instance_uid: str | None = Field(
+        None, description="Optional SOP Instance UID to limit tracking to a single cine"
+    )
+    tracking_method: str = Field(
+        "optical_flow",
+        description="Tracking method: optical_flow or medsam_hybrid",
+    )
+    negative_points: list[TrackPoint] | None = Field(
+        None, description="Optional negative prompt points for MedSAM"
+    )
+    box: list[float] | None = Field(
+        None, min_length=4, max_length=4, description="Optional box prompt [x1,y1,x2,y2] for MedSAM"
+    )
+    keyframe_stride: int | None = Field(
+        5, ge=1, le=20, description="Keyframe stride for MedSAM hybrid tracking"
+    )
 
 
 class TrackMeasurementFrame(BaseModel):
@@ -127,9 +154,65 @@ class TrackMeasurementSummary(BaseModel):
 
 class TrackMeasurementResponse(BaseModel):
     series_uid: str
+    instance_uid: str | None = None
     total_frames: int
     frames: list[TrackMeasurementFrame]
     summary: TrackMeasurementSummary
+
+
+def _polygon_area_px(points: list[TrackPoint]) -> float:
+    """Compute polygon area in pixel units using the Shoelace formula."""
+    if len(points) < 3:
+        return 0.0
+    area_sum = 0.0
+    n = len(points)
+    for i in range(n):
+        j = (i + 1) % n
+        area_sum += points[i].x * points[j].y
+        area_sum -= points[j].x * points[i].y
+    return abs(area_sum) / 2.0
+
+
+def _area_ratio_valid(area_ratio: float) -> bool:
+    return 0.01 <= area_ratio <= 0.70
+
+
+def _area_change_valid(prev_ratio: float | None, current_ratio: float) -> bool:
+    if prev_ratio is None or prev_ratio <= 0:
+        return True
+    return abs(current_ratio - prev_ratio) <= max(0.5 * prev_ratio, 0.005)
+
+
+def _enhance_ultrasound_for_medsam(image):
+    """
+    Enhance ultrasound frames for MedSAM using CLAHE on grayscale.
+    Returns original image if enhancement fails.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        if image.ndim == 3 and image.shape[2] >= 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+
+        if gray.dtype != np.uint8:
+            if gray.max() <= 1.0:
+                gray_u8 = (gray * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                p_low, p_high = np.percentile(gray, [0.5, 99.5])
+                gray_u8 = np.clip(gray, p_low, p_high)
+                gray_u8 = ((gray_u8 - p_low) / (p_high - p_low + 1e-8) * 255.0).astype(np.uint8)
+        else:
+            gray_u8 = gray
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray_u8)
+        rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+        return rgb
+    except Exception:
+        return image
 
 
 def _series_to_metadata(series: Series) -> SeriesMetadata:
@@ -171,8 +254,11 @@ async def list_series(
     """
     query = select(Series).order_by(Series.series_number)
 
+    # When filtering by study, eagerly load instances so the frontend
+    # can skip the separate per-series detail request on initial load.
     if study_uid:
         query = query.where(Series.study_instance_uid_fk == study_uid)
+        query = query.options(selectinload(Series.instances))
 
     if modality:
         query = query.where(Series.modality == modality)
@@ -180,9 +266,35 @@ async def list_series(
     result = await db.execute(query)
     series_list = result.scalars().all()
 
+    # Build inline details when instances were eagerly loaded (study_uid filter)
+    details = None
+    if study_uid:
+        details = [
+            SeriesWithInstances(
+                series=_series_to_metadata(s),
+                instances=[
+                    InstanceSummary(
+                        sop_instance_uid=inst.sop_instance_uid,
+                        instance_number=inst.instance_number,
+                        sop_class_uid=inst.sop_class_uid,
+                        rows=inst.rows,
+                        columns=inst.columns,
+                        bits_allocated=inst.bits_allocated,
+                        number_of_frames=inst.number_of_frames,
+                    )
+                    for inst in sorted(s.instances, key=lambda i: i.instance_number or 0)
+                ],
+                window_center=s.window_center,
+                window_width=s.window_width,
+                has_3d_data=s.modality in ["CT", "MR", "PT"],
+            )
+            for s in series_list
+        ]
+
     return SeriesListResponse(
         total=len(series_list),
         series=[_series_to_metadata(s) for s in series_list],
+        details=details,
     )
 
 
@@ -578,7 +690,7 @@ async def track_measurement(
     current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TrackMeasurementResponse:
-    """Track a 2-point measurement across cine frames using optical flow."""
+    """Track a measurement across cine frames using optical flow or MedSAM hybrid."""
     try:
         import cv2
         import numpy as np
@@ -609,6 +721,17 @@ async def track_measurement(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Series has no instances to track",
         )
+
+    selected_instance_uid = payload.instance_uid
+    if selected_instance_uid:
+        instances = [
+            inst for inst in instances if inst.sop_instance_uid == selected_instance_uid
+        ]
+        if not instances:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Instance not found in series: {selected_instance_uid}",
+            )
 
     frame_refs: list[tuple[Instance, int]] = []
     for inst in instances:
@@ -691,6 +814,223 @@ async def track_measurement(
         maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
+
+    if payload.tracking_method == "medsam_hybrid":
+        if not payload.instance_uid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="MedSAM hybrid tracking requires instance_uid",
+            )
+
+        model_registry = request.app.state.model_registry
+        dicom_storage = request.app.state.dicom_storage
+
+        if not model_registry.is_model_available("medsam"):
+            availability = model_registry.get_model_availability().get("medsam", {})
+            weights_path = availability.get("weights_path", "models/medsam")
+            raise HTTPException(
+                status_code=status.HTTP_424_FAILED_DEPENDENCY,
+                detail=f"MedSAM model not available (expected {weights_path})",
+            )
+
+        from app.services.ai.dicom_loader import DicomLoader, LoadedVolume
+
+        loader = DicomLoader(dicom_storage)
+        try:
+            volume = await loader.load_instance(
+                study_uid=series.study_instance_uid_fk,
+                series_uid=series_uid,
+                instance_uid=payload.instance_uid,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to load DICOM instance for MedSAM",
+            ) from exc
+
+        pixel_data = volume.pixel_data
+        is_ultrasound = str(getattr(volume.metadata, "modality", "")).upper() == "US"
+
+        def _extract_frame(frame_idx: int) -> np.ndarray:
+            if pixel_data.ndim >= 3:
+                safe_idx = max(0, min(frame_idx, pixel_data.shape[0] - 1))
+                return pixel_data[safe_idx]
+            return pixel_data
+
+        async def _run_medsam(frame_idx: int) -> tuple[list[TrackPoint] | None, float | None, tuple[int, int] | None]:
+            frame = _extract_frame(frame_idx)
+            frame_volume = LoadedVolume(pixel_data=frame, metadata=volume.metadata, is_3d=False)
+            image = loader.prepare_for_inference(
+                frame_volume,
+                normalize=not is_ultrasound,
+                convert_to_rgb=True,
+            )
+            if is_ultrasound:
+                image = _enhance_ultrasound_for_medsam(image)
+
+            prompt_points = payload.points
+            negative_points = payload.negative_points or []
+            point_coords = [[p.x, p.y] for p in prompt_points + negative_points]
+            point_labels = [1] * len(prompt_points) + [0] * len(negative_points)
+            box = payload.box
+
+            result = await model_registry.run_interactive_segmentation(
+                model_name="medsam",
+                image=image,
+                point_coords=point_coords if point_coords else None,
+                point_labels=point_labels if point_labels else None,
+                box=box,
+                image_id=f"{payload.instance_uid}:{frame_idx}",
+            )
+
+            mask = result.output.mask
+            mask_bin = (mask > 0).astype(np.uint8)
+            try:
+                kernel = np.ones((5, 5), np.uint8)
+                mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel, iterations=1)
+                mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel, iterations=1)
+            except Exception:
+                pass
+
+            contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            if not contours:
+                return None, None, None
+            contour = max(contours, key=lambda c: cv2.contourArea(c))
+            if contour is None or len(contour) < 3:
+                return None, None, None
+            points_list = [TrackPoint(x=float(pt[0][0]), y=float(pt[0][1])) for pt in contour]
+            area_px = float(mask_bin.sum())
+            shape = (mask_bin.shape[0], mask_bin.shape[1])
+            return points_list, area_px, shape
+
+        keyframe_stride = payload.keyframe_stride or 5
+        forward_indices = list(range(start_index, end_index))
+        keyframes = set(forward_indices[::keyframe_stride]) if forward_indices else set()
+        if forward_indices:
+            keyframes.add(forward_indices[-1])
+            keyframes.add(start_index)
+
+        def _points_to_np(points_list: list[TrackPoint]) -> np.ndarray:
+            return np.array([[p.x, p.y] for p in points_list], dtype=np.float32).reshape(-1, 1, 2)
+
+        async def _track_indices_hybrid(indices: list[int]) -> dict[int, TrackMeasurementFrame]:
+            local_prev_gray = None
+            local_prev_points = None
+            prev_area_ratio = None
+            results: dict[int, TrackMeasurementFrame] = {}
+
+            for idx in indices:
+                inst, frame_idx = frame_refs[idx]
+                frame = _load_frame_pixel(inst, frame_idx, cached)
+                gray = _to_gray(frame)
+
+                use_medsam = idx in keyframes or local_prev_points is None
+                tracked_points: list[TrackPoint] | None = None
+                area_ratio = None
+
+                if use_medsam:
+                    med_points, area_px, shape = await _run_medsam(frame_idx)
+                    if med_points:
+                        tracked_points = med_points
+                        if shape and area_px is not None:
+                            area_ratio = area_px / float(shape[0] * shape[1]) if shape[0] * shape[1] > 0 else None
+
+                if tracked_points is None and local_prev_points is not None and local_prev_gray is not None:
+                    next_points, status, _ = cv2.calcOpticalFlowPyrLK(
+                        local_prev_gray, gray, local_prev_points, None, **lk_params
+                    )
+                    tracked = local_prev_points.copy()
+                    valid_count = 0
+                    if next_points is not None and status is not None:
+                        status_flat = status.reshape(-1)
+                        for i, ok in enumerate(status_flat):
+                            if ok:
+                                tracked[i] = next_points[i]
+                                valid_count += 1
+
+                    if len(tracked) >= 3:
+                        required = max(3, int(len(tracked) * 0.6))
+                        status_ok = valid_count >= required
+                    else:
+                        status_ok = valid_count == len(tracked)
+
+                    tracked_points = [
+                        TrackPoint(x=float(tracked[i][0][0]), y=float(tracked[i][0][1]))
+                        for i in range(len(tracked))
+                    ]
+
+                    area_px = _polygon_area_px(tracked_points)
+                    frame_area = float(gray.shape[0] * gray.shape[1])
+                    area_ratio = area_px / frame_area if frame_area > 0 else None
+
+                    if (
+                        not status_ok
+                        or area_ratio is None
+                        or not _area_ratio_valid(area_ratio)
+                        or not _area_change_valid(prev_area_ratio, area_ratio)
+                    ):
+                        med_points, area_px, shape = await _run_medsam(frame_idx)
+                        if med_points:
+                            tracked_points = med_points
+                            if shape and area_px is not None:
+                                area_ratio = area_px / float(shape[0] * shape[1]) if shape[0] * shape[1] > 0 else None
+
+                if tracked_points is None:
+                    tracked_points = payload.points
+
+                local_prev_gray = gray
+                local_prev_points = _points_to_np(tracked_points)
+                if area_ratio is not None:
+                    prev_area_ratio = area_ratio
+
+                tracked = np.clip(local_prev_points, [0, 0], [gray.shape[1] - 1, gray.shape[0] - 1])
+                tracked_points = [
+                    TrackPoint(x=float(tracked[i][0][0]), y=float(tracked[i][0][1]))
+                    for i in range(len(tracked))
+                ]
+
+                area_mm2 = None
+                if len(tracked_points) >= 3:
+                    pts_mm = [(p.x * spacing_col, p.y * spacing_row) for p in tracked_points]
+                    n = len(pts_mm)
+                    area_sum = 0.0
+                    for i in range(n):
+                        j = (i + 1) % n
+                        area_sum += pts_mm[i][0] * pts_mm[j][1]
+                        area_sum -= pts_mm[j][0] * pts_mm[i][1]
+                    area_mm2 = abs(area_sum) / 2.0
+
+                results[idx] = TrackMeasurementFrame(
+                    frame_index=idx,
+                    points=tracked_points,
+                    length_mm=None,
+                    area_mm2=area_mm2,
+                    valid=True,
+                )
+
+            return results
+
+        tracked_map = await _track_indices_hybrid(forward_indices)
+        if payload.track_full_loop and start_index > 0:
+            backward_indices = list(range(start_index, -1, -1))
+            tracked_map.update(await _track_indices_hybrid(backward_indices))
+
+        tracked_frames = [tracked_map[idx] for idx in sorted(tracked_map.keys())]
+
+        areas = [frame.area_mm2 for frame in tracked_frames if frame.valid and frame.area_mm2 is not None]
+        summary = TrackMeasurementSummary()
+        if areas:
+            summary.min_area_mm2 = float(min(areas))
+            summary.max_area_mm2 = float(max(areas))
+            summary.mean_area_mm2 = float(sum(areas) / len(areas))
+
+        return TrackMeasurementResponse(
+            series_uid=series_uid,
+            instance_uid=payload.instance_uid,
+            total_frames=total_frames,
+            frames=tracked_frames,
+            summary=summary,
+        )
 
     def _track_indices(indices: list[int]) -> dict[int, TrackMeasurementFrame]:
         local_prev_gray = None
@@ -794,6 +1134,7 @@ async def track_measurement(
 
     return TrackMeasurementResponse(
         series_uid=series_uid,
+        instance_uid=selected_instance_uid,
         total_frames=total_frames,
         frames=tracked_frames,
         summary=summary,

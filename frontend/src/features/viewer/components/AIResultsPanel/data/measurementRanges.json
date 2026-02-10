@@ -1,0 +1,627 @@
+{
+  "ejection_fraction": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 52,
+            "max": 72
+          }
+        ],
+        "borderline": [
+          {
+            "min": 41,
+            "max": 52,
+            "exclusiveMax": true
+          }
+        ],
+        "abnormal": [
+          {
+            "max": 41,
+            "exclusiveMax": true
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 54,
+            "max": 74
+          }
+        ],
+        "borderline": [
+          {
+            "min": 41,
+            "max": 54,
+            "exclusiveMax": true
+          }
+        ],
+        "abnormal": [
+          {
+            "max": 41,
+            "exclusiveMax": true
+          }
+        ]
+      }
+    }
+  },
+  "gls": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": -24,
+            "max": -17,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": -17,
+            "max": -16
+          }
+        ],
+        "abnormal": [
+          {
+            "min": -16,
+            "exclusiveMin": true
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": -26,
+            "max": -18,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": -18,
+            "max": -16
+          }
+        ],
+        "abnormal": [
+          {
+            "min": -16,
+            "exclusiveMin": true
+          }
+        ]
+      }
+    }
+  },
+  "lvidd": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 4.2,
+            "max": 5.84
+          }
+        ],
+        "borderline": [
+          {
+            "min": 5.7,
+            "max": 6.1
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 6.2
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 3.78,
+            "max": 5.22
+          }
+        ],
+        "borderline": [
+          {
+            "min": 5.2,
+            "max": 5.5
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 5.6
+          }
+        ]
+      }
+    }
+  },
+  "lvids": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 2.2,
+            "max": 4.1
+          }
+        ],
+        "borderline": [
+          {
+            "min": 4.2,
+            "max": 4.5
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 4.6
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 2.0,
+            "max": 3.7
+          }
+        ],
+        "borderline": [
+          {
+            "min": 3.8,
+            "max": 4.2
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 4.3
+          }
+        ]
+      }
+    }
+  },
+  "lvedv": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 62,
+            "max": 150
+          }
+        ],
+        "borderline": [
+          {
+            "min": 151,
+            "max": 165
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 166
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 46,
+            "max": 106
+          }
+        ],
+        "borderline": [
+          {
+            "min": 107,
+            "max": 115
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 116
+          }
+        ]
+      }
+    }
+  },
+  "lvesv": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 18,
+            "max": 45
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 16,
+            "max": 38
+          }
+        ]
+      }
+    }
+  },
+  "lvsv": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 74,
+            "max": 91
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 62,
+            "max": 75
+          }
+        ]
+      }
+    }
+  },
+  "ivsd": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 0.6,
+            "max": 1.0
+          }
+        ],
+        "borderline": [
+          {
+            "min": 1.1,
+            "max": 1.3
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 1.4
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 0.6,
+            "max": 0.9
+          }
+        ],
+        "borderline": [
+          {
+            "min": 1.0,
+            "max": 1.2
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 1.3
+          }
+        ]
+      }
+    }
+  },
+  "lvpwd": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 0.6,
+            "max": 1.0
+          }
+        ],
+        "borderline": [
+          {
+            "min": 1.1,
+            "max": 1.2
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 1.2
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 0.6,
+            "max": 0.9
+          }
+        ],
+        "borderline": [
+          {
+            "min": 1.0,
+            "max": 1.1
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 1.2
+          }
+        ]
+      }
+    }
+  },
+  "lavol": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 13.9,
+            "max": 71.5
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 8.7,
+            "max": 53.9
+          }
+        ]
+      }
+    }
+  },
+  "laids2d": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "max": 4.1,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 4.1,
+            "max": 4.6
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 4.7
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "max": 3.9,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 3.9,
+            "max": 4.2
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 4.3
+          }
+        ]
+      }
+    }
+  },
+  "e_eavg": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "max": 8,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 8,
+            "max": 14
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 14,
+            "exclusiveMin": true
+          }
+        ]
+      }
+    }
+  },
+  "pulmonary_artery_pressure": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "max": 35,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 35,
+            "max": 40
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 40,
+            "exclusiveMin": true
+          }
+        ]
+      }
+    }
+  },
+  "rvidd": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "max": 3.5,
+            "exclusiveMax": true
+          }
+        ]
+      }
+    }
+  },
+  "tapse": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "min": 1.7
+          }
+        ],
+        "borderline": [
+          {
+            "min": 1.5,
+            "max": 1.6
+          }
+        ],
+        "abnormal": [
+          {
+            "max": 1.4
+          }
+        ]
+      }
+    }
+  },
+  "rv_s_vel": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "min": 9.5
+          }
+        ],
+        "abnormal": [
+          {
+            "max": 9.5,
+            "exclusiveMax": true
+          }
+        ]
+      }
+    }
+  },
+  "tvpkgrad": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "max": 31
+          }
+        ],
+        "borderline": [
+          {
+            "min": 31,
+            "exclusiveMin": true,
+            "max": 46
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 46,
+            "exclusiveMin": true
+          }
+        ]
+      }
+    }
+  },
+  "radimension_ml": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "max": 5.8
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 5.8,
+            "exclusiveMin": true
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "max": 5.3
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 5.3,
+            "exclusiveMin": true
+          }
+        ]
+      }
+    }
+  },
+  "aortic_root_diameter": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "min": 2.1,
+            "max": 4.3,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 4.3,
+            "max": 5,
+            "exclusiveMax": true
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 5
+          }
+        ]
+      }
+    }
+  },
+  "lvotdiam": {
+    "bands": {
+      "male": {
+        "normal": [
+          {
+            "min": 1.9,
+            "max": 2.4
+          }
+        ]
+      },
+      "female": {
+        "normal": [
+          {
+            "min": 1.8,
+            "max": 2.2
+          }
+        ]
+      }
+    }
+  },
+  "avpkvel": {
+    "bands": {
+      "unisex": {
+        "normal": [
+          {
+            "max": 2.0,
+            "exclusiveMax": true
+          }
+        ],
+        "borderline": [
+          {
+            "min": 2.0,
+            "max": 2.9
+          }
+        ],
+        "abnormal": [
+          {
+            "min": 3.0
+          }
+        ]
+      }
+    }
+  }
+}

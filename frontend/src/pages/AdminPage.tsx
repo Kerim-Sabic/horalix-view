@@ -120,9 +120,14 @@ const AdminPage: React.FC = () => {
   return (
     <Box>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          Administration
-        </Typography>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            Administration
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            System health, storage, and user access controls.
+          </Typography>
+        </Box>
         <Tooltip title="Refresh">
           <span>
             <IconButton onClick={fetchAdminData} disabled={loading}>

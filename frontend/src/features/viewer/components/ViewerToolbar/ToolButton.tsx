@@ -24,17 +24,25 @@ export const ToolButton: React.FC<ToolButtonProps> = ({
   disabled = false,
   color,
 }) => {
-  const buttonColor = color ?? (isActive ? 'primary' : 'default');
-
   return (
     <Tooltip title={label}>
       <span>
         <IconButton
           onClick={onClick}
-          color={buttonColor}
+          color={color ?? 'default'}
           disabled={disabled}
           aria-label={label}
           size="medium"
+          sx={{
+            borderRadius: 1,
+            bgcolor: isActive ? 'action.selected' : 'transparent',
+            color: isActive ? 'primary.main' : 'text.secondary',
+            transition: 'all 0.15s ease',
+            '&:hover': {
+              bgcolor: 'action.hover',
+              color: 'text.primary',
+            },
+          }}
         >
           {icon}
         </IconButton>

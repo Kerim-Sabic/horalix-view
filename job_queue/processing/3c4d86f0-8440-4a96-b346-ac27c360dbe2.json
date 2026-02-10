@@ -1,0 +1,10 @@
+{
+  "job_id": "3c4d86f0-8440-4a96-b346-ac27c360dbe2",
+  "study_uid": "1.2.840.113663.1500.1.451818155.1.1.20260130.95341.277",
+  "series_uid": null,
+  "instance_uid": "1.2.840.113663.1500.1.451818155.3.1.20260130.100322.663",
+  "enable_echonet": true,
+  "enable_measurements": true,
+  "priority": 5,
+  "submitted_at": "2026-02-08T12:30:52"
+}

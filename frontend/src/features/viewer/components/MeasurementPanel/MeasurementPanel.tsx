@@ -44,6 +44,7 @@ interface MeasurementPanelProps {
   canRedo: boolean;
   seriesUid: string | null;
   frameKey: string | null;
+  instanceLabelByUid?: Record<string, string>;
   trackingDataMap?: Map<string, TrackingData>;
   currentFrameIndex?: number;
   onJumpToFrame?: (frameIndex: number) => void;
@@ -66,13 +67,14 @@ interface MeasurementPanelProps {
 // Component
 // ============================================================================
 
-export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
+export const MeasurementPanel: React.FC<MeasurementPanelProps> = React.memo(({
   measurements,
   selectedId,
   canUndo,
   canRedo,
   seriesUid,
   frameKey: _frameKey,
+  instanceLabelByUid,
   trackingDataMap,
   currentFrameIndex,
   onJumpToFrame,
@@ -89,6 +91,26 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
   onEditLabel,
   onTrackMeasurement,
 }) => {
+  const frameKey = _frameKey;
+  const getCineLabel = useCallback(
+    (measurement: Measurement) => {
+      if (!instanceLabelByUid) return null;
+      const instanceUid =
+        measurement.instanceUid ??
+        (measurement.frameKey ? measurement.frameKey.split(':')[0] : null);
+      if (!instanceUid) return null;
+      return instanceLabelByUid[instanceUid] ?? null;
+    },
+    [instanceLabelByUid]
+  );
+  const getFrameLabel = useCallback((measurement: Measurement) => {
+    if (!measurement.frameKey) return null;
+    const parts = measurement.frameKey.split(':');
+    if (parts.length < 2) return null;
+    const idx = Number(parts[1]);
+    if (!Number.isFinite(idx)) return null;
+    return `Frame ${idx + 1}`;
+  }, []);
   // Group measurements by scope
   const { frameMeasurements, seriesMeasurements } = useMemo(() => {
     const frame: Measurement[] = [];
@@ -96,36 +118,41 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
 
     for (const m of measurements) {
       if (m.scope === 'frame') {
-        frame.push(m);
+        if (!frameKey || m.frameKey === frameKey) {
+          frame.push(m);
+        }
       } else {
         series.push(m);
       }
     }
 
     return { frameMeasurements: frame, seriesMeasurements: series };
-  }, [measurements]);
+  }, [measurements, frameKey]);
 
   const handleSelect = useCallback((id: string) => {
     onSelectMeasurement(selectedId === id ? null : id);
   }, [selectedId, onSelectMeasurement]);
 
   const totalCount = measurements.length;
-  const visibleCount = measurements.filter(m => m.visible).length;
+  const visibleCount = useMemo(() => measurements.filter(m => m.visible).length, [measurements]);
 
   return (
     <Paper
       sx={{
-        width: 280,
+        width: 300,
         borderRadius: 0,
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
+        borderLeft: 1,
+        borderColor: 'divider',
+        bgcolor: 'background.paper',
       }}
       elevation={0}
     >
       {/* Header */}
-      <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
-        <Typography variant="subtitle2" gutterBottom>
+      <Box sx={{ p: 1.5, borderBottom: 1, borderColor: 'divider', bgcolor: 'background.default' }}>
+        <Typography variant="subtitle2" gutterBottom sx={{ fontWeight: 700 }}>
           Measurements
         </Typography>
         <Stack direction="row" spacing={1} alignItems="center">
@@ -133,6 +160,7 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
             size="small"
             label={`${visibleCount}/${totalCount} visible`}
             variant="outlined"
+            sx={{ fontWeight: 600 }}
           />
           <Box sx={{ flex: 1 }} />
           <Tooltip title="Undo">
@@ -175,8 +203,8 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
             {/* Frame measurements section */}
             {frameMeasurements.length > 0 && (
               <>
-                <Box sx={{ px: 2, py: 1, bgcolor: 'action.hover' }}>
-                  <Typography variant="caption" color="text.secondary">
+                <Box sx={{ px: 2, py: 1, bgcolor: 'background.default' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                     This Frame ({frameMeasurements.length})
                   </Typography>
                 </Box>
@@ -185,6 +213,8 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
                     key={measurement.id}
                     measurement={measurement}
                     isSelected={measurement.id === selectedId}
+                    cineLabel={getCineLabel(measurement)}
+                    frameLabel={getFrameLabel(measurement)}
                     trackingData={trackingDataMap?.get(measurement.id)}
                     currentFrameIndex={currentFrameIndex}
                     onJumpToFrame={onJumpToFrame}
@@ -201,8 +231,8 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
             {/* Series measurements section */}
             {seriesMeasurements.length > 0 && (
               <>
-                <Box sx={{ px: 2, py: 1, bgcolor: 'action.hover' }}>
-                  <Typography variant="caption" color="text.secondary">
+                <Box sx={{ px: 2, py: 1, bgcolor: 'background.default' }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
                     All Frames ({seriesMeasurements.length})
                   </Typography>
                 </Box>
@@ -211,6 +241,8 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
                     key={measurement.id}
                     measurement={measurement}
                     isSelected={measurement.id === selectedId}
+                    cineLabel={getCineLabel(measurement)}
+                    frameLabel={getFrameLabel(measurement)}
                     trackingData={trackingDataMap?.get(measurement.id)}
                     currentFrameIndex={currentFrameIndex}
                     onJumpToFrame={onJumpToFrame}
@@ -274,6 +306,8 @@ export const MeasurementPanel: React.FC<MeasurementPanelProps> = ({
       </Box>
     </Paper>
   );
-};
+});
+
+MeasurementPanel.displayName = 'MeasurementPanel';
 
 export default MeasurementPanel;

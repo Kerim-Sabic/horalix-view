@@ -72,11 +72,20 @@ class ModelRegistry:
             "monai_segmentation",
             "liver_segmentation",
             "spleen_segmentation",
-            "echonet_measurements",
+            "horalix_ai",
             "prov_gigapath",
             "hovernet",
         ):
             (self.models_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+        # Ensure the Horalix AI bundle directory exists (may live outside models_dir)
+        try:
+            Path(self.settings.horalix_ai_models_root).mkdir(parents=True, exist_ok=True)
+        except Exception:  # pragma: no cover - best effort
+            logger.warning(
+                "Failed to create Horalix AI models directory",
+                path=str(self.settings.horalix_ai_models_root),
+            )
 
         # Register real model implementations
         await self._register_real_models()
@@ -98,16 +107,33 @@ class ModelRegistry:
                 available.append(name)
         return available
 
+    def _resolve_medsam_checkpoint(self) -> Path:
+        """Resolve the MedSAM checkpoint path.
+
+        Prefers the configured filename, but falls back to any .pth file in the
+        medsam directory to avoid false "available" status with missing file.
+        """
+        nested = self.models_dir / "medsam" / self.settings.medsam_checkpoint
+        if nested.exists():
+            return nested
+        direct = self.models_dir / self.settings.medsam_checkpoint
+        if direct.exists():
+            return direct
+
+        medsam_dir = self.models_dir / "medsam"
+        if medsam_dir.exists():
+            candidates = sorted(medsam_dir.glob("*.pth"))
+            if candidates:
+                return candidates[0]
+
+        return nested
+
     def _get_weights_path(self, model_name: str) -> Path:
         """Get the expected weights path for a model."""
         if model_name == "medsam":
-            nested = self.models_dir / "medsam" / self.settings.medsam_checkpoint
-            if nested.exists():
-                return nested
-            direct = self.models_dir / self.settings.medsam_checkpoint
-            if direct.exists():
-                return direct
-            return self.models_dir / "medsam"
+            return self._resolve_medsam_checkpoint()
+        if model_name.startswith("horalix_ai"):
+            return Path(self.settings.horalix_ai_models_root)
         return self.models_dir / model_name
 
     def _weights_exist(self, weights_path: Path) -> bool:
@@ -408,6 +434,16 @@ class ModelRegistry:
             else:
                 raise RuntimeError(f"Model not loaded: {model_name}")
 
+        # Extract progress_callback - it's a callable that can't be JSON serialized.
+        # Only pass it to models whose predict() explicitly accepts it.
+        progress_callback = kwargs.pop("progress_callback", None)
+        if progress_callback is not None:
+            import inspect
+
+            params = inspect.signature(model.predict).parameters
+            if "progress_callback" in params:
+                return await model.predict(image, progress_callback=progress_callback, **kwargs)
+
         return await model.predict(image, **kwargs)
 
     async def run_interactive_segmentation(
@@ -511,11 +547,7 @@ class ModelRegistry:
         )
 
         # MedSAM Interactive Segmentation
-        medsam_checkpoint = self.models_dir / "medsam" / self.settings.medsam_checkpoint
-        if not medsam_checkpoint.exists():
-            direct_checkpoint = self.models_dir / self.settings.medsam_checkpoint
-            if direct_checkpoint.exists():
-                medsam_checkpoint = direct_checkpoint
+        medsam_checkpoint = self._resolve_medsam_checkpoint()
         self.register_model(
             model_name="medsam",
             factory=lambda: MedSAMModel(
@@ -579,30 +611,34 @@ class ModelRegistry:
             enabled=self.settings.nnunet_enabled,
         )
 
-        echonet_metadata = ModelMetadata(
-            name="echonet_measurements",
+        # Horalix AI Composite Model (worker pool-based via job queue)
+        # This is the integrated model that combines PanEcho + EchoPrime + Measurements + EchoNet-Dynamic
+        # Jobs are submitted to the file-based queue and processed by dedicated GPU workers
+        from app.services.ai.models.queue_based import QueueBasedModel
+
+        horalix_ai_composite_metadata = ModelMetadata(
+            name="horalix_ai",
             version="1.0.0",
             model_type=ModelType.CARDIAC,
-            description="EchoNet measurements for echocardiography cine analysis",
+            description="Horalix AI Composite: PanEcho + EchoPrime + Measurements + EchoNet-Dynamic",
             supported_modalities=["US"],
-            reference="https://github.com/echonet/measurements",
-            license="Unknown",
+            reference="Comprehensive echocardiography AI pipeline",
         )
+
+        # Get job queue directory from settings (default to /app/job_queue in Docker)
+        job_queue_dir = Path(self.settings.horalix_ai_job_queue_dir or "/app/job_queue")
+
         self.register_model(
-            model_name="echonet_measurements",
-            factory=lambda: ExternalCommandModel(
-                metadata=echonet_metadata,
-                command_template=self.settings.echonet_measurements_command,
-                weights_path=self.models_dir / "echonet_measurements",
-                results_dir=Path(self.settings.results_dir),
-                work_dir=self.settings.external_workdir
-                or (self.models_dir / "echonet_measurements"),
-                timeout_seconds=self.settings.external_timeout_seconds,
-                input_kind="cine",
-                export_frames=True,
+            model_name="horalix_ai",
+            factory=lambda: QueueBasedModel(
+                metadata=horalix_ai_composite_metadata,
+                queue_dir=job_queue_dir,
+                results_dir=Path(self.settings.results_dir) / "horalix_ai",
+                timeout_seconds=self.settings.horalix_ai_worker_timeout,
+                max_retries=self.settings.horalix_ai_retry_attempts,
             ),
-            metadata=echonet_metadata,
-            enabled=self.settings.echonet_measurements_enabled,
+            metadata=horalix_ai_composite_metadata,
+            enabled=self.settings.horalix_ai_enabled,
         )
 
         gigapath_metadata = ModelMetadata(

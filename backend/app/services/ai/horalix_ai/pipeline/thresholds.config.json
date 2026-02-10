@@ -1,0 +1,510 @@
+{
+    "ejection_fraction": {
+        "panecho_name": "EF",
+        "echoprime_name": "ejection_fraction",
+        "combine_rule": "average_value",
+        "discrepancy_threshold": 8.0,
+        "units": "%",
+        "expected_direction": "n/a",
+        "notes": "Average EF values from both models and flag a discrepancy if they differ by more than 5 percentage points."
+    },
+    "pulmonary_artery_pressure": {
+        "panecho_name": "RVSP",
+        "echoprime_name": "pulmonary_artery_pressure_continuous",
+        "combine_rule": "average_value",
+        "discrepancy_threshold": 8.0,
+        "units": "mmHg",
+        "expected_direction": "higher_is_worse",
+        "notes": "Average the RVSP (PanEcho) and PAP (EchoPrime). Flag a discrepancy if the absolute difference exceeds 5 mmHg."
+    },
+    "pericardial_effusion": {
+        "panecho_name": "pericardial-effusion",
+        "echoprime_name": "pericardial_effusion",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Label effusion present if either model's probability exceeds its threshold. A lower PanEcho threshold is used to catch small effusions."
+    },
+    "left_atrium_dilation": {
+        "panecho_name": "LASize",
+        "echoprime_name": "left_atrium_dilation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.16,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Prefer PanEcho for mild LA enlargement. PanEcho probability ≥ 0.3 triggers mild dilation even if EchoPrime probability is below 0.5."
+    },
+    "right_atrium_dilation": {
+        "panecho_name": "RASize",
+        "echoprime_name": "right_atrium_dilation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Prefer PanEcho for mild RA enlargement. PanEcho probability ≥ 0.3 triggers mild dilation even if EchoPrime probability is below 0.5."
+    },
+    "right_ventricle_dilation": {
+        "panecho_name": "RVSize",
+        "echoprime_name": "right_ventricle_dilation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.14,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Prefer PanEcho for mild RV enlargement. PanEcho probability ≥ 0.3 triggers mild dilation even if EchoPrime probability is below 0.5."
+    },
+    "rv_systolic_function_depressed": {
+        "panecho_name": "RVSystolicFunction",
+        "echoprime_name": "rv_systolic_function_depressed",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.04,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Label RV systolic dysfunction if either model probability crosses its threshold. PanEcho threshold is reduced to avoid false positives for mild dysfunction."
+    },
+    "mitral_regurgitation": {
+        "panecho_name": "MVRegurgitation",
+        "echoprime_name": "mitral_regurgitation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.06,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Treat moderate or severe MR as present only if EchoPrime has any non-zero probability or PanEcho's moderate/severe probability exceeds 0.8."
+    },
+    "tricuspid_valve_regurgitation": {
+        "panecho_name": "TVRegurgitation",
+        "echoprime_name": "tricuspid_valve_regurgitation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.26,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Treat moderate or severe TR as present only if EchoPrime has any non-zero probability or PanEcho's moderate/severe probability exceeds 0.8."
+    },
+    "aortic_regurgitation": {
+        "panecho_name": "AVRegurg",
+        "echoprime_name": "aortic_regurgitation",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.16,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Detect moderate or severe aortic regurgitation when EchoPrime indicates any non-zero probability or PanEcho's probability exceeds 0.8."
+    },
+    "aortic_stenosis": {
+        "panecho_name": "AVStenosis",
+        "echoprime_name": "aortic_stenosis",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.78,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho groups mild and moderate AS; therefore only very high PanEcho probability (>0.9) or any EchoPrime indication triggers a positive result."
+    },
+    "mitral_stenosis": {
+        "panecho_name": "MVStenosis",
+        "echoprime_name": "mitral_stenosis",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Mitral stenosis is rare; label present if either model probability is ≥ 0.5."
+    },
+    "tricuspid_stenosis": {
+        "panecho_name": null,
+        "echoprime_name": "tricuspid_stenosis",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Only EchoPrime outputs tricuspid stenosis; use threshold 0.50 to identify significant TS."
+    },
+    "bicuspid_aortic_valve": {
+        "panecho_name": "AVStructure",
+        "echoprime_name": "bicuspid_aov_morphology",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "n/a",
+        "notes": "Either model can detect a bicuspid aortic valve."
+    },
+    "aortic_root_dilation": {
+        "panecho_name": null,
+        "echoprime_name": "aortic_root_dilation",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Use PanEcho's numeric aortic root diameter (cm) to assess dilation. EchoPrime's binary output indicates significant dilation when ≥0.5."
+    },
+    "dilated_ivc": {
+        "panecho_name": "RAP-8-or-higher",
+        "echoprime_name": "dilated_ivc",
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": 0.32,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho's RAP-8-or-higher corresponds to elevated right atrial pressure; EchoPrime's dilated IVC indicates similar physiology. Call positive if either probability ≥ 0.5."
+    },
+    "pacemaker": {
+        "panecho_name": null,
+        "echoprime_name": "pacemaker",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.1,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "n/a",
+        "notes": "Detect the presence of a pacemaker lead/device via EchoPrime only."
+    },
+    "mitraclip": {
+        "panecho_name": null,
+        "echoprime_name": "mitraclip",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.20,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "n/a",
+        "notes": "Detect the presence of a MitraClip device via EchoPrime only."
+    },
+    "mitral_annular_calcification": {
+        "panecho_name": null,
+        "echoprime_name": "mitral_annular_calcification",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.32,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Only EchoPrime outputs mitral annular calcification. Use threshold 0.50."
+    },
+    "tavr": {
+        "panecho_name": null,
+        "echoprime_name": "tavr",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.76,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "n/a",
+        "notes": "Detect a transcatheter aortic valve replacement via EchoPrime only."
+    },
+    "impella": {
+        "panecho_name": null,
+        "echoprime_name": "impella",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.16,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "n/a",
+        "notes": "Detect an Impella device via EchoPrime only."
+    },
+    "elevated_left_atrial_pressure": {
+        "panecho_name": null,
+        "echoprime_name": "elevated_left_atrial_pressure",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.3,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "EchoPrime-only task indicating elevated left atrial pressure; threshold 0.50."
+    },
+    "wall_motion_hypokinesis": {
+        "panecho_name": null,
+        "echoprime_name": "wall_motion_hypokinesis",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.24,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "EchoPrime-only detection of global hypokinesis of wall motion; threshold 0.50."
+    },
+    "atrial_septum_hypertrophy": {
+        "panecho_name": null,
+        "echoprime_name": "atrial_septum_hypertrophy",
+        "panecho_threshold": null,
+        "echoprime_threshold": 1.06,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "EchoPrime-only detection of atrial septum hypertrophy; threshold 0.50."
+    },
+    "pulmonic_valve_regurgitation": {
+        "panecho_name": null,
+        "echoprime_name": "pulmonic_valve_regurgitation",
+        "panecho_threshold": null,
+        "echoprime_threshold": 0.50,
+        "combine_rule": "prefer_model:EchoPrime",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Only EchoPrime outputs pulmonic valve regurgitation; threshold 0.50."
+    },
+    "aortic_root_diameter": {
+        "panecho_name": "AORoot",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only numeric measurement of the aortic root diameter."
+    },
+    "gls": {
+        "panecho_name": "GLS",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "%",
+        "expected_direction": "lower_is_better",
+        "notes": "Global longitudinal strain (negative %). More negative values are better; PanEcho only."
+    },
+    "lvedv": {
+        "panecho_name": "LVEDV",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm^3",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left ventricular end-diastolic volume. PanEcho only."
+    },
+    "lvesv": {
+        "panecho_name": "LVESV",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm^3",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left ventricular end-systolic volume. PanEcho only."
+    },
+    "lvsv": {
+        "panecho_name": "LVSV",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm^3",
+        "expected_direction": "higher_is_better",
+        "notes": "Left ventricular stroke volume. PanEcho only."
+    },
+    "lvsize": {
+        "panecho_name": "LVSize",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "LV size classification: PanEcho-only multi-class task. Positive if probability of mild or moderate/severe increased >0.5."
+    },
+    "lvwallthickness_increased_any": {
+        "panecho_name": "LVWallThickness-increased-any",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only binary task for increased LV wall thickness (any)."
+    },
+    "lvwallthickness_increased_modsev": {
+        "panecho_name": "LVWallThickness-increased-modsev",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only binary task for moderate/severe increased LV wall thickness."
+    },
+    "lvsystolicfunction": {
+        "panecho_name": "LVSystolicFunction",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only multi-class LV systolic function (Normal|Hyperdynamic vs mild vs moderate/severe). Positive if moderate/severe probability ≥ 0.5."
+    },
+    "lvwallmotionabnormalities": {
+        "panecho_name": "LVWallMotionAbnormalities",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only binary task indicating regional wall motion abnormalities."
+    },
+    "ivsd": {
+        "panecho_name": "IVSd",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Interventricular septal thickness (diastole). PanEcho only."
+    },
+    "lvpwd": {
+        "panecho_name": "LVPWd",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left ventricular posterior wall thickness (diastole). PanEcho only."
+    },
+    "lvids": {
+        "panecho_name": "LVIDs",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left ventricular internal diameter in systole. PanEcho only."
+    },
+    "lvidd": {
+        "panecho_name": "LVIDd",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left ventricular internal diameter in diastole. PanEcho only."
+    },
+    "lvotdiam": {
+        "panecho_name": "LVOTDiam",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "LV outflow tract diameter. PanEcho only."
+    },
+    "lvdiastolicfunction": {
+        "panecho_name": "LVDiastolicFunction",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "PanEcho-only multi-class LV diastolic function. Positive if moderate/severe probability ≥ 0.5."
+    },
+    "e_eavg": {
+        "panecho_name": "E|EAvg",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "E/E' ratio",
+        "expected_direction": "higher_is_worse",
+        "notes": "E/E' average ratio. PanEcho only."
+    },
+    "rvidd": {
+        "panecho_name": "RVIDd",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Right ventricular internal diameter in diastole. PanEcho only."
+    },
+    "tapse": {
+        "panecho_name": "TAPSE",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_better",
+        "notes": "Tricuspid annular plane systolic excursion (TAPSE). PanEcho only."
+    },
+    "rv_s_vel": {
+        "panecho_name": "RVSVel",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm/s",
+        "expected_direction": "higher_is_better",
+        "notes": "Right ventricular S' velocity from tissue Doppler. PanEcho only."
+    },
+    "laids2d": {
+        "panecho_name": "LAIDs2D",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left atrial interior diameter (short-axis 2D). PanEcho only."
+    },
+    "lavol": {
+        "panecho_name": "LAVol",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm^3",
+        "expected_direction": "higher_is_worse",
+        "notes": "Left atrial volume. PanEcho only."
+    },
+    "radimension_ml": {
+        "panecho_name": "RADimensionM-L(cm)",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "cm",
+        "expected_direction": "higher_is_worse",
+        "notes": "Right atrial dimension (medial-lateral). PanEcho only."
+    },
+    "avpkvel": {
+        "panecho_name": "AVPkVel(m|s)",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "m/s",
+        "expected_direction": "higher_is_worse",
+        "notes": "Aortic valve peak velocity from Doppler. PanEcho only."
+    },
+    "lvot20mmhg": {
+        "panecho_name": "LVOT20mmHg",
+        "echoprime_name": null,
+        "panecho_threshold": 0.50,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": null,
+        "expected_direction": "higher_is_worse",
+        "notes": "Binary PanEcho-only task indicating dynamic LVOT gradient >20 mmHg."
+    },
+    "tvpkgrad": {
+        "panecho_name": "TVPkGrad",
+        "echoprime_name": null,
+        "panecho_threshold": null,
+        "echoprime_threshold": null,
+        "combine_rule": "prefer_model:PanEcho",
+        "units": "mmHg",
+        "expected_direction": "higher_is_worse",
+        "notes": "Peak tricuspid regurgitant gradient. PanEcho only."
+    }
+}

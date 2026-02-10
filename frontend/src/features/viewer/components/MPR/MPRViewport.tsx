@@ -109,23 +109,24 @@ export const MPRViewport: React.FC<MPRViewportProps> = ({
       const dx = e.clientX - dragStart.x;
       const dy = e.clientY - dragStart.y;
 
-      switch (dragMode) {
-        case 'pan':
-          setPan(plane, {
-            x: viewState.pan.x + dx,
-            y: viewState.pan.y + dy,
-          });
-          break;
+        switch (dragMode) {
+          case 'pan':
+            setPan(plane, {
+              x: viewState.pan.x + dx,
+              y: viewState.pan.y + dy,
+            });
+            break;
 
-        case 'zoom':
-          const zoomDelta = -dy * 0.01;
-          setZoom(plane, viewState.zoom + zoomDelta);
-          break;
+          case 'zoom': {
+            const zoomDelta = -dy * 0.01;
+            setZoom(plane, viewState.zoom + zoomDelta);
+            break;
+          }
 
-        case 'wwwl':
-          setWindowLevel(plane, {
-            center: viewState.windowLevel.center - dy,
-            width: viewState.windowLevel.width + dx * 2,
+          case 'wwwl':
+            setWindowLevel(plane, {
+              center: viewState.windowLevel.center - dy,
+              width: viewState.windowLevel.width + dx * 2,
           });
           break;
       }

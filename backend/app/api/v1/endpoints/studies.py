@@ -8,13 +8,15 @@ from datetime import date, datetime
 from datetime import time as dt_time
 from enum import Enum
 import hashlib
+from pathlib import Path
+import shutil
 from typing import Annotated, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile, status
 import aiofiles
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -735,6 +737,19 @@ async def delete_study(
     # Delete files from storage
     dicom_storage = request.app.state.dicom_storage
     await dicom_storage.delete_study(study_uid)
+
+    # Delete annotations for this study (not FK-linked)
+    await db.execute(delete(Annotation).where(Annotation.study_uid == study_uid))
+
+    # Delete AI results for the study (masks, reports, etc.)
+    settings = get_settings()
+    results_dir = Path(settings.ai.results_dir) / study_uid
+    try:
+        if results_dir.exists():
+            shutil.rmtree(results_dir)
+    except Exception:
+        # Best-effort cleanup; study record deletion still proceeds.
+        pass
 
     # Delete from database (cascades to series, instances, jobs)
     await db.delete(study)

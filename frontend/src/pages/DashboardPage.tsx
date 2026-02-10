@@ -20,6 +20,7 @@ import {
   Skeleton,
   Alert,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import {
   FolderOpen as StudiesIcon,
   People as PatientsIcon,
@@ -33,6 +34,17 @@ import {
 } from '@mui/icons-material';
 import { api, Study, AIJob, DashboardStats } from '../services/api';
 
+const DEFAULT_STATS: DashboardStats = {
+  total_studies: 0,
+  total_patients: 0,
+  total_series: 0,
+  total_instances: 0,
+  ai_jobs_today: 0,
+  ai_jobs_running: 0,
+  storage_used_bytes: 0,
+  storage_total_bytes: 1, // Avoid division by zero
+};
+
 interface StatCardProps {
   title: string;
   value: string | number;
@@ -43,11 +55,11 @@ interface StatCardProps {
 }
 
 const StatCard: React.FC<StatCardProps> = ({ title, value, subtitle, icon, color, loading }) => (
-  <Card>
+  <Card sx={{ height: '100%' }}>
     <CardContent>
       <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
         <Box sx={{ flex: 1 }}>
-          <Typography variant="body2" color="text.secondary" gutterBottom>
+          <Typography variant="caption" color="text.secondary" gutterBottom sx={{ fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
             {title}
           </Typography>
           {loading ? (
@@ -65,10 +77,10 @@ const StatCard: React.FC<StatCardProps> = ({ title, value, subtitle, icon, color
         </Box>
         <Box
           sx={{
-            width: 48,
-            height: 48,
-            borderRadius: 2,
-            bgcolor: `${color}20`,
+            width: 52,
+            height: 52,
+            borderRadius: 2.5,
+            bgcolor: alpha(color, 0.16),
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -84,23 +96,12 @@ const StatCard: React.FC<StatCardProps> = ({ title, value, subtitle, icon, color
 
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
+  const theme = useTheme();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [recentStudies, setRecentStudies] = useState<Study[]>([]);
   const [recentJobs, setRecentJobs] = useState<AIJob[]>([]);
-
-  // Safe default stats to prevent undefined errors
-  const defaultStats: DashboardStats = {
-    total_studies: 0,
-    total_patients: 0,
-    total_series: 0,
-    total_instances: 0,
-    ai_jobs_today: 0,
-    ai_jobs_running: 0,
-    storage_used_bytes: 0,
-    storage_total_bytes: 1, // Avoid division by zero
-  };
 
   useEffect(() => {
     const fetchDashboardData = async () => {
@@ -123,7 +124,7 @@ const DashboardPage: React.FC = () => {
           if (statsResult.status === 'rejected') {
             console.warn('Failed to fetch dashboard stats:', statsResult.reason);
           }
-          setStats(defaultStats);
+          setStats(DEFAULT_STATS);
         }
 
         // Process studies - ALWAYS ensure we set an array, never undefined
@@ -149,7 +150,7 @@ const DashboardPage: React.FC = () => {
         console.error('Failed to fetch dashboard data:', err);
         setError('Failed to load dashboard data. Please try again.');
         // Ensure we have safe defaults even on error
-        setStats(defaultStats);
+        setStats(DEFAULT_STATS);
         setRecentStudies([]);
         setRecentJobs([]);
       } finally {
@@ -207,7 +208,7 @@ const DashboardPage: React.FC = () => {
   // Safe accessors - guaranteed to never be undefined even if state is corrupted
   const safeStudies = Array.isArray(recentStudies) ? recentStudies : [];
   const safeJobs = Array.isArray(recentJobs) ? recentJobs : [];
-  const safeStats = stats ?? defaultStats;
+  const safeStats = stats ?? DEFAULT_STATS;
 
   const storagePercentage = safeStats.storage_total_bytes > 0
     ? Math.round((safeStats.storage_used_bytes / safeStats.storage_total_bytes) * 100)
@@ -215,9 +216,14 @@ const DashboardPage: React.FC = () => {
 
   return (
     <Box data-testid="dashboard-page">
-      <Typography variant="h4" sx={{ mb: 3, fontWeight: 700 }}>
-        Dashboard
-      </Typography>
+      <Box sx={{ mb: 3 }}>
+        <Typography variant="h4" sx={{ fontWeight: 700 }}>
+          Dashboard
+        </Typography>
+        <Typography variant="body2" color="text.secondary">
+          Live operational snapshot of studies, patients, AI throughput, and storage.
+        </Typography>
+      </Box>
 
       {error && (
         <Alert severity="error" sx={{ mb: 3 }}>
@@ -232,7 +238,7 @@ const DashboardPage: React.FC = () => {
             title="Total Studies"
             value={loading ? '-' : safeStats.total_studies.toLocaleString()}
             icon={<StudiesIcon />}
-            color="#007AFF"
+            color={theme.palette.primary.main}
             loading={loading}
           />
         </Grid>
@@ -241,7 +247,7 @@ const DashboardPage: React.FC = () => {
             title="Total Patients"
             value={loading ? '-' : safeStats.total_patients.toLocaleString()}
             icon={<PatientsIcon />}
-            color="#34C759"
+            color={theme.palette.success.main}
             loading={loading}
           />
         </Grid>
@@ -251,7 +257,7 @@ const DashboardPage: React.FC = () => {
             value={loading ? '-' : safeStats.ai_jobs_today}
             subtitle={loading ? undefined : `${safeStats.ai_jobs_running} running`}
             icon={<AIIcon />}
-            color="#5856D6"
+            color={theme.palette.secondary.main}
             loading={loading}
           />
         </Grid>
@@ -265,7 +271,7 @@ const DashboardPage: React.FC = () => {
                 : `${formatBytes(safeStats.storage_used_bytes)} / ${formatBytes(safeStats.storage_total_bytes)}`
             }
             icon={<StorageIcon />}
-            color="#FF9500"
+            color={theme.palette.warning.main}
             loading={loading}
           />
         </Grid>

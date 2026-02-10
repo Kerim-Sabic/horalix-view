@@ -103,9 +103,23 @@ export const CineControls: React.FC<CineControlsProps> = ({
       sx={{
         display: 'flex',
         alignItems: 'center',
-        px: 2,
-        py: 1,
+        px: 1.5,
+        py: 0.75,
         borderRadius: 0,
+        borderTop: 1,
+        borderColor: 'divider',
+        bgcolor: 'background.paper',
+        boxShadow: '0 -1px 0 rgba(0,0,0,0.08)',
+        gap: 0.5,
+        '& .MuiIconButton-root': {
+          borderRadius: 1,
+          padding: 0.75,
+          color: 'text.secondary',
+          '&:hover': {
+            bgcolor: 'action.hover',
+            color: 'text.primary',
+          },
+        },
       }}
       elevation={0}
     >

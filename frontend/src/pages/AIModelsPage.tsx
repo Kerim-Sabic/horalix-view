@@ -173,9 +173,14 @@ const AIModelsPage: React.FC = () => {
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          AI Models
-        </Typography>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            AI Models
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Monitor model availability and load status.
+          </Typography>
+        </Box>
         <Tooltip title="Refresh">
           <IconButton onClick={fetchModels} disabled={loading}>
             <RefreshIcon />

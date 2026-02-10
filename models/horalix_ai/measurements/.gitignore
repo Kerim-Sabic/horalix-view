@@ -1,0 +1,35 @@
+
+lightning_logs
+wandb
+*.csv
+*.parquet
+*.avi
+*.mp4
+*.sh
+*.dcm
+*.ipynb
+# *.png
+*.jpg
+*.pt
+SAMPLE_AVI
+SAMPLE_DICOM
+__pycache__
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+.gradio
+view_classifier_public/
+
+# Specific files for this project
+utils_end_to_end_public.py
+
+# Weights
+weights/
+
+# Images and Videos
+image/
+videos/

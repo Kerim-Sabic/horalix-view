@@ -26,6 +26,7 @@ import {
   useTheme as useMuiTheme,
   Tooltip,
 } from '@mui/material';
+import { alpha } from '@mui/material/styles';
 import {
   Menu as MenuIcon,
   Dashboard as DashboardIcon,
@@ -63,6 +64,7 @@ const navItems: NavItem[] = [
 
 const MainLayout: React.FC = () => {
   const muiTheme = useMuiTheme();
+  const isDark = muiTheme.palette.mode === 'dark';
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useAuth();
@@ -109,16 +111,33 @@ const MainLayout: React.FC = () => {
   const drawer = (
     <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column' }} data-testid="sidebar-navigation">
       {/* Logo */}
-      <Box sx={{ p: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+      <Box
+        sx={{
+          p: 2.5,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.5,
+          borderBottom: 1,
+          borderColor: 'divider',
+          background: isDark
+            ? 'linear-gradient(120deg, rgba(79,156,255,0.18) 0%, rgba(49,195,178,0.08) 60%, transparent 100%)'
+            : 'linear-gradient(120deg, rgba(31,111,235,0.12) 0%, rgba(15,118,110,0.08) 60%, transparent 100%)',
+        }}
+      >
         <Box
           sx={{
-            width: 40,
-            height: 40,
-            borderRadius: 2,
-            background: 'linear-gradient(135deg, #007AFF 0%, #5856D6 100%)',
+            width: 44,
+            height: 44,
+            borderRadius: 2.5,
+            background: isDark
+              ? 'linear-gradient(135deg, #4f9cff 0%, #31c3b2 100%)'
+              : 'linear-gradient(135deg, #1f6feb 0%, #0f766e 100%)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
+            boxShadow: isDark
+              ? '0 10px 20px rgba(6, 10, 18, 0.45)'
+              : '0 8px 16px rgba(15, 23, 42, 0.16)',
           }}
         >
           <Typography variant="h6" sx={{ color: 'white', fontWeight: 700 }}>
@@ -130,7 +149,7 @@ const MainLayout: React.FC = () => {
             Horalix View
           </Typography>
           <Typography variant="caption" color="text.secondary">
-            DICOM Viewer
+            Clinical DICOM Workspace
           </Typography>
         </Box>
       </Box>
@@ -146,15 +165,20 @@ const MainLayout: React.FC = () => {
               onClick={() => handleNavigation(item.path)}
               sx={{
                 borderRadius: 2,
-                mb: 0.5,
+                mb: 0.75,
+                border: '1px solid transparent',
+                '&:hover': {
+                  bgcolor: alpha(muiTheme.palette.primary.main, 0.08),
+                },
                 '&.Mui-selected': {
-                  bgcolor: 'primary.main',
-                  color: 'primary.contrastText',
+                  bgcolor: alpha(muiTheme.palette.primary.main, isDark ? 0.18 : 0.12),
+                  borderColor: alpha(muiTheme.palette.primary.main, isDark ? 0.5 : 0.35),
+                  color: 'text.primary',
                   '& .MuiListItemIcon-root': {
-                    color: 'inherit',
+                    color: 'primary.main',
                   },
                   '&:hover': {
-                    bgcolor: 'primary.dark',
+                    bgcolor: alpha(muiTheme.palette.primary.main, isDark ? 0.22 : 0.16),
                   },
                 },
               }}
@@ -170,7 +194,18 @@ const MainLayout: React.FC = () => {
 
       {/* User info */}
       <Box sx={{ p: 2 }}>
-        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1,
+            p: 1.25,
+            borderRadius: 2,
+            bgcolor: 'background.default',
+            border: '1px solid',
+            borderColor: 'divider',
+          }}
+        >
           <Avatar sx={{ width: 32, height: 32, bgcolor: 'primary.main' }}>
             {user?.full_name?.charAt(0) || user?.username.charAt(0).toUpperCase()}
           </Avatar>
@@ -200,6 +235,7 @@ const MainLayout: React.FC = () => {
           boxShadow: 'none',
           borderBottom: 1,
           borderColor: 'divider',
+          backdropFilter: 'blur(8px)',
         }}
       >
         <Toolbar>

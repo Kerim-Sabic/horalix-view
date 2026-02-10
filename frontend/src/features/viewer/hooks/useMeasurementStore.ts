@@ -118,6 +118,7 @@ interface DrawingContext {
   seriesUid: string;
   frameKey: string | null;
   scope: MeasurementScope;
+  instanceUid?: string | null;
 }
 
 type MeasurementStore = MeasurementState & MeasurementActions;
@@ -179,7 +180,13 @@ function createLineMeasurement(
   context: DrawingContext
 ): LineMeasurement {
   return {
-    ...createBaseMeasurementProps('line', context.seriesUid, context.scope, context.frameKey),
+    ...createBaseMeasurementProps(
+      'line',
+      context.seriesUid,
+      context.scope,
+      context.frameKey,
+      context.instanceUid ?? null
+    ),
     id: createMeasurementId(),
     type: 'line',
     points: [startPoint, startPoint],
@@ -196,7 +203,13 @@ function createPolygonMeasurement(
   context: DrawingContext
 ): PolygonMeasurement {
   return {
-    ...createBaseMeasurementProps('polygon', context.seriesUid, context.scope, context.frameKey),
+    ...createBaseMeasurementProps(
+      'polygon',
+      context.seriesUid,
+      context.scope,
+      context.frameKey,
+      context.instanceUid ?? null
+    ),
     id: createMeasurementId(),
     type: 'polygon',
     points: [startPoint],

@@ -1,7 +1,22 @@
 {
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
   "permissions": {
     "allow": [
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(python scripts/validate_horalix_ai_setup.py:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker compose up:*)",
+      "Bash(ls:*)",
+      "Bash(docker compose:*)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(docker info:*)",
+      "Bash(docker exec:*)",
+      "Bash(timeout:*)",
+      "Bash(findstr:*)",
+      "Bash(npx tsc:*)"
     ]
   }
 }

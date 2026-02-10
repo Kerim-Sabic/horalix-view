@@ -21,6 +21,7 @@ import {
   Tooltip,
   Alert,
   Skeleton,
+  Stack,
 } from '@mui/material';
 import {
   Search as SearchIcon,
@@ -105,14 +106,21 @@ const PatientListPage: React.FC = () => {
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          Patients
-        </Typography>
-        <Tooltip title="Refresh">
-          <IconButton onClick={fetchPatients} disabled={loading}>
-            <RefreshIcon />
-          </IconButton>
-        </Tooltip>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            Patients
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Directory of patient records and study access.
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <Tooltip title="Refresh">
+            <IconButton onClick={fetchPatients} disabled={loading}>
+              <RefreshIcon />
+            </IconButton>
+          </Tooltip>
+        </Stack>
       </Box>
 
       {error && (

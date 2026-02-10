@@ -30,6 +30,7 @@ from app.core.logging import audit_logger, get_logger
 from app.core.security import TokenData
 from app.models.base import get_db
 from app.models.job import AIJob, JobStatus, ModelType, TaskType
+from app.models.instance import Instance
 from app.models.series import Series
 from app.models.study import Study
 
@@ -158,6 +159,39 @@ class InteractiveSegmentationResponse(BaseModel):
     mask_area_mm2: float | None = None
 
 
+def _enhance_ultrasound_for_medsam(image: np.ndarray) -> np.ndarray:
+    """
+    Enhance ultrasound frames for MedSAM.
+
+    Uses CLAHE on a grayscale projection to boost contrast, then converts back to RGB.
+    Falls back to the original image if enhancement fails.
+    """
+    try:
+        import cv2
+
+        if image.ndim == 3 and image.shape[2] >= 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        else:
+            gray = image
+
+        if gray.dtype != np.uint8:
+            if gray.max() <= 1.0:
+                gray_u8 = (gray * 255.0).clip(0, 255).astype(np.uint8)
+            else:
+                p_low, p_high = np.percentile(gray, [0.5, 99.5])
+                gray_u8 = np.clip(gray, p_low, p_high)
+                gray_u8 = ((gray_u8 - p_low) / (p_high - p_low + 1e-8) * 255.0).astype(np.uint8)
+        else:
+            gray_u8 = gray
+
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray_u8)
+        rgb = cv2.cvtColor(enhanced, cv2.COLOR_GRAY2RGB)
+        return rgb
+    except Exception:
+        return image
+
+
 class JobListResponse(BaseModel):
     """Paginated list of jobs."""
 
@@ -276,7 +310,7 @@ async def list_models(
                     path=weights_path,
                     exists=weights_exists,
                 ),
-                last_checked=datetime.now(timezone.utc),
+                last_checked=datetime.utcnow(),
                 errors=errors,
             )
         )
@@ -373,7 +407,7 @@ async def get_model_info(
             path=weights_path,
             exists=weights_exists,
         ),
-        last_checked=datetime.now(timezone.utc),
+        last_checked=datetime.utcnow(),
         errors=errors,
     )
 
@@ -587,6 +621,7 @@ async def get_job_status(
     Returns current status and results (if completed) for an inference job.
     """
     query = select(AIJob).where(AIJob.job_id == job_id)
+    query = query.order_by(AIJob.completed_at.asc())
     result = await db.execute(query)
     job = result.scalar_one_or_none()
 
@@ -731,14 +766,16 @@ async def interactive_medsam(
     if not model_registry.is_model_available("medsam"):
         availability = model_registry.get_model_availability().get("medsam", {})
         weights_path = availability.get("weights_path", "models/medsam")
+        weights_hint = Path(str(weights_path))
+        weights_dir = weights_hint.parent if weights_hint.suffix else weights_hint
         raise HTTPException(
             status_code=status.HTTP_424_FAILED_DEPENDENCY,
             detail=(
                 f"MedSAM model not available.\n\n"
-                f"Expected weights at: {weights_path}\n\n"
+                f"Expected weights at: {weights_hint}\n\n"
                 f"To set up MedSAM:\n"
                 f"1. Download MedSAM weights from: https://github.com/bowang-lab/MedSAM\n"
-                f"2. Place checkpoint (medsam_vit_b.pth) in: {weights_path}/\n"
+                f"2. Place checkpoint (medsam_vit_b.pth) in: {weights_dir}\n"
                 f"3. Restart the service\n\n"
                 f"Note: MedSAM requires ~375MB for vit_b variant."
             ),
@@ -792,11 +829,15 @@ async def interactive_medsam(
     volume.pixel_data = pixel_data
 
     # Prepare image for inference
+    modality = str(getattr(volume.metadata, "modality", "")).upper()
+    is_ultrasound = modality == "US"
     image = loader.prepare_for_inference(
         volume,
-        normalize=True,
+        normalize=not is_ultrasound,
         convert_to_rgb=True,
     )
+    if is_ultrasound:
+        image = _enhance_ultrasound_for_medsam(image)
 
     # Run interactive segmentation
     try:
@@ -806,6 +847,19 @@ async def interactive_medsam(
             point_coords=prompt.points if prompt.points else None,
             point_labels=prompt.point_labels if prompt.point_labels else None,
             box=prompt.box,
+            image_id=f"{instance_uid}:{frame_index}",
+        )
+    except FileNotFoundError as e:
+        logger.error(f"MedSAM weights not found: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=str(e),
+        )
+    except ImportError as e:
+        logger.error(f"MedSAM dependency missing: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_424_FAILED_DEPENDENCY,
+            detail=str(e),
         )
     except Exception as e:
         logger.error(f"MedSAM inference failed: {e}")
@@ -817,12 +871,20 @@ async def interactive_medsam(
     # Save mask result
     mask = result.output.mask
     mask_bin = (mask > 0).astype(np.uint8)
+    try:
+        import cv2
+
+        kernel = np.ones((5, 5), np.uint8)
+        mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_CLOSE, kernel, iterations=1)
+        mask_bin = cv2.morphologyEx(mask_bin, cv2.MORPH_OPEN, kernel, iterations=1)
+    except Exception:
+        pass
     results_dir = Path(settings.ai.results_dir) / study_uid
     results_dir.mkdir(parents=True, exist_ok=True)
 
     mask_filename = f"medsam_interactive_{instance_uid}_{uuid4().hex[:8]}.npz"
     mask_path = results_dir / mask_filename
-    np.savez_compressed(mask_path, mask=mask)
+    np.savez_compressed(mask_path, mask=mask_bin)
 
     # Derive contours for interactive editing
     contours_payload: list[list[Point2D]] = []
@@ -845,12 +907,9 @@ async def interactive_medsam(
             area = float(cv2.contourArea(contour))
             if area <= 0:
                 continue
-            perimeter = float(cv2.arcLength(contour, True))
-            epsilon = max(1.0, perimeter * 0.002)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
             points = [
                 Point2D(x=float(pt[0][0]), y=float(pt[0][1]))
-                for pt in approx
+                for pt in contour
             ]
             if len(points) >= 3:
                 contour_info.append((area, points))
@@ -863,7 +922,7 @@ async def interactive_medsam(
 
     return InteractiveSegmentationResponse(
         instance_uid=instance_uid,
-        mask_shape=list(mask.shape),
+        mask_shape=list(mask_bin.shape),
         mask_url=f"/api/v1/ai/results/{study_uid}/masks/{mask_filename}",
         confidence=result.confidence or 0.0,
         inference_time_ms=result.inference_time_ms,
@@ -1034,6 +1093,30 @@ async def render_mask_overlay(
     return Response(content=buffer.read(), media_type="image/png")
 
 
+@router.get("/results/{study_uid}/files/{file_path:path}")
+async def get_result_file(
+    study_uid: str,
+    file_path: str,
+    current_user: Annotated[TokenData, Depends(get_current_active_user_from_token)],
+) -> Response:
+    """Download a result file stored under the study results directory."""
+    results_dir = (Path(settings.ai.results_dir) / study_uid).resolve()
+    target_path = (results_dir / file_path).resolve()
+
+    if results_dir not in target_path.parents and target_path != results_dir:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid result file path",
+        )
+    if not target_path.exists() or not target_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Result file not found",
+        )
+
+    return FileResponse(path=target_path, filename=target_path.name)
+
+
 async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> None:
     """Run REAL model inference in background.
 
@@ -1059,48 +1142,79 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
         try:
             # Update status to running
             job.status = JobStatus.RUNNING
-            job.started_at = datetime.now(timezone.utc)
+            job.started_at = datetime.utcnow()
             await db.commit()
 
             # Load DICOM data
             loader = DicomLoader(dicom_storage)
 
+            # Get actual model name from parameters (needed early for queue-based check)
+            if isinstance(job.parameters, dict):
+                actual_model_name = job.parameters.get("_model_name", model_name)
+            else:
+                actual_model_name = model_name
+
+            # For queue-based cardiac models (horalix_ai composite), the worker
+            # handles its own data loading across ALL series in the study.
+            # Skip volume loading to avoid unnecessary work and potential failures.
+            is_queue_based_cardiac = (
+                job.task_type == TaskType.CARDIAC
+                and actual_model_name in ("horalix_ai",)
+            )
+
+            volume = None
             series_uid = job.series_instance_uid
-            if not series_uid:
-                # Get first series from study
-                series_query = (
-                    select(Series)
-                    .where(Series.study_instance_uid == job.study_instance_uid)
-                    .limit(1)
-                )
-                series_result = await db.execute(series_query)
-                series = series_result.scalar_one_or_none()
-                if series:
-                    series_uid = series.series_instance_uid
-                else:
-                    raise ValueError("No series found for study")
 
-            job.progress = 10
-            await db.commit()
+            if not is_queue_based_cardiac:
+                if not series_uid:
+                    # Get first series from study
+                    series_query = (
+                        select(Series)
+                        .where(Series.study_instance_uid == job.study_instance_uid)
+                        .limit(1)
+                    )
+                    series_result = await db.execute(series_query)
+                    series = series_result.scalar_one_or_none()
+                    if series:
+                        series_uid = series.series_instance_uid
+                    else:
+                        raise ValueError("No series found for study")
 
-            # Load the series
-            try:
-                volume = await loader.load_series(
-                    study_uid=job.study_instance_uid,
-                    series_uid=series_uid,
-                    apply_rescale=True,
-                )
-            except FileNotFoundError as e:
-                raise ValueError(f"DICOM data not found: {e}")
+                # Load the series
+                try:
+                    volume = await loader.load_series(
+                        study_uid=job.study_instance_uid,
+                        series_uid=series_uid,
+                        apply_rescale=True,
+                    )
+                except FileNotFoundError as e:
+                    raise ValueError(f"DICOM data not found: {e}")
 
             job.progress = 30
             await db.commit()
 
-            # Get actual model name from parameters
-            actual_model_name = job.parameters.get("_model_name", model_name)
+            # Resolve an explicit instance file if provided
+            input_file_override: str | None = None
+            instance_uid = None
+            if isinstance(job.parameters, dict):
+                instance_uid = job.parameters.get("instance_uid")
+            if instance_uid:
+                instance_query = select(Instance).where(Instance.sop_instance_uid == instance_uid)
+                instance_result = await db.execute(instance_query)
+                instance = instance_result.scalar_one_or_none()
+                if instance and instance.file_path:
+                    input_file_override = instance.file_path
 
             # Run inference based on task type
             start_time = time.perf_counter()
+
+            # Create progress callback for queue-based models (horalix_ai)
+            async def update_progress(progress: float) -> None:
+                """Update job progress in database."""
+                # Scale progress: 30% already set, model inference goes from 30-95%
+                scaled_progress = 30 + (progress * 0.65)  # 30 + (0-100 * 0.65) = 30-95
+                job.progress = int(min(scaled_progress, 95))
+                await db.commit()
 
             if job.task_type == TaskType.DETECTION:
                 results, result_files = await _run_detection(
@@ -1120,7 +1234,8 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
                 )
             elif job.task_type == TaskType.CARDIAC:
                 results, result_files = await _run_cardiac(
-                    job, actual_model_name, volume, model_registry
+                    job, actual_model_name, volume, model_registry, input_file_override,
+                    progress_callback=update_progress,
                 )
             else:
                 raise ValueError(f"Task type not yet implemented: {job.task_type}")
@@ -1129,7 +1244,7 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
 
             # Update job with results
             job.status = JobStatus.COMPLETED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             job.progress = 100
             job.results = results
             job.result_files = result_files
@@ -1147,7 +1262,7 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
         except FileNotFoundError as e:
             # Model weights not found - provide helpful error
             job.status = JobStatus.FAILED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             job.error_message = str(e)
             job.error_traceback = traceback.format_exc()
             logger.error(f"Model weights not found: {e}")
@@ -1156,7 +1271,7 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
         except ImportError as e:
             # Missing dependency
             job.status = JobStatus.FAILED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             job.error_message = f"Missing dependency: {e}"
             job.error_traceback = traceback.format_exc()
             logger.error(f"Missing dependency: {e}")
@@ -1165,7 +1280,7 @@ async def run_real_inference(job_id: str, model_name: str, app_state: Any) -> No
         except Exception as e:
             # General failure
             job.status = JobStatus.FAILED
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = datetime.utcnow()
             job.error_message = str(e)
             job.error_traceback = traceback.format_exc()
             logger.error(f"Inference failed: {e}", exc_info=True)
@@ -1329,7 +1444,41 @@ def _select_representative_slice(volume: Any) -> tuple[np.ndarray, int | None]:
     return data, None
 
 
-def _extract_result_payload(result: Any) -> tuple[dict, dict]:
+def _map_result_files(result_files: dict[str, str], study_uid: str | None) -> dict[str, str]:
+    """Map filesystem result files to API URLs when possible."""
+    if not result_files or not study_uid:
+        return result_files
+
+    base_dir = (Path(settings.ai.results_dir) / study_uid).resolve()
+    mapped: dict[str, str] = {}
+    for key, value in result_files.items():
+        if not isinstance(value, str) or not value:
+            continue
+        if value.startswith("/api/v1/ai/results/"):
+            mapped[key] = value
+            continue
+
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = base_dir / value
+        try:
+            resolved = candidate.resolve()
+        except Exception:
+            mapped[key] = value
+            continue
+
+        try:
+            relative = resolved.relative_to(base_dir).as_posix()
+        except Exception:
+            mapped[key] = value
+            continue
+
+        mapped[key] = f"/api/v1/ai/results/{study_uid}/files/{relative}"
+
+    return mapped
+
+
+def _extract_result_payload(result: Any, study_uid: str | None = None) -> tuple[dict, dict]:
     """Normalize model output to a JSON-friendly payload and result file map."""
     result_files: dict[str, str] = {}
     if isinstance(result.metadata, dict):
@@ -1352,6 +1501,7 @@ def _extract_result_payload(result: Any) -> tuple[dict, dict]:
     else:
         results_payload = {"output": output}
 
+    result_files = _map_result_files(result_files, study_uid)
     return results_payload, result_files
 
 
@@ -1371,7 +1521,7 @@ async def _run_classification(
     )
 
     result = await model_registry.run_inference(model_name, prepared)
-    payload, result_files = _extract_result_payload(result)
+    payload, result_files = _extract_result_payload(result, job.study_instance_uid)
 
     results = {
         "output": payload,
@@ -1407,7 +1557,7 @@ async def _run_pathology(
         input_file=input_file,
     )
 
-    payload, result_files = _extract_result_payload(result)
+    payload, result_files = _extract_result_payload(result, job.study_instance_uid)
     results = {
         "output": payload,
         "model_used": model_name,
@@ -1424,12 +1574,24 @@ async def _run_cardiac(
     model_name: str,
     volume: Any,
     model_registry: Any,
+    input_file_override: str | None = None,
+    progress_callback: Any | None = None,
 ) -> tuple[dict, dict]:
     """Run cardiac inference (cine/echo focused)."""
-    input_file = None
-    if getattr(volume, "metadata", None) and getattr(volume.metadata, "instance_files", None):
+    input_file = input_file_override
+    if not input_file and getattr(volume, "metadata", None) and getattr(volume.metadata, "instance_files", None):
         if volume.metadata.instance_files:
             input_file = volume.metadata.instance_files[0]
+
+    extra_params: dict[str, Any] = {}
+    if isinstance(job.parameters, dict):
+        extra_params = dict(job.parameters)
+        extra_params.pop("_model_name", None)
+        extra_params.pop("input_file", None)
+
+    # Pass progress callback for queue-based models
+    if progress_callback is not None:
+        extra_params["progress_callback"] = progress_callback
 
     result = await model_registry.run_inference(
         model_name,
@@ -1438,9 +1600,10 @@ async def _run_cardiac(
         series_uid=job.series_instance_uid,
         task_type=job.task_type.value,
         input_file=input_file,
+        **extra_params,
     )
 
-    payload, result_files = _extract_result_payload(result)
+    payload, result_files = _extract_result_payload(result, job.study_instance_uid)
     results = {
         "output": payload,
         "model_used": model_name,

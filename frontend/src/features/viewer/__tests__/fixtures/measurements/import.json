@@ -1,0 +1,44 @@
+[
+  {
+    "id": "line-1",
+    "type": "line",
+    "seriesUid": "series-1",
+    "frameKey": "instance-1:0",
+    "scope": "frame",
+    "label": "LVIDd",
+    "color": "#3b82f6",
+    "visible": true,
+    "locked": false,
+    "createdAt": 1600000000000,
+    "modifiedAt": 1600000000000,
+    "points": [
+      { "x": 12, "y": 18 },
+      { "x": 112, "y": 18 }
+    ],
+    "lengthMm": 25.4,
+    "trackingData": null
+  },
+  {
+    "id": "poly-1",
+    "type": "polygon",
+    "seriesUid": "series-1",
+    "frameKey": null,
+    "scope": "series",
+    "label": "LV Area",
+    "color": "#10b981",
+    "visible": true,
+    "locked": false,
+    "createdAt": 1600000000500,
+    "modifiedAt": 1600000000500,
+    "points": [
+      { "x": 30, "y": 40 },
+      { "x": 120, "y": 40 },
+      { "x": 120, "y": 120 },
+      { "x": 30, "y": 120 }
+    ],
+    "perimeterMm": 85.0,
+    "areaMm2": 720.0,
+    "volumeData": null,
+    "trackingData": null
+  }
+]

@@ -1,17 +1,20 @@
 /**
  * Components Index
  *
- * Re-exports all viewer components
+ * Re-exports viewer components for external use.
+ * Internal components (ToolButton, MeasurementListItem) are not exported
+ * since they're only used within their parent components.
  */
 
 // Viewport
 export { Viewport, MeasurementOverlay } from './Viewport';
 
-// Toolbar
-export { ViewerToolbar, ToolButton, WindowLevelMenu } from './ViewerToolbar';
+// Toolbar - WindowLevelMenu is internal to ViewerToolbar
+export { ViewerToolbar } from './ViewerToolbar';
 
 // Panels
-export { MeasurementPanel, MeasurementListItem } from './MeasurementPanel';
+export { MeasurementPanel } from './MeasurementPanel';
+export { AIResultsPanel } from './AIResultsPanel';
 
 // Controls
 export { CineControls } from './CineControls';

@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/features/viewer/**/*.ts", "src/features/viewer/**/*.tsx"],
+  "exclude": ["src/features/viewer/**/__tests__/**", "src/features/viewer/**/*.test.ts", "src/features/viewer/**/*.test.tsx"]
+}

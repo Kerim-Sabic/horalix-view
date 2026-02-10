@@ -1,0 +1,12 @@
+{
+  "job_id": "9dfec092-cf14-487a-9bfc-aa371c190fee",
+  "status": "COMPLETED",
+  "progress": 95.0,
+  "gpu_id": 0,
+  "worker_pid": 1,
+  "claimed_at": null,
+  "started_at": "2026-02-05 12:14:57.571930",
+  "completed_at": "2026-02-05 12:16:48.125797",
+  "error_message": null,
+  "result_path": "/app/results/horalix_ai/9dfec092-cf14-487a-9bfc-aa371c190fee.json"
+}

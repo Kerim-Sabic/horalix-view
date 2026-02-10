@@ -14,6 +14,7 @@ import {
   IconButton,
   Button,
   Chip,
+  Stack,
   Table,
   TableBody,
   TableCell,
@@ -278,10 +279,15 @@ const StudyListPage: React.FC = () => {
   return (
     <Box>
       <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 3 }}>
-        <Typography variant="h4" sx={{ fontWeight: 700 }}>
-          Studies
-        </Typography>
-        <Box sx={{ display: 'flex', gap: 1 }}>
+        <Box>
+          <Typography variant="h4" sx={{ fontWeight: 700 }}>
+            Studies
+          </Typography>
+          <Typography variant="body2" color="text.secondary">
+            Review, filter, and open clinical studies.
+          </Typography>
+        </Box>
+        <Stack direction="row" spacing={1} alignItems="center">
           <Tooltip title="Refresh">
             <IconButton onClick={fetchStudies} disabled={loading}>
               <RefreshIcon />
@@ -290,7 +296,7 @@ const StudyListPage: React.FC = () => {
           <Button variant="contained" startIcon={<UploadIcon />} onClick={handleUploadClick}>
             Upload DICOM
           </Button>
-        </Box>
+        </Stack>
       </Box>
 
       {error && (

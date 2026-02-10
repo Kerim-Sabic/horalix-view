@@ -43,6 +43,8 @@ import { isLineMeasurement, isPolygonMeasurement } from '../../types';
 interface MeasurementListItemProps {
   measurement: Measurement;
   isSelected: boolean;
+  cineLabel?: string | null;
+  frameLabel?: string | null;
   trackingData?: TrackingData | null;
   currentFrameIndex?: number;
   onJumpToFrame?: (frameIndex: number) => void;
@@ -107,10 +109,10 @@ const TrackingGraph: React.FC<{
   const [isScrubbing, setIsScrubbing] = useState(false);
   const sortedFrames = [...data.frames].sort((a, b) => a.frameIndex - b.frameIndex);
   const values = sortedFrames.map((frame) => frame.lengthMm ?? frame.areaMm2 ?? 0);
-  if (values.length === 0) return null;
+  const hasData = values.length > 0;
 
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = hasData ? Math.min(...values) : 0;
+  const max = hasData ? Math.max(...values) : 0;
   const range = max - min || 1;
 
   // Find ED (max) and ES (min) frames for cardiac measurements
@@ -196,7 +198,7 @@ const TrackingGraph: React.FC<{
 
   const handlePointerAt = useCallback(
     (event: React.PointerEvent<SVGSVGElement> | React.MouseEvent<SVGSVGElement>) => {
-      if (!onFrameSelect) return;
+      if (!onFrameSelect || !hasData) return;
       const rect = event.currentTarget.getBoundingClientRect();
       const scaleX = rect.width ? width / rect.width : 1;
       const x = clampValue((event.clientX - rect.left) * scaleX, paddingLeft, width - paddingRight);
@@ -204,7 +206,7 @@ const TrackingGraph: React.FC<{
       const frameIndex = Math.round(minFrame + ratio * frameRange);
       onFrameSelect(frameIndex);
     },
-    [chartWidth, frameRange, minFrame, onFrameSelect, paddingLeft, paddingRight, width]
+    [chartWidth, frameRange, hasData, minFrame, onFrameSelect, paddingLeft, paddingRight, width]
   );
 
   const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
@@ -224,6 +226,8 @@ const TrackingGraph: React.FC<{
     event.currentTarget.releasePointerCapture(event.pointerId);
     setIsScrubbing(false);
   };
+
+  if (!hasData) return null;
 
   return (
     <Box
@@ -366,7 +370,9 @@ const TrackingGraph: React.FC<{
               fill="#f59e0b"
               fontWeight="bold"
             >
-              {currentPoint.value.toFixed(1)}
+              {typeof currentPoint.value === 'number'
+                ? currentPoint.value.toFixed(1)
+                : String(currentPoint.value ?? '')}
             </text>
           </g>
         )}
@@ -476,9 +482,11 @@ const TrackingGraph: React.FC<{
 };
 
 
-export const MeasurementListItem: React.FC<MeasurementListItemProps> = ({
+export const MeasurementListItem: React.FC<MeasurementListItemProps> = React.memo(({
   measurement,
   isSelected,
+  cineLabel,
+  frameLabel,
   trackingData,
   currentFrameIndex,
   onJumpToFrame,
@@ -495,6 +503,10 @@ export const MeasurementListItem: React.FC<MeasurementListItemProps> = ({
   const displayLabel = measurement.label || getMeasurementTypeLabel(measurement);
   const displayValue = getMeasurementValue(measurement);
   const unit = isLineMeasurement(measurement) ? 'mm' : 'mm^2';
+  const secondaryParts = [displayValue, cineLabel, frameLabel].filter(
+    (value) => value && value.length > 0
+  );
+  const secondaryText = secondaryParts.join(' · ');
 
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -569,9 +581,16 @@ export const MeasurementListItem: React.FC<MeasurementListItemProps> = ({
           selected={isSelected}
           onClick={onSelect}
           sx={{
-            borderLeft: isSelected ? 3 : 0,
-            borderColor: 'primary.main',
+            mx: 1,
+            my: 0.5,
+            borderRadius: 2,
+            border: '1px solid',
+            borderColor: isSelected ? 'primary.main' : 'transparent',
+            bgcolor: isSelected ? 'action.selected' : 'transparent',
             opacity: measurement.visible ? 1 : 0.5,
+            '&:hover': {
+              bgcolor: 'action.hover',
+            },
           }}
         >
           <ListItemIcon sx={{ minWidth: 36 }}>
@@ -600,7 +619,7 @@ export const MeasurementListItem: React.FC<MeasurementListItemProps> = ({
                 component="span"
                 sx={{ fontFamily: 'monospace' }}
               >
-                {displayValue}
+                {secondaryText}
               </Typography>
             }
           />
@@ -622,6 +641,8 @@ export const MeasurementListItem: React.FC<MeasurementListItemProps> = ({
       </Collapse>
     </>
   );
-};
+});
+
+MeasurementListItem.displayName = 'MeasurementListItem';
 
 export default MeasurementListItem;

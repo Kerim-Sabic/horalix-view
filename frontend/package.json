@@ -14,7 +14,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "type-coverage:viewer": "type-coverage --project tsconfig.viewer.json --at-least 98 --detail",
+    "deps:check": "depcruise src --config .dependency-cruiser.js",
+    "deadcode:check": "node scripts/deadcode_check.mjs"
   },
   "dependencies": {
     "@emotion/react": "^11.11.3",
@@ -56,11 +59,17 @@
     "@typescript-eslint/eslint-plugin": "^6.20.0",
     "@typescript-eslint/parser": "^6.20.0",
     "@vitejs/plugin-react": "^4.2.1",
+    "dependency-cruiser": "^16.10.1",
     "eslint": "^8.56.0",
+    "eslint-plugin-import": "^2.29.1",
+    "eslint-plugin-simple-import-sort": "^12.1.1",
+    "eslint-plugin-unused-imports": "^3.1.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
     "jsdom": "^24.0.0",
     "prettier": "^3.2.4",
+    "ts-prune": "^0.10.3",
+    "type-coverage": "^2.29.0",
     "typescript": "^5.3.3",
     "vite": "^5.0.12",
     "vitest": "^1.2.2"

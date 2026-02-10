@@ -90,6 +90,8 @@ class MedSAMModel(InteractiveSegmentationModel):
         self._image_embedding = None
         self._original_size = None
         self._input_size = None
+        self._last_image_id: str | None = None
+        self._embedding_ready = False
 
     @property
     def metadata(self) -> ModelMetadata:
@@ -236,6 +238,8 @@ class MedSAMModel(InteractiveSegmentationModel):
         self._image_embedding = None
         self._original_size = None
         self._input_size = None
+        self._last_image_id = None
+        self._embedding_ready = False
 
         try:
             import torch
@@ -248,7 +252,7 @@ class MedSAMModel(InteractiveSegmentationModel):
         self._loaded = False
         logger.info("MedSAM model unloaded")
 
-    async def encode_image(self, image: np.ndarray) -> dict[str, Any]:
+    async def encode_image(self, image: np.ndarray, image_id: str | None = None) -> dict[str, Any]:
         """
         Encode image to get embeddings for interactive segmentation.
 
@@ -275,6 +279,8 @@ class MedSAMModel(InteractiveSegmentationModel):
 
         self._original_size = image.shape[:2]
         self._input_size = processed_image.shape[:2]
+        self._embedding_ready = True
+        self._last_image_id = image_id
 
         logger.info(
             "Image encoded for MedSAM",
@@ -328,10 +334,23 @@ class MedSAMModel(InteractiveSegmentationModel):
 
         import torch
 
-        # Prepare image if not already encoded
-        processed_image = await self._prepare_image(image)
-        self._model.set_image(processed_image)
-        self._original_size = image.shape[:2]
+        image_id = kwargs.pop("image_id", None)
+        use_cached_embedding = (
+            image_id is not None
+            and self._embedding_ready
+            and self._last_image_id == image_id
+        )
+
+        if not use_cached_embedding:
+            # Prepare image if not already encoded
+            processed_image = await self._prepare_image(image)
+            self._model.set_image(processed_image)
+            self._original_size = image.shape[:2]
+            self._input_size = processed_image.shape[:2]
+            self._embedding_ready = True
+            self._last_image_id = image_id
+        else:
+            self._original_size = image.shape[:2]
 
         # Prepare prompts
         np_point_coords = None
@@ -370,9 +389,10 @@ class MedSAMModel(InteractiveSegmentationModel):
         # Create output
         output = SegmentationOutput(
             mask=best_mask,
+            class_indices=[0, 1],
             class_names=["background", "foreground"],
             dice_scores={"foreground": best_score},
-            volumes={"foreground": float(np.sum(best_mask))},
+            volumes_mm3={"foreground": float(np.sum(best_mask))},
             probabilities=logits[best_idx] if return_logits else None,
         )
 

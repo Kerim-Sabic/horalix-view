@@ -222,7 +222,8 @@ export function exportMeasurementsAsJson(
 
   const exportData = measurements.map((m) => {
     if (!includeTrackingData && 'trackingData' in m) {
-      const { trackingData, ...rest } = m as Measurement & { trackingData?: unknown };
+      const rest = { ...(m as Measurement & { trackingData?: unknown }) };
+      delete rest.trackingData;
       return rest;
     }
     return m;

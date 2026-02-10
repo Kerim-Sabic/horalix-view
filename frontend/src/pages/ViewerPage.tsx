@@ -15,8 +15,12 @@ import {
   DialogContent,
   DialogTitle,
   Divider,
+  FormControl,
   FormControlLabel,
+  FormHelperText,
   IconButton,
+  InputLabel,
+  LinearProgress,
   Stack,
   List,
   ListItem,
@@ -26,14 +30,18 @@ import {
   Menu,
   MenuItem,
   Paper,
+  Select,
   Skeleton,
   Slider,
   Snackbar,
   Switch,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Tooltip,
   Typography,
 } from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
 import {
   ArrowBack as BackIcon,
   Contrast as ContrastIcon,
@@ -42,15 +50,11 @@ import {
   GridView as GridIcon,
   InfoOutlined as InfoIcon,
   Layers as LayersIcon,
-  NearMe as PointerIcon,
-  PanTool as PanIcon,
   Pause as PauseIcon,
   PlayArrow as PlayIcon,
   Psychology as AIIcon,
   RestartAlt as ResetIcon,
-  RotateRight as RotateIcon,
   Settings as SettingsIcon,
-  Straighten as MeasureIcon,
   Timeline as TimelineIcon,
   Link as LinkIcon,
   LinkOff as LinkOffIcon,
@@ -59,12 +63,11 @@ import {
   VisibilityOff as VisibilityOffIcon,
   ZoomIn as ZoomIcon,
   ZoomOut as ZoomOutIcon,
-  SquareFoot as AreaIcon,
   Favorite as FavoriteIcon,
   BookmarkAdd as BookmarkAddIcon,
-  AutoFixHigh as SmartSegmentIcon,
   ViewModule as SmartLayoutIcon,
 } from '@mui/icons-material';
+import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
 import {
   api,
   AIModel,
@@ -77,21 +80,110 @@ import {
   Study,
   StudyUpdateRequest,
   VolumeInfo,
-  TrackMeasurementResponse,
   InteractiveSegmentationResponse,
 } from '../services/api';
-import { clampMaskSliceIndex, scaleDetectionBox } from '../utils/overlayMapping';
+
+// Extracted ViewerPage modules
+import type {
+  ViewportState,
+  MetadataDraft,
+  DragState,
+  SegmentPromptPoint,
+  InteractiveSegmentationResult,
+  CineBookmark,
+} from './viewerPage.types';
+import {
+  MAX_IMAGE_CACHE,
+  DEFAULT_CINE_FPS,
+  MIN_ZOOM,
+  MAX_ZOOM,
+  ZOOM_STEP,
+  WHEEL_ZOOM_SPEED,
+  DRAG_ZOOM_DENOMINATOR,
+  WHEEL_SCROLL_THRESHOLD,
+  WHEEL_MAX_SLICE_STEP,
+  PREVIEW_SMOOTHING,
+  AI_JOB_POLL_INTERVAL_MS,
+  AI_JOB_TIMEOUT_MS,
+  defaultPreset,
+  defaultWindowLevel,
+  modalityPresets,
+} from './viewerPage.constants';
+import {
+  resolveInstanceUidFromFrameKey,
+  getCopilotTemplateKey,
+  getApiErrorDetail,
+  getPathologyTileCount,
+  rotatePoint,
+  getOrientationMarkers,
+  buildMprVolumeInfo,
+} from './viewerPage.helpers';
 
 // New modular viewer components
 import { MeasurementPanel } from '../features/viewer/components/MeasurementPanel';
+import { AIResultsPanel, type PatientContext } from '../features/viewer/components/AIResultsPanel';
 import { MPRLayout } from '../features/viewer/components/MPR/MPRLayout';
+import { buildFrameIndex, type FrameIndex } from '../features/viewer/app/cine/frameIndex';
+import { preloadImage as preloadCachedImage, touchImageCache as touchCachedImage } from '../features/viewer/app/cine/imageCache';
+import { startCinePlayback } from '../features/viewer/app/cine/playback';
+import {
+  buildCardiacOverlays,
+  buildDetectionOverlays,
+  buildInteractiveSegmentationOverlays,
+  buildSegmentationOverlays,
+  collectOverlayTargets,
+  type OverlayTarget,
+} from '../features/viewer/app/overlays/buildOverlays';
+import { buildLegacyMeasurementMaps } from '../features/viewer/app/measurements/legacyMaps';
+import {
+  type LegacyLineMeasurement,
+  type LegacyPolygonMeasurement,
+} from '../features/viewer/app/measurements/legacyTypes';
+import {
+  applyMeasurementSelection,
+  cancelMeasurementEdit,
+  clearMeasurementSelection,
+  resolveToolShortcut,
+  startMeasurementEdit,
+} from '../features/viewer/app/measurements/editingTransitions';
+import { hitTestHandle, hitTestMeasurement } from '../features/viewer/app/measurements/hitTesting';
+import { createMeasureDragStart, updateMeasureDrag, type MeasureDragState } from '../features/viewer/app/measurements/dragging';
+import {
+  buildEditedStoreUpdate,
+  computeEditMovement,
+  getEditCleanupState,
+  recomputeLegacyLineLengths,
+  recomputeLegacyPolygonMetrics,
+} from '../features/viewer/app/measurements/editFinalize';
+import { finalizeMeasureDrag } from '../features/viewer/app/measurements/finalize';
+import { buildEditedPoints, type MeasurementEditState } from '../features/viewer/app/measurements/interaction';
+import { buildBodyEditState, buildHandleEditState } from '../features/viewer/app/measurements/selection';
+import { buildLineRenderModels, buildPolygonRenderModels } from '../features/viewer/app/measurements/renderModels';
+import { buildTrackingMaps, type LineTrackResponse, type PolygonTrackResponse } from '../features/viewer/app/measurements/trackingMaps';
+import {
+  createMeasurementInstanceResolver,
+  filterMeasurementsForInstance,
+} from '../features/viewer/app/measurements/measurementSelectors';
+import {
+  interpolateTrackFrame,
+  smoothLineTracks,
+  smoothPolygonTracks,
+} from '../features/viewer/app/tracking/trackSmoothing';
+import { COPILOT_TEMPLATES, type CopilotRequirement } from '../features/viewer/domain/copilot';
+import { clamp, lerp } from '../features/viewer/domain/math';
+import { HORALIX_MEASUREMENT_OPTIONS } from '../features/viewer/domain/measurementOptions';
+import type { ViewerToolId } from '../features/viewer/domain/tools';
+import { inferEchoView, labelHasKeyword, normalizeLabel, normalizeText, parseOptionalNumber } from '../features/viewer/domain/text';
+import { normalizeTrackingPoints, resampleClosedPolygon } from '../features/viewer/domain/tracking';
+import { getFrameImageUrl as buildFrameImageUrl, getFrameUrlForIndex, type RenderOptions } from '../features/viewer/infra/dicom/frameUrls';
+import { prefetchAdjacentFrames, prefetchFullSeries, prefetchWarmFrames } from '../features/viewer/infra/dicom/prefetch';
 import { useMeasurementStore } from '../features/viewer/hooks/useMeasurementStore';
 import { useMPRStore } from '../features/viewer/hooks/useMPRStore';
+import { VIEWER_TOOL_CONFIGS } from '../features/viewer/ui/tools/toolConfig';
 import type {
   LineMeasurement as NewLineMeasurement,
   PolygonMeasurement as NewPolygonMeasurement,
   Point2D,
-  VolumeInfo as MprVolumeInfo,
 } from '../features/viewer/types';
 import { isLineMeasurement, isPolygonMeasurement, smoothPolygon } from '../features/viewer/types';
 import { calculatePolygonAreaMm2, calculatePerimeterMm } from '../features/viewer/services/geometryService';
@@ -101,645 +193,15 @@ import {
   generateCSVExport,
   type ExportFormat,
 } from '../features/viewer/services/exportService';
-import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
-
-type FrameIndex = {
-  instanceUid: string;
-  frameIndex: number;
-  rows: number | null;
-  columns: number | null;
-  instanceNumber: number | null;
-  numberOfFrames: number;
-};
-
-type ViewportState = {
-  zoom: number;
-  pan: { x: number; y: number };
-  windowLevel: { center: number; width: number };
-  rotation: number;
-  sliceIndex: number;
-};
-
-type Measurement = {
-  id: string;
-  start: { x: number; y: number };
-  end: { x: number; y: number };
-  lengthMm: number | null;
-};
-
-type MetadataDraft = {
-  patient: {
-    patient_id: string;
-    patient_name: string;
-    birth_date: string;
-    sex: string;
-    issuer_of_patient_id: string;
-    other_patient_ids: string;
-    ethnic_group: string;
-    comments: string;
-  };
-  study: {
-    study_id: string;
-    study_date: string;
-    study_time: string;
-    study_description: string;
-    accession_number: string;
-    referring_physician_name: string;
-    institution_name: string;
-  };
-  series: {
-    series_number: string;
-    series_description: string;
-    body_part_examined: string;
-    patient_position: string;
-    protocol_name: string;
-    slice_thickness: string;
-    spacing_between_slices: string;
-    window_center: string;
-    window_width: string;
-  };
-};
-
-type DragState = {
-  tool: 'pan' | 'zoom' | 'wwwl' | 'measure' | 'polygon' | 'rotate' | 'pointer';
-  startX: number;
-  startY: number;
-  startPan: { x: number; y: number };
-  startZoom: number;
-  startWindow: { center: number; width: number };
-  startRotation?: number;
-  measureStart?: { x: number; y: number };
-  measureId?: string;
-  measureFrameKey?: string;
-  measureSeriesKey?: string;
-  measureScope?: 'frame' | 'cine';
-};
-
-type PolygonMeasurement = {
-  id: string;
-  points: { x: number; y: number }[];
-  areaMm2: number | null;
-  perimeterMm: number | null;
-};
-
-type SegmentPromptPoint = {
-  x: number;
-  y: number;
-  label: 0 | 1;
-};
-
-type InteractiveSegmentationResult = {
-  id: string;
-  seriesUid: string;
-  instanceUid: string;
-  frameIndex: number;
-  maskFilename: string;
-  maskShape: number[];
-  createdAt: number;
-  primaryContour: Point2D[];
-};
-
-type CineBookmark = {
-  id: string;
-  frameIndex: number;
-  label: string;
-  createdAt: number;
-};
-
-type CopilotRequirement = {
-  id: string;
-  label: string;
-  type: 'line' | 'polygon' | 'derived' | 'any';
-  keywords: string[];
-  optional?: boolean;
-  description?: string;
-};
-
-type CopilotTemplate = {
-  id: string;
-  label: string;
-  requirements: CopilotRequirement[];
-};
-
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
-const lerp = (start: number, end: number, t: number) => start + (end - start) * t;
-const normalizeText = (value?: string | null) => {
-  if (!value) return null;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
-};
-const parseOptionalNumber = (value?: string | null) => {
-  const normalized = normalizeText(value);
-  if (normalized === null) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-};
-const resampleClosedPolygon = (points: Point2D[], targetCount: number) => {
-  if (points.length < 3 || targetCount <= 0 || points.length === targetCount) {
-    return points;
-  }
-
-  const closed = [...points, points[0]];
-  const distances: number[] = [0];
-  let total = 0;
-  for (let i = 1; i < closed.length; i += 1) {
-    const dx = closed[i].x - closed[i - 1].x;
-    const dy = closed[i].y - closed[i - 1].y;
-    const segment = Math.sqrt(dx * dx + dy * dy);
-    total += segment;
-    distances.push(total);
-  }
-
-  if (total === 0) return points;
-  const step = total / targetCount;
-  const resampled: Point2D[] = [];
-  let segIndex = 1;
-
-  for (let i = 0; i < targetCount; i += 1) {
-    const targetDist = i * step;
-    while (segIndex < distances.length - 1 && distances[segIndex] < targetDist) {
-      segIndex += 1;
-    }
-    const prevDist = distances[segIndex - 1];
-    const nextDist = distances[segIndex];
-    const ratio = nextDist - prevDist === 0 ? 0 : (targetDist - prevDist) / (nextDist - prevDist);
-    const p1 = closed[segIndex - 1];
-    const p2 = closed[segIndex];
-    resampled.push({
-      x: p1.x + (p2.x - p1.x) * ratio,
-      y: p1.y + (p2.y - p1.y) * ratio,
-    });
-  }
-
-  return resampled;
-};
-const TRACKING_POINT_LIMIT = 96;
-const normalizeTrackingPoints = (points: Point2D[], targetCount = TRACKING_POINT_LIMIT) => {
-  if (points.length <= 2) return points;
-  const capped = Math.max(3, Math.min(points.length, targetCount));
-  if (points.length > capped) {
-    return resampleClosedPolygon(points, capped);
-  }
-  return points;
-};
-const normalizeLabel = (value?: string | null) => {
-  if (!value) return '';
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-};
-const labelHasKeyword = (label: string, keywords: string[]) =>
-  keywords.some((keyword) => {
-    const normalizedKeyword = keyword.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    return normalizedKeyword ? label.includes(normalizedKeyword) : false;
-  });
-
-const MAX_IMAGE_CACHE = 160;
-const DEFAULT_CINE_FPS = 15;
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 8;
-const ZOOM_STEP = 0.02;
-const WHEEL_ZOOM_SPEED = 0.0005;
-const DRAG_ZOOM_DENOMINATOR = 1600;
-const WHEEL_SCROLL_THRESHOLD = 60;
-const WHEEL_MAX_SLICE_STEP = 8;
-const PREVIEW_SMOOTHING = 0.35;
-
-const COPILOT_TEMPLATES: Record<string, CopilotTemplate> = {
-  echo: {
-    id: 'echo',
-    label: 'Echo Core Measurements',
-    requirements: [
-      {
-        id: 'lvedd',
-        label: 'LV end-diastolic diameter',
-        type: 'line',
-        keywords: ['lvedd', 'lv end diastolic', 'lv end-diastolic', 'lv diastolic'],
-      },
-      {
-        id: 'lvesd',
-        label: 'LV end-systolic diameter',
-        type: 'line',
-        keywords: ['lvesd', 'lv end systolic', 'lv end-systolic', 'lv systolic'],
-      },
-      {
-        id: 'lv_mass_index',
-        label: 'LV mass index',
-        type: 'derived',
-        keywords: ['lv mass', 'mass index'],
-        optional: true,
-      },
-      {
-        id: 'tr_vmax',
-        label: 'TR Vmax',
-        type: 'line',
-        keywords: ['tr vmax', 'tr velocity', 'tr jet'],
-        optional: true,
-      },
-      {
-        id: 'rv_size',
-        label: 'RV size',
-        type: 'line',
-        keywords: ['rv size', 'right ventricle', 'rv'],
-      },
-      {
-        id: 'la_size',
-        label: 'LA size',
-        type: 'line',
-        keywords: ['left atrium', 'la'],
-      },
-      {
-        id: 'lvot',
-        label: 'LVOT diameter',
-        type: 'line',
-        keywords: ['lvot', 'lv outflow'],
-      },
-      {
-        id: 'ef',
-        label: 'Ejection fraction',
-        type: 'derived',
-        keywords: ['ef', 'ejection fraction'],
-      },
-    ],
-  },
-  ct: {
-    id: 'ct',
-    label: 'CT Baseline Measurements',
-    requirements: [
-      {
-        id: 'lesion_long',
-        label: 'Target lesion long axis',
-        type: 'line',
-        keywords: ['long axis', 'long-axis', 'long diameter', 'lesion long'],
-      },
-      {
-        id: 'lesion_short',
-        label: 'Target lesion short axis',
-        type: 'line',
-        keywords: ['short axis', 'short-axis', 'short diameter', 'lesion short'],
-      },
-      {
-        id: 'lesion_area',
-        label: 'Target lesion area',
-        type: 'polygon',
-        keywords: ['lesion area', 'area'],
-        optional: true,
-      },
-      {
-        id: 'node_short',
-        label: 'Lymph node short axis',
-        type: 'line',
-        keywords: ['node short', 'lymph node', 'node axis'],
-        optional: true,
-      },
-    ],
-  },
-  mr: {
-    id: 'mr',
-    label: 'MR Baseline Measurements',
-    requirements: [
-      {
-        id: 'volume_ed',
-        label: 'End-diastolic volume',
-        type: 'polygon',
-        keywords: ['edv', 'end diastolic volume', 'end-diastolic volume'],
-      },
-      {
-        id: 'volume_es',
-        label: 'End-systolic volume',
-        type: 'polygon',
-        keywords: ['esv', 'end systolic volume', 'end-systolic volume'],
-      },
-      {
-        id: 'ef',
-        label: 'Ejection fraction',
-        type: 'derived',
-        keywords: ['ef', 'ejection fraction'],
-      },
-    ],
-  },
-  general: {
-    id: 'general',
-    label: 'Core Measurement Checklist',
-    requirements: [
-      {
-        id: 'primary_length',
-        label: 'Primary length',
-        type: 'line',
-        keywords: ['length', 'diameter', 'distance'],
-      },
-      {
-        id: 'primary_area',
-        label: 'Primary area',
-        type: 'polygon',
-        keywords: ['area', 'region'],
-        optional: true,
-      },
-      {
-        id: 'secondary_length',
-        label: 'Secondary length',
-        type: 'line',
-        keywords: ['short', 'secondary'],
-        optional: true,
-      },
-    ],
-  },
-};
-
-const getCopilotTemplateKey = (modality: string | undefined, description: string) => {
-  const normalized = `${modality ?? ''} ${description}`.toLowerCase();
-  if (normalized.includes('echo') || normalized.includes('echocardiogram') || normalized.includes('cardiac') || modality === 'US') {
-    return 'echo';
-  }
-  if (modality === 'CT') return 'ct';
-  if (modality === 'MR') return 'mr';
-  return 'general';
-};
-
-type TrackFramePoints = {
-  frame_index: number;
-  points: Point2D[];
-  length_mm?: number | null;
-  area_mm2?: number | null;
-  valid?: boolean;
-};
-
-type PolygonTrackFrame = {
-  frame_index: number;
-  points: Point2D[];
-  area_mm2: number | null;
-};
-
-const sortTrackFrames = <T extends TrackFramePoints>(frames: T[]) =>
-  [...frames].sort((a, b) => a.frame_index - b.frame_index);
-
-const smoothTrackFramesTemporal = <T extends TrackFramePoints>(frames: T[], window: number): T[] => {
-  const safeWindow = Math.max(0, Math.floor(window));
-  if (safeWindow <= 0 || frames.length <= 1) return frames;
-
-  const sorted = sortTrackFrames(frames);
-  const pointCount = sorted[0]?.points.length ?? 0;
-  if (pointCount === 0) return sorted;
-
-  const consistent = sorted.every((frame) => frame.points.length === pointCount);
-  if (!consistent) return sorted;
-
-  return sorted.map((frame, index) => {
-    const start = Math.max(0, index - safeWindow);
-    const end = Math.min(sorted.length - 1, index + safeWindow);
-    const sampleCount = end - start + 1;
-
-    const points = Array.from({ length: pointCount }, (_, pointIndex) => {
-      let sumX = 0;
-      let sumY = 0;
-      for (let i = start; i <= end; i += 1) {
-        const p = sorted[i].points[pointIndex];
-        sumX += p.x;
-        sumY += p.y;
-      }
-      return { x: sumX / sampleCount, y: sumY / sampleCount };
-    });
-
-    return { ...frame, points } as T;
-  });
-};
-
-const interpolateTrackFrame = <T extends TrackFramePoints>(
-  frames: T[],
-  frameIndex: number
-): T | null => {
-  if (!frames.length) return null;
-  const sorted = sortTrackFrames(frames);
-  const exact = sorted.find((frame) => frame.frame_index === frameIndex);
-  if (exact) return exact;
-
-  let prev: T | null = null;
-  let next: T | null = null;
-  for (const frame of sorted) {
-    if (frame.frame_index < frameIndex) {
-      prev = frame;
-      continue;
-    }
-    if (frame.frame_index > frameIndex) {
-      next = frame;
-      break;
-    }
-  }
-
-  if (!prev && !next) return null;
-  if (!prev) return next;
-  if (!next) return prev;
-
-  const delta = next.frame_index - prev.frame_index;
-  if (delta <= 0) return prev;
-  if (prev.points.length !== next.points.length) return prev;
-
-  const t = (frameIndex - prev.frame_index) / delta;
-  const points = prev.points.map((point, index) => ({
-    x: lerp(point.x, next.points[index].x, t),
-    y: lerp(point.y, next.points[index].y, t),
-  }));
-
-  const lengthMm =
-    prev.length_mm != null && next.length_mm != null
-      ? lerp(prev.length_mm, next.length_mm, t)
-      : prev.length_mm ?? next.length_mm;
-  const areaMm2 =
-    prev.area_mm2 != null && next.area_mm2 != null
-      ? lerp(prev.area_mm2, next.area_mm2, t)
-      : prev.area_mm2 ?? next.area_mm2 ?? null;
-
-  return {
-    ...prev,
-    frame_index: frameIndex,
-    points,
-    length_mm: lengthMm ?? null,
-    area_mm2: areaMm2 ?? null,
-    valid: prev.valid ?? next.valid,
-  } as T;
-};
-
-const smoothLineTracks = (
-  tracks: Record<string, TrackMeasurementResponse>,
-  window: number
-): Record<string, TrackMeasurementResponse> => {
-  if (window <= 0) return tracks;
-  const smoothed: Record<string, TrackMeasurementResponse> = {};
-  for (const [id, track] of Object.entries(tracks)) {
-    smoothed[id] = {
-      ...track,
-      frames: smoothTrackFramesTemporal(track.frames, window),
-    };
-  }
-  return smoothed;
-};
-
-const smoothPolygonTracks = (
-  tracks: Record<string, { frames: PolygonTrackFrame[] }>,
-  window: number
-): Record<string, { frames: PolygonTrackFrame[] }> => {
-  if (window <= 0) return tracks;
-  const smoothed: Record<string, { frames: PolygonTrackFrame[] }> = {};
-  for (const [id, track] of Object.entries(tracks)) {
-    smoothed[id] = {
-      ...track,
-      frames: smoothTrackFramesTemporal(track.frames, window),
-    };
-  }
-  return smoothed;
-};
-
-const buildPathFromPoints = (points: Point2D[], closed: boolean = true): string => {
-  if (points.length === 0) return '';
-  const commands = points.map((p, index) => `${index === 0 ? 'M' : 'L'} ${p.x} ${p.y}`);
-  if (closed && points.length > 2) {
-    commands.push('Z');
-  }
-  return commands.join(' ');
-};
-
-const getTrailFrames = <T extends TrackFramePoints>(
-  frames: T[],
-  currentIndex: number,
-  trailLength: number
-): Array<{ frame: T; distance: number }> => {
-  if (trailLength <= 0) return [];
-  return frames
-    .map((frame) => ({
-      frame,
-      distance: Math.abs(frame.frame_index - currentIndex),
-    }))
-    .filter((entry) => entry.distance > 0 && entry.distance <= trailLength)
-    .sort((a, b) => a.distance - b.distance);
-};
-
-const getTrailOpacity = (distance: number, trailLength: number): number => {
-  if (trailLength <= 0) return 0;
-  const normalized = (trailLength - distance + 1) / (trailLength + 1);
-  return Math.max(0.05, Math.min(0.35, 0.05 + normalized * 0.25));
-};
-
-const rotatePoint = (x: number, y: number, angle: number) => {
-  const normalized = ((angle % 360) + 360) % 360;
-  switch (normalized) {
-    case 0:
-      return { x, y };
-    case 90:
-      return { x: y, y: -x };
-    case 180:
-      return { x: -x, y: -y };
-    case 270:
-      return { x: -y, y: x };
-    default: {
-      const radians = (normalized * Math.PI) / 180;
-      const cos = Math.cos(radians);
-      const sin = Math.sin(radians);
-      return {
-        x: x * cos - y * sin,
-        y: x * sin + y * cos,
-      };
-    }
-  }
-};
-
-const getAxisLabel = (vector: [number, number, number]) => {
-  const abs = vector.map((v) => Math.abs(v));
-  const maxIndex = abs.indexOf(Math.max(...abs));
-  const value = vector[maxIndex];
-  if (maxIndex === 0) return value >= 0 ? 'L' : 'R';
-  if (maxIndex === 1) return value >= 0 ? 'P' : 'A';
-  return value >= 0 ? 'H' : 'F';
-};
-
-const getOrientationMarkers = (orientation?: number[] | null) => {
-  if (!orientation || orientation.length !== 6) return null;
-  const row: [number, number, number] = [orientation[0], orientation[1], orientation[2]];
-  const col: [number, number, number] = [orientation[3], orientation[4], orientation[5]];
-  return {
-    left: getAxisLabel([-row[0], -row[1], -row[2]]),
-    right: getAxisLabel(row),
-    top: getAxisLabel([-col[0], -col[1], -col[2]]),
-    bottom: getAxisLabel(col),
-  };
-};
-
-const defaultPreset = { name: 'Default', center: 40, width: 400 };
-
-const modalityPresets: Record<string, Array<{ name: string; center: number; width: number }>> = {
-  CT: [
-    { name: 'Soft Tissue', center: 40, width: 400 },
-    { name: 'Lung', center: -600, width: 1500 },
-    { name: 'Bone', center: 300, width: 1500 },
-    { name: 'Brain', center: 40, width: 80 },
-  ],
-  MR: [
-    { name: 'Default', center: 40, width: 400 },
-    { name: 'T1', center: 500, width: 1000 },
-    { name: 'T2', center: 300, width: 1200 },
-  ],
-  XR: [{ name: 'Default', center: 1500, width: 3000 }],
-  CR: [{ name: 'Default', center: 1500, width: 3000 }],
-  DX: [{ name: 'Default', center: 1500, width: 3000 }],
-  US: [{ name: 'Default', center: 40, width: 400 }],
-  PT: [{ name: 'Default', center: 50, width: 350 }],
-};
-
-const defaultWindowLevel = { center: defaultPreset.center, width: defaultPreset.width };
-
-const buildFrameIndex = (instances: Instance[]): FrameIndex[] => {
-  const frames: FrameIndex[] = [];
-  instances.forEach((instance) => {
-    const count = Math.max(1, instance.number_of_frames ?? 1);
-    for (let i = 0; i < count; i += 1) {
-      frames.push({
-        instanceUid: instance.sop_instance_uid,
-        frameIndex: i,
-        rows: instance.rows ?? null,
-        columns: instance.columns ?? null,
-        instanceNumber: instance.instance_number ?? null,
-        numberOfFrames: count,
-      });
-    }
-  });
-  return frames;
-};
-
-const buildOrientationMatrix = (orientation?: number[] | null): number[][] => {
-  if (!orientation || orientation.length < 6) {
-    return [
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1],
-    ];
-  }
-
-  const row = orientation.slice(0, 3);
-  const col = orientation.slice(3, 6);
-  const normal = [
-    row[1] * col[2] - row[2] * col[1],
-    row[2] * col[0] - row[0] * col[2],
-    row[0] * col[1] - row[1] * col[0],
-  ];
-
-  return [row, col, normal];
-};
-
-const buildMprVolumeInfo = (
-  info: VolumeInfo,
-  windowLevel: { center: number; width: number }
-): MprVolumeInfo => ({
-  dimensions: [info.dimensions.x, info.dimensions.y, info.dimensions.z],
-  spacing: [info.spacing.x, info.spacing.y, info.spacing.z],
-  origin: info.origin,
-  orientation: buildOrientationMatrix(info.orientation),
-  modality: info.modality,
-  seriesUid: info.series_uid,
-  pixelRange: {
-    min: windowLevel.center - windowLevel.width / 2,
-    max: windowLevel.center + windowLevel.width / 2,
-  },
-});
 
 const ViewerPage: React.FC = () => {
-  const { studyUid } = useParams<{ studyUid: string }>();
+  const theme = useTheme();
+  const { studyUid: studyUidParam } = useParams<{ studyUid: string }>();
+  const studyUid = studyUidParam ?? null;
+  const patientContextKey = useMemo(
+    () => (studyUid ? `horalix_patient_context_${studyUid}` : null),
+    [studyUid]
+  );
   const navigate = useNavigate();
   const viewportRef = useRef<HTMLDivElement>(null);
   const dragStateRef = useRef<DragState | null>(null);
@@ -749,6 +211,8 @@ const ViewerPage: React.FC = () => {
   const viewportStateRef = useRef(new Map<string, ViewportState>());
   const thumbnailCacheRef = useRef(new Map<string, string>());
   const prefetchedSeriesRef = useRef(new Set<string>());
+  const prefetchedFullSeriesRef = useRef(new Set<string>());
+  const fullPrefetchTokenRef = useRef(0);
   const activeSeriesUidRef = useRef<string | null>(null);
   const viewStateRef = useRef<ViewportState>({
     zoom: 1,
@@ -765,6 +229,8 @@ const ViewerPage: React.FC = () => {
   const lastPointerRef = useRef<{ x: number; y: number } | null>(null);
   const wheelAccumulatorRef = useRef(0);
   const lastWheelTimeRef = useRef(0);
+  const frameRenderStatsRef = useRef({ count: 0, totalMs: 0, lastLog: 0 });
+  const cinePerfRef = useRef({ frames: 0, slowFrames: 0, lastLog: 0 });
 
   // Data state
   const [study, setStudy] = useState<Study | null>(null);
@@ -772,6 +238,7 @@ const ViewerPage: React.FC = () => {
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeries, setSelectedSeries] = useState<SeriesDetailResponse | null>(null);
   const [aiModels, setAIModels] = useState<AIModel[]>([]);
+  const [patientContextOverride, setPatientContextOverride] = useState<PatientContext | null>(null);
   const [aiResults, setAiResults] = useState<null | {
     study_uid: string;
     total_jobs: number;
@@ -802,20 +269,50 @@ const ViewerPage: React.FC = () => {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [rotation, setRotation] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [activeTool, setActiveTool] = useState<
-    'pointer' | 'pan' | 'zoom' | 'wwwl' | 'measure' | 'rotate' | 'polygon' | 'segment'
-  >('pointer');
+  const [activeTool, setActiveTool] = useState<ViewerToolId>('pointer');
   const [showSeriesPanel, setShowSeriesPanel] = useState(true);
   const [showInfoPanel, setShowInfoPanel] = useState(false);
   const [showMeasurementPanel, setShowMeasurementPanel] = useState(false);
+  const [showAiResultsPanel, setShowAiResultsPanel] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState<null | HTMLElement>(null);
-  const [showAiOverlay, setShowAiOverlay] = useState(true);
+
+  useEffect(() => {
+    if (!patientContextKey) return;
+    const raw = localStorage.getItem(patientContextKey);
+    if (!raw) {
+      setPatientContextOverride(null);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(raw) as PatientContext;
+      setPatientContextOverride(parsed);
+    } catch {
+      setPatientContextOverride(null);
+    }
+  }, [patientContextKey]);
+
+  const persistPatientContext = useCallback(
+    (context: PatientContext | null) => {
+      if (!patientContextKey) return;
+      if (context) {
+        localStorage.setItem(patientContextKey, JSON.stringify(context));
+      } else {
+        localStorage.removeItem(patientContextKey);
+      }
+    },
+    [patientContextKey]
+  );
+  const [showAiOverlay, setShowAiOverlay] = useState(false);
+  const [showMeasurementOverlay, setShowMeasurementOverlay] = useState(true);
+  const [showContourOverlay, setShowContourOverlay] = useState(true);
   const [aiMenuAnchor, setAIMenuAnchor] = useState<null | HTMLElement>(null);
   const [wlMenuAnchor, setWlMenuAnchor] = useState<null | HTMLElement>(null);
   const [seriesThumbnails, setSeriesThumbnails] = useState<Record<string, string>>({});
   const [smartHangDetails, setSmartHangDetails] = useState<Record<string, SeriesDetailResponse>>({});
   const [currentInstanceMeta, setCurrentInstanceMeta] = useState<Instance | null>(null);
-  const [activeMeasurement, setActiveMeasurement] = useState<Measurement | null>(null);
+  const [activeInstanceUid, setActiveInstanceUid] = useState<string | null>(null);
+  const [instanceMenuAnchor, setInstanceMenuAnchor] = useState<null | HTMLElement>(null);
+  const [activeMeasurement, setActiveMeasurement] = useState<LegacyLineMeasurement | null>(null);
   const [layoutMode, setLayoutMode] = useState<'single' | 'mpr' | 'smart'>('single');
   const [polygonPreviewPoint, setPolygonPreviewPoint] = useState<Point2D | null>(null);
   const [smoothContoursEnabled, setSmoothContoursEnabled] = useState(true);
@@ -829,30 +326,40 @@ const ViewerPage: React.FC = () => {
   const [guidelineCopilotEnabled, setGuidelineCopilotEnabled] = useState(true);
   const [copilotShowPhases, setCopilotShowPhases] = useState(false);
   const [segmentPromptPoints, setSegmentPromptPoints] = useState<SegmentPromptPoint[]>([]);
-  const [segmentContourPoints, setSegmentContourPoints] = useState(32);
+  const [segmentContourPoints, setSegmentContourPoints] = useState(64);
   const [segmentPointMode, setSegmentPointMode] = useState<0 | 1>(1);
   const [segmentAutoRun, setSegmentAutoRun] = useState(true);
+  const [segmentAutoSeed, setSegmentAutoSeed] = useState(true);
+  const [segmentAutoPointCount, setSegmentAutoPointCount] = useState(5);
+  const [segmentAutoPointRadius, setSegmentAutoPointRadius] = useState(10);
+  const [segmentAutoNegativePoints, setSegmentAutoNegativePoints] = useState(true);
+  const [segmentAutoBox, setSegmentAutoBox] = useState(true);
+  const [segmentAutoBoxScale, setSegmentAutoBoxScale] = useState(0.35);
   const [segmentRunning, setSegmentRunning] = useState(false);
+  const [lastSegmentContour, setLastSegmentContour] = useState<Point2D[] | null>(null);
+  const [lastSegmentMeasurementId, setLastSegmentMeasurementId] = useState<string | null>(null);
+  const [polygonSamplingPreset, setPolygonSamplingPreset] = useState<'sparse' | 'balanced' | 'dense'>('balanced');
   const [medsamPreloading, setMedsamPreloading] = useState(false);
   const [interactiveSegmentations, setInteractiveSegmentations] = useState<InteractiveSegmentationResult[]>([]);
+  const [measurementsModelDialogOpen, setMeasurementsModelDialogOpen] = useState(false);
+  const [measurementsModelSelection, setMeasurementsModelSelection] = useState('lvid');
+  const [pendingAiModel, setPendingAiModel] = useState<AIModel | null>(null);
   // Polygon drawing state
-  const [activePolygon, setActivePolygon] = useState<PolygonMeasurement | null>(null);
-  const [polygonsByFrame, setPolygonsByFrame] = useState<Record<string, PolygonMeasurement[]>>({});
-  const [polygonsBySeries, setPolygonsBySeries] = useState<Record<string, PolygonMeasurement[]>>({});
+  const [activePolygon, setActivePolygon] = useState<LegacyPolygonMeasurement | null>(null);
+  const activePolygonRef = useRef<LegacyPolygonMeasurement | null>(null);
+  const freehandPolygonRef = useRef<{ active: boolean; lastPoint: Point2D | null }>({
+    active: false,
+    lastPoint: null,
+  });
+  const [polygonsByFrame, setPolygonsByFrame] = useState<Record<string, LegacyPolygonMeasurement[]>>({});
+  const [polygonsBySeries, setPolygonsBySeries] = useState<Record<string, LegacyPolygonMeasurement[]>>({});
   const [selectedMeasurementIdLocal, setSelectedMeasurementIdLocal] = useState<string | null>(null);
   // Editing state for pointer tool - tracks dragging of measurement points
-  const [editingMeasurement, setEditingMeasurement] = useState<{
-    id: string;
-    type: 'line' | 'polygon';
-    mode: 'move' | 'handle';
-    handleIndex?: number;
-    startImagePoint: { x: number; y: number };
-    originalPoints: Array<{ x: number; y: number }>;
-  } | null>(null);
-  const [measurementsByFrame, setMeasurementsByFrame] = useState<Record<string, Measurement[]>>(
+  const [editingMeasurement, setEditingMeasurement] = useState<MeasurementEditState | null>(null);
+  const [measurementsByFrame, setMeasurementsByFrame] = useState<Record<string, LegacyLineMeasurement[]>>(
     {}
   );
-  const [measurementsBySeries, setMeasurementsBySeries] = useState<Record<string, Measurement[]>>(
+  const [measurementsBySeries, setMeasurementsBySeries] = useState<Record<string, LegacyLineMeasurement[]>>(
     {}
   );
   const [measurementScope, setMeasurementScope] = useState<'frame' | 'cine'>(() => {
@@ -860,18 +367,15 @@ const ViewerPage: React.FC = () => {
     const storedScope = localStorage.getItem('viewer_measurement_scope');
     return storedScope === 'frame' ? 'frame' : 'cine';
   });
-  const [measurementTracks, setMeasurementTracks] = useState<
-    Record<string, TrackMeasurementResponse>
-  >({});
-  const [polygonTracks, setPolygonTracks] = useState<
-    Record<string, { frames: Array<{ frame_index: number; points: Array<{ x: number; y: number }>; area_mm2: number | null }> }>
-  >({});
+  const [measurementTracks, setMeasurementTracks] = useState<Record<string, LineTrackResponse>>({});
+  const [polygonTracks, setPolygonTracks] = useState<Record<string, PolygonTrackResponse>>({});
   const [trackingMeasurementId, setTrackingMeasurementId] = useState<string | null>(null);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [isDragging, setIsDragging] = useState(false);
 
   // AI job state
   const [aiJobRunning, setAiJobRunning] = useState(false);
+  const [aiJobProgress, setAiJobProgress] = useState<number | null>(null);
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [displayedImageUrl, setDisplayedImageUrl] = useState<string | null>(null);
@@ -902,6 +406,23 @@ const ViewerPage: React.FC = () => {
 
   // EF Calculator dialog state
   const [efCalculatorOpen, setEfCalculatorOpen] = useState(false);
+
+  useEffect(() => {
+    activePolygonRef.current = activePolygon;
+  }, [activePolygon]);
+
+  useEffect(() => {
+    if (activeTool !== 'polygon') {
+      freehandPolygonRef.current.active = false;
+      freehandPolygonRef.current.lastPoint = null;
+    }
+  }, [activeTool]);
+
+  const freehandPointSpacing = useMemo(() => {
+    if (polygonSamplingPreset === 'dense') return 3;
+    if (polygonSamplingPreset === 'sparse') return 10;
+    return 6;
+  }, [polygonSamplingPreset]);
   const [efEdvMeasurementId, setEfEdvMeasurementId] = useState<string | null>(null);
   const [efEsvMeasurementId, setEfEsvMeasurementId] = useState<string | null>(null);
 
@@ -923,6 +444,52 @@ const ViewerPage: React.FC = () => {
     `Series ${selectedSeries?.series.series_number ?? '-'}`;
   const seriesKey = selectedSeries?.series.series_instance_uid ?? null;
   const isUltrasound = selectedSeries?.series.modality === 'US';
+  const has3dData =
+    !!selectedSeries?.has_3d_data &&
+    (selectedSeries?.series.num_instances ?? 0) > 1;
+  const seriesInstances = useMemo(() => selectedSeries?.instances ?? [], [selectedSeries]);
+  const shouldGroupByInstance = useMemo(() => {
+    if (has3dData) return false;
+    if (isUltrasound && seriesInstances.length > 1) return true;
+    return seriesInstances.some((instance) => (instance.number_of_frames ?? 1) > 1);
+  }, [has3dData, isUltrasound, seriesInstances]);
+  const cineGrouping: 'instance' | 'series' = shouldGroupByInstance ? 'instance' : 'series';
+  const activeInstance = useMemo(() => {
+    if (!activeInstanceUid) return null;
+    return (
+      seriesInstances.find((instance) => instance.sop_instance_uid === activeInstanceUid) ?? null
+    );
+  }, [seriesInstances, activeInstanceUid]);
+  const activeInstanceIndex = useMemo(() => {
+    if (cineGrouping !== 'instance') return -1;
+    if (!activeInstanceUid || seriesInstances.length === 0) return -1;
+    return seriesInstances.findIndex(
+      (instance) => instance.sop_instance_uid === activeInstanceUid
+    );
+  }, [seriesInstances, activeInstanceUid, cineGrouping]);
+  const instanceLabelByUid = useMemo(() => {
+    if (cineGrouping !== 'instance') return {};
+    const map: Record<string, string> = {};
+    seriesInstances.forEach((instance, index) => {
+      const base = `Cine ${index + 1}`;
+      const suffix = instance.instance_number != null ? ` (#${instance.instance_number})` : '';
+      map[instance.sop_instance_uid] = `${base}${suffix}`;
+    });
+    return map;
+  }, [seriesInstances, cineGrouping]);
+  const activeInstanceFrameCount = useMemo(() => {
+    const fromSeries = activeInstance?.number_of_frames ?? null;
+    const fromMeta = currentInstanceMeta?.number_of_frames ?? null;
+    const fallback = frameIndex.length || 1;
+    const candidate = fromSeries ?? fromMeta ?? fallback;
+    return Math.max(1, candidate ?? 1);
+  }, [activeInstance, currentInstanceMeta, frameIndex.length]);
+  const canUseCineMeasurements =
+    cineGrouping === 'instance' ? activeInstanceFrameCount > 1 : totalSlices > 1;
+  const effectiveMeasurementScope = useMemo<'frame' | 'cine'>(
+    () => (canUseCineMeasurements ? measurementScope : 'frame'),
+    [canUseCineMeasurements, measurementScope]
+  );
   const medsamModel = useMemo(() => aiModels.find((model) => model.name === 'medsam'), [aiModels]);
   const medsamStatus = medsamModel?.status ?? 'unknown';
   const medsamStatusLabel = useMemo(() => {
@@ -951,6 +518,51 @@ const ViewerPage: React.FC = () => {
         return 'default';
     }
   }, [medsamStatus]);
+  const formatAiModelLabel = useCallback((name: string) => {
+    if (name === 'horalix_ai') return 'Horalix AI Echo';
+    if (!name.startsWith('horalix_ai_')) return name;
+    const suffix = name.replace('horalix_ai_', '').replace(/_/g, ' ');
+    const label = suffix.replace(/\b\w/g, (char) => char.toUpperCase());
+    return `Horalix AI - ${label}`;
+  }, []);
+  const getSeriesViewLabel = useCallback((series: Series) => {
+    if (series.modality !== 'US') return null;
+    const text = `${series.series_description ?? ''} ${series.protocol_name ?? ''} ${
+      series.body_part_examined ?? ''
+    }`;
+    return inferEchoView(text);
+  }, []);
+  const selectedSeriesViewLabel = useMemo(
+    () => (selectedSeries ? getSeriesViewLabel(selectedSeries.series) : null),
+    [selectedSeries, getSeriesViewLabel]
+  );
+  const getCineGrouping = useCallback(
+    (instances: Instance[], series?: Series | null, has3d?: boolean) => {
+      if (has3d) return 'series';
+      const isUs = series?.modality === 'US';
+      if (isUs && instances.length > 1) return 'instance';
+      return instances.some((instance) => (instance.number_of_frames ?? 1) > 1)
+        ? 'instance'
+        : 'series';
+    },
+    []
+  );
+  const buildFramesForSelection = useCallback(
+    (instances: Instance[], instanceUid: string | null, grouping?: 'instance' | 'series') => {
+      if (instances.length === 0) return [];
+      const mode = grouping ?? 'series';
+      if (mode === 'instance' && instanceUid) {
+        const selected = instances.find(
+          (instance) => instance.sop_instance_uid === instanceUid
+        );
+        if (selected) {
+          return buildFrameIndex([selected]);
+        }
+      }
+      return buildFrameIndex(instances);
+    },
+    []
+  );
 
   const smartHangSeries = useMemo(() => {
     if (seriesList.length === 0) return [];
@@ -1013,6 +625,20 @@ const ViewerPage: React.FC = () => {
     return ordered.slice(0, 4);
   }, [seriesList, selectedSeries]);
 
+  const cineSeriesList = useMemo(() => {
+    if (seriesList.length === 0) return [];
+    return seriesList.filter((series) => {
+      if (series.modality !== 'US') return false;
+      if ((series.num_instances ?? 0) > 1) return true;
+      const cached = seriesCacheRef.current.get(series.series_instance_uid);
+      if (cached?.instances?.some((instance) => (instance.number_of_frames ?? 1) > 1)) {
+        return true;
+      }
+      const text = `${series.series_description ?? ''} ${series.protocol_name ?? ''}`.toLowerCase();
+      return text.includes('cine') || text.includes('loop');
+    });
+  }, [seriesList]);
+
   const imageDimensions = useMemo(() => {
     const rows = currentFrame?.rows ?? currentInstanceMeta?.rows ?? 512;
     const columns = currentFrame?.columns ?? currentInstanceMeta?.columns ?? 512;
@@ -1054,9 +680,33 @@ const ViewerPage: React.FC = () => {
 
   // Get measurements for current series from new store
   const newStoreMeasurements = useMemo(() => {
+    void newMeasurements;
     if (!seriesKey) return [];
     return measurementStore.getMeasurementsForSeries(seriesKey);
   }, [seriesKey, measurementStore, newMeasurements]);
+  const resolveMeasurementInstanceUid = useMemo(
+    () =>
+      createMeasurementInstanceResolver(
+        measurementStore.getMeasurement,
+        resolveInstanceUidFromFrameKey,
+      ),
+    [measurementStore],
+  );
+  const contextMeasurements = useMemo(() => {
+    if (!seriesKey) return [];
+    return filterMeasurementsForInstance(
+      newStoreMeasurements,
+      activeInstanceUid,
+      cineGrouping,
+      resolveMeasurementInstanceUid,
+    );
+  }, [
+    seriesKey,
+    activeInstanceUid,
+    cineGrouping,
+    newStoreMeasurements,
+    resolveMeasurementInstanceUid,
+  ]);
 
   const displayMeasurementTracks = useMemo(() => {
     if (!smoothTrackingEnabled || smoothTrackingWindow <= 0) return measurementTracks;
@@ -1071,52 +721,14 @@ const ViewerPage: React.FC = () => {
   useEffect(() => {
     if (editingMeasurement || activeMeasurement || activePolygon) return;
     const allMeasurements = Array.from(measurementStore.measurements.values()).sort(
-      (a, b) => a.createdAt - b.createdAt
+      (a, b) => a.createdAt - b.createdAt,
     );
-    const nextMeasurementsByFrame: Record<string, Measurement[]> = {};
-    const nextMeasurementsBySeries: Record<string, Measurement[]> = {};
-    const nextPolygonsByFrame: Record<string, PolygonMeasurement[]> = {};
-    const nextPolygonsBySeries: Record<string, PolygonMeasurement[]> = {};
-
-    for (const measurement of allMeasurements) {
-      if (isLineMeasurement(measurement)) {
-        const mapped: Measurement = {
-          id: measurement.id,
-          start: measurement.points[0],
-          end: measurement.points[1],
-          lengthMm: measurement.lengthMm ?? null,
-        };
-        if (measurement.scope === 'frame' && measurement.frameKey) {
-          if (!nextMeasurementsByFrame[measurement.frameKey]) {
-            nextMeasurementsByFrame[measurement.frameKey] = [];
-          }
-          nextMeasurementsByFrame[measurement.frameKey].push(mapped);
-        } else {
-          if (!nextMeasurementsBySeries[measurement.seriesUid]) {
-            nextMeasurementsBySeries[measurement.seriesUid] = [];
-          }
-          nextMeasurementsBySeries[measurement.seriesUid].push(mapped);
-        }
-      } else if (isPolygonMeasurement(measurement)) {
-        const mapped: PolygonMeasurement = {
-          id: measurement.id,
-          points: measurement.points,
-          areaMm2: measurement.areaMm2 ?? null,
-          perimeterMm: measurement.perimeterMm ?? null,
-        };
-        if (measurement.scope === 'frame' && measurement.frameKey) {
-          if (!nextPolygonsByFrame[measurement.frameKey]) {
-            nextPolygonsByFrame[measurement.frameKey] = [];
-          }
-          nextPolygonsByFrame[measurement.frameKey].push(mapped);
-        } else {
-          if (!nextPolygonsBySeries[measurement.seriesUid]) {
-            nextPolygonsBySeries[measurement.seriesUid] = [];
-          }
-          nextPolygonsBySeries[measurement.seriesUid].push(mapped);
-        }
-      }
-    }
+    const {
+      measurementsByFrame: nextMeasurementsByFrame,
+      measurementsBySeries: nextMeasurementsBySeries,
+      polygonsByFrame: nextPolygonsByFrame,
+      polygonsBySeries: nextPolygonsBySeries,
+    } = buildLegacyMeasurementMaps(allMeasurements);
 
     setMeasurementsByFrame(nextMeasurementsByFrame);
     setMeasurementsBySeries(nextMeasurementsBySeries);
@@ -1125,46 +737,34 @@ const ViewerPage: React.FC = () => {
   }, [measurementStore, newMeasurements, editingMeasurement, activeMeasurement, activePolygon]);
 
   useEffect(() => {
-    const nextMeasurementTracks: Record<string, TrackMeasurementResponse> = {};
-    const nextPolygonTracks: Record<string, { frames: PolygonTrackFrame[] }> = {};
-
-    for (const [id, tracking] of measurementStore.trackingData.entries()) {
-      const measurement = measurementStore.measurements.get(id);
-      if (!measurement) continue;
-
-      if (measurement.type === 'line') {
-        nextMeasurementTracks[id] = {
-          series_uid: tracking.seriesUid,
-          total_frames: tracking.totalFrames,
-          frames: tracking.frames.map((frame) => ({
-            frame_index: frame.frameIndex,
-            points: frame.points,
-            length_mm: frame.lengthMm,
-            area_mm2: frame.areaMm2 ?? null,
-            valid: frame.valid,
-          })),
-          summary: {
-            min_mm: tracking.summary.minMm ?? null,
-            max_mm: tracking.summary.maxMm ?? null,
-            mean_mm: tracking.summary.meanMm ?? null,
-            min_area_mm2: tracking.summary.minAreaMm2 ?? null,
-            max_area_mm2: tracking.summary.maxAreaMm2 ?? null,
-            mean_area_mm2: tracking.summary.meanAreaMm2 ?? null,
-          },
-        };
-      } else if (measurement.type === 'polygon') {
-        nextPolygonTracks[id] = {
-          frames: tracking.frames.map((frame) => ({
-            frame_index: frame.frameIndex,
-            points: frame.points,
-            area_mm2: frame.areaMm2 ?? null,
-          })),
-        };
+    if (!seriesKey || cineGrouping !== 'instance') return;
+    const pendingUpdates: Array<{ id: string; instanceUid: string }> = [];
+    for (const measurement of measurementStore.measurements.values()) {
+      if (measurement.seriesUid !== seriesKey) continue;
+      if (measurement.instanceUid) continue;
+      const trackingInstanceUid =
+        'trackingData' in measurement && measurement.trackingData
+          ? measurement.trackingData.instanceUid
+          : null;
+      const inferred =
+        trackingInstanceUid ?? resolveInstanceUidFromFrameKey(measurement.frameKey);
+      if (inferred) {
+        pendingUpdates.push({ id: measurement.id, instanceUid: inferred });
       }
     }
+    if (pendingUpdates.length === 0) return;
+    pendingUpdates.forEach((update) => {
+      measurementStore.updateMeasurement(update.id, { instanceUid: update.instanceUid });
+    });
+  }, [cineGrouping, seriesKey, measurementStore, newMeasurements]);
 
-    setMeasurementTracks(nextMeasurementTracks);
-    setPolygonTracks(nextPolygonTracks);
+  useEffect(() => {
+    const { lineTracks, polygonTracks } = buildTrackingMaps(
+      measurementStore.trackingData,
+      measurementStore.measurements,
+    );
+    setMeasurementTracks(lineTracks);
+    setPolygonTracks(polygonTracks);
   }, [measurementStore.trackingData, measurementStore.measurements]);
 
   const getPanBounds = useCallback(
@@ -1220,13 +820,21 @@ const ViewerPage: React.FC = () => {
   }, [currentFrame]);
 
   const visibleMeasurements = useMemo(() => {
+    void newMeasurements;
     const base =
-      measurementScope === 'cine' && seriesKey
+      effectiveMeasurementScope === 'cine' && seriesKey
         ? measurementsBySeries[seriesKey] ?? []
         : frameKey
           ? measurementsByFrame[frameKey] ?? []
           : [];
-    const withActive = activeMeasurement ? [...base, activeMeasurement] : base;
+    const instanceFiltered =
+      effectiveMeasurementScope === 'cine' && cineGrouping === 'instance' && activeInstanceUid
+        ? base.filter((measurement) => {
+            const instanceUid = resolveMeasurementInstanceUid(measurement);
+            return instanceUid ? instanceUid === activeInstanceUid : false;
+          })
+        : base;
+    const withActive = activeMeasurement ? [...instanceFiltered, activeMeasurement] : instanceFiltered;
 
     // Filter out hidden measurements (check visibility in new store)
     const filtered = withActive.filter((measurement) => {
@@ -1238,7 +846,7 @@ const ViewerPage: React.FC = () => {
     });
 
     return filtered.map((measurement) => {
-      if (measurementScope !== 'cine') return measurement;
+      if (effectiveMeasurementScope !== 'cine') return measurement;
       const track = displayMeasurementTracks[measurement.id];
       if (!track) return measurement;
       const trackedFrame = interpolateTrackFrame(track.frames, currentSlice);
@@ -1247,7 +855,7 @@ const ViewerPage: React.FC = () => {
         ...measurement,
         start: trackedFrame.points[0],
         end: trackedFrame.points[1],
-        lengthMm: trackedFrame.length_mm,
+        lengthMm: trackedFrame.length_mm ?? null,
       };
     });
   }, [
@@ -1256,22 +864,33 @@ const ViewerPage: React.FC = () => {
     measurementsByFrame,
     measurementsBySeries,
     activeMeasurement,
-    measurementScope,
+    effectiveMeasurementScope,
+    activeInstanceUid,
+    cineGrouping,
     displayMeasurementTracks,
     currentSlice,
     measurementStore,
     newMeasurements, // Include this to re-compute when visibility changes
+    resolveMeasurementInstanceUid,
   ]);
 
   // Compute visible polygons based on scope
   const visiblePolygons = useMemo(() => {
+    void newMeasurements;
     const base =
-      measurementScope === 'cine' && seriesKey
+      effectiveMeasurementScope === 'cine' && seriesKey
         ? polygonsBySeries[seriesKey] ?? []
         : frameKey
           ? polygonsByFrame[frameKey] ?? []
           : [];
-    const withActive = activePolygon ? [...base, activePolygon] : base;
+    const instanceFiltered =
+      effectiveMeasurementScope === 'cine' && cineGrouping === 'instance' && activeInstanceUid
+        ? base.filter((polygon) => {
+            const instanceUid = resolveMeasurementInstanceUid(polygon);
+            return instanceUid ? instanceUid === activeInstanceUid : false;
+          })
+        : base;
+    const withActive = activePolygon ? [...instanceFiltered, activePolygon] : instanceFiltered;
 
     // Filter out hidden polygons (check visibility in new store)
     const filtered = withActive.filter((polygon) => {
@@ -1284,7 +903,7 @@ const ViewerPage: React.FC = () => {
 
     // Apply polygon tracking for cine mode
     return filtered.map((polygon) => {
-      if (measurementScope !== 'cine') return polygon;
+      if (effectiveMeasurementScope !== 'cine') return polygon;
       const track = displayPolygonTracks[polygon.id];
       if (!track) return polygon;
       const trackedFrame = interpolateTrackFrame(track.frames, currentSlice);
@@ -1301,39 +920,98 @@ const ViewerPage: React.FC = () => {
     polygonsByFrame,
     polygonsBySeries,
     activePolygon,
-    measurementScope,
+    effectiveMeasurementScope,
+    activeInstanceUid,
+    cineGrouping,
     displayPolygonTracks,
     currentSlice,
     measurementStore,
     newMeasurements,
+    resolveMeasurementInstanceUid,
   ]);
+
+  const lineRenderModels = useMemo(
+    () =>
+      buildLineRenderModels({
+        measurements: visibleMeasurements,
+        selectedMeasurementId: selectedMeasurementIdLocal,
+        displayTracks: displayMeasurementTracks,
+        showTrackingTrails,
+        trackingTrailLength,
+        currentSlice,
+        effectiveScope: effectiveMeasurementScope,
+      }),
+    [
+      visibleMeasurements,
+      selectedMeasurementIdLocal,
+      displayMeasurementTracks,
+      showTrackingTrails,
+      trackingTrailLength,
+      currentSlice,
+      effectiveMeasurementScope,
+    ],
+  );
+
+  const polygonRenderModels = useMemo(
+    () =>
+      buildPolygonRenderModels({
+        polygons: visiblePolygons,
+        activePolygon,
+        selectedMeasurementId: selectedMeasurementIdLocal,
+        displayTracks: displayPolygonTracks,
+        showTrackingTrails,
+        trackingTrailLength,
+        currentSlice,
+        polygonPreviewPoint,
+        smoothContoursEnabled,
+        smoothContoursIterations,
+        effectiveScope: effectiveMeasurementScope,
+      }),
+    [
+      visiblePolygons,
+      activePolygon,
+      selectedMeasurementIdLocal,
+      displayPolygonTracks,
+      showTrackingTrails,
+      trackingTrailLength,
+      currentSlice,
+      polygonPreviewPoint,
+      smoothContoursEnabled,
+      smoothContoursIterations,
+      effectiveMeasurementScope,
+    ],
+  );
 
   // Convert measurement tracks to TrackingData map for MeasurementPanel
   const trackingDataMap = useMemo(() => {
+    void newMeasurements;
     const map = new Map<string, import('../features/viewer/types').TrackingData>();
 
     // Convert line measurement tracks
     for (const [measurementId, track] of Object.entries(displayMeasurementTracks)) {
+      const storeMeasurement = measurementStore.getMeasurement(measurementId);
       map.set(measurementId, {
         seriesUid: track.series_uid,
+        instanceUid: track.instance_uid ?? storeMeasurement?.instanceUid ?? null,
         totalFrames: track.total_frames,
         startFrameIndex: 0,
         frames: track.frames.map((f) => ({
           frameIndex: f.frame_index,
           points: f.points,
-          lengthMm: f.length_mm,
-          valid: f.valid,
+          lengthMm: f.length_mm ?? null,
+          valid: f.valid ?? true,
         })),
         summary: {
-          minMm: track.summary.min_mm,
-          maxMm: track.summary.max_mm,
-          meanMm: track.summary.mean_mm,
+          minMm: track.summary.min_mm ?? null,
+          maxMm: track.summary.max_mm ?? null,
+          meanMm: track.summary.mean_mm ?? null,
         },
       });
     }
 
     // Convert polygon tracks
     for (const [polygonId, track] of Object.entries(displayPolygonTracks)) {
+      const storeMeasurement = measurementStore.getMeasurement(polygonId);
       const areaValues = track.frames
         .map((frame) => frame.area_mm2)
         .filter((value): value is number => typeof value === 'number');
@@ -1345,6 +1023,7 @@ const ViewerPage: React.FC = () => {
 
       map.set(polygonId, {
         seriesUid: seriesKey || '',
+        instanceUid: storeMeasurement?.instanceUid ?? null,
         totalFrames: track.frames.length,
         startFrameIndex: 0,
         frames: track.frames.map((f) => ({
@@ -1366,7 +1045,7 @@ const ViewerPage: React.FC = () => {
     }
 
     return map;
-  }, [displayMeasurementTracks, displayPolygonTracks, seriesKey]);
+  }, [displayMeasurementTracks, displayPolygonTracks, seriesKey, measurementStore, newMeasurements]);
 
   const copilotTemplate = useMemo(() => {
     const modality = selectedSeries?.series.modality;
@@ -1377,20 +1056,20 @@ const ViewerPage: React.FC = () => {
 
   const normalizedMeasurements = useMemo(
     () =>
-      newStoreMeasurements.map((measurement) => ({
+      contextMeasurements.map((measurement) => ({
         measurement,
         normalizedLabel: normalizeLabel(measurement.label),
       })),
-    [newStoreMeasurements]
+    [contextMeasurements]
   );
 
   const lineMeasurements = useMemo(
-    () => newStoreMeasurements.filter((measurement) => isLineMeasurement(measurement)),
-    [newStoreMeasurements]
+    () => contextMeasurements.filter((measurement) => isLineMeasurement(measurement)),
+    [contextMeasurements]
   );
   const polygonMeasurements = useMemo(
-    () => newStoreMeasurements.filter((measurement) => isPolygonMeasurement(measurement)),
-    [newStoreMeasurements]
+    () => contextMeasurements.filter((measurement) => isPolygonMeasurement(measurement)),
+    [contextMeasurements]
   );
 
   const findMeasurementByKeywords = useCallback(
@@ -1409,13 +1088,13 @@ const ViewerPage: React.FC = () => {
       if (type === 'polygon' && polygonMeasurements.length === 1) {
         return polygonMeasurements[0];
       }
-      if (type === 'any' && newStoreMeasurements.length === 1) {
-        return newStoreMeasurements[0];
+      if (type === 'any' && contextMeasurements.length === 1) {
+        return contextMeasurements[0];
       }
 
       return null;
     },
-    [normalizedMeasurements, lineMeasurements, polygonMeasurements, newStoreMeasurements]
+    [normalizedMeasurements, lineMeasurements, polygonMeasurements, contextMeasurements]
   );
 
   const derivedMetrics = useMemo(() => {
@@ -1539,7 +1218,7 @@ const ViewerPage: React.FC = () => {
     const alerts: string[] = [];
     for (const [measurementId, data] of trackingDataMap.entries()) {
       if (!data.frames.length) continue;
-      const measurement = newStoreMeasurements.find((m) => m.id === measurementId);
+      const measurement = contextMeasurements.find((m) => m.id === measurementId);
       const label = measurement?.label || measurement?.type || 'Measurement';
       const values = data.frames
         .map((frame) => frame.lengthMm ?? frame.areaMm2 ?? null)
@@ -1559,7 +1238,7 @@ const ViewerPage: React.FC = () => {
       }
     }
     return alerts;
-  }, [trackingDataMap, newStoreMeasurements]);
+  }, [trackingDataMap, contextMeasurements]);
 
   const cinePhaseFrames = useMemo(() => {
     if (trackingDataMap.size === 0) return null;
@@ -1583,14 +1262,14 @@ const ViewerPage: React.FC = () => {
       if (item.value > max.value) max = item;
       if (item.value < min.value) min = item;
     }
-    const measurement = newStoreMeasurements.find((m) => m.id === candidateId);
+    const measurement = contextMeasurements.find((m) => m.id === candidateId);
     return {
       measurementId: candidateId,
       label: measurement?.label || measurement?.type || 'Measurement',
       edFrame: max.frameIndex,
       esFrame: min.frameIndex,
     };
-  }, [trackingDataMap, selectedMeasurementIdLocal, newStoreMeasurements]);
+  }, [trackingDataMap, selectedMeasurementIdLocal, contextMeasurements]);
 
   const cinePhaseMarks = useMemo(() => {
     if (!cinePhaseFrames) return [];
@@ -1892,8 +1571,19 @@ const ViewerPage: React.FC = () => {
         const normalizedDetail = { ...seriesDetail, instances: safeInstances };
         seriesCacheRef.current.set(seriesUid, normalizedDetail);
 
-        const frames = buildFrameIndex(normalizedDetail.instances);
+        const grouping = getCineGrouping(
+          normalizedDetail.instances,
+          normalizedDetail.series,
+          normalizedDetail.has_3d_data
+        );
+        const defaultInstanceUid = normalizedDetail.instances[0]?.sop_instance_uid ?? null;
+        const frames = buildFramesForSelection(
+          normalizedDetail.instances,
+          defaultInstanceUid,
+          grouping
+        );
         setSelectedSeries(normalizedDetail);
+        setActiveInstanceUid(defaultInstanceUid);
         setFrameIndex(frames);
         setTotalSlices(frames.length || 1);
         applyViewportState(seriesUid, normalizedDetail, frames);
@@ -1903,7 +1593,100 @@ const ViewerPage: React.FC = () => {
         setSnackbarMessage('Failed to load series');
       }
     },
-    [applyViewportState, saveViewportState]
+    [applyViewportState, saveViewportState, buildFramesForSelection, getCineGrouping]
+  );
+
+  const findSeriesDetailForInstance = useCallback(
+    async (instanceUid: string) => {
+      for (const detail of seriesCacheRef.current.values()) {
+        if (detail.instances?.some((instance) => instance.sop_instance_uid === instanceUid)) {
+          return detail;
+        }
+      }
+
+      for (const series of seriesList) {
+        const seriesUid = series.series_instance_uid;
+        const cached = seriesCacheRef.current.get(seriesUid);
+        if (cached && cached.instances?.length) continue;
+        try {
+          const seriesDetail = await api.series.get(seriesUid);
+          const safeInstances = Array.isArray(seriesDetail.instances) ? seriesDetail.instances : [];
+          const normalizedDetail = { ...seriesDetail, instances: safeInstances };
+          seriesCacheRef.current.set(seriesUid, normalizedDetail);
+          if (safeInstances.some((instance) => instance.sop_instance_uid === instanceUid)) {
+            return normalizedDetail;
+          }
+        } catch (err) {
+          console.warn('Failed to load series detail for view jump', err);
+        }
+      }
+
+      return null;
+    },
+    [seriesList]
+  );
+
+  const applySeriesSelection = useCallback(
+    (detail: SeriesDetailResponse, instanceUid: string | null, frameIndex: number | null) => {
+      const seriesUid = detail.series.series_instance_uid;
+      activeSeriesUidRef.current = seriesUid;
+
+      const grouping = getCineGrouping(
+        detail.instances,
+        detail.series,
+        detail.has_3d_data
+      );
+      const effectiveInstanceUid =
+        instanceUid && detail.instances.some((instance) => instance.sop_instance_uid === instanceUid)
+          ? instanceUid
+          : detail.instances[0]?.sop_instance_uid ?? null;
+      const frames = buildFramesForSelection(detail.instances, effectiveInstanceUid, grouping);
+
+      setSelectedSeries(detail);
+      setActiveInstanceUid(effectiveInstanceUid);
+      setFrameIndex(frames);
+      setTotalSlices(frames.length || 1);
+      applyViewportState(seriesUid, detail, frames);
+
+      if (frameIndex != null && effectiveInstanceUid) {
+        const targetIndex = frames.findIndex(
+          (frame) => frame.instanceUid === effectiveInstanceUid && frame.frameIndex === frameIndex
+        );
+        setCurrentSlice(targetIndex >= 0 ? targetIndex : 0);
+      } else {
+        setCurrentSlice(0);
+      }
+      setImageError(null);
+    },
+    [applyViewportState, buildFramesForSelection, getCineGrouping]
+  );
+
+  const jumpToInstanceFrame = useCallback(
+    async (instanceUid: string | null, frameIndex: number | null) => {
+      if (!instanceUid) return;
+      saveViewportState();
+      let detail: SeriesDetailResponse | null = selectedSeries ?? null;
+      if (!detail || !detail.instances?.some((instance) => instance.sop_instance_uid === instanceUid)) {
+        detail = await findSeriesDetailForInstance(instanceUid);
+      }
+      if (!detail) {
+        setSnackbarMessage('Unable to locate cine for the selected view.');
+        return;
+      }
+      seriesCacheRef.current.set(detail.series.series_instance_uid, detail);
+      applySeriesSelection(detail, instanceUid, frameIndex);
+    },
+    [selectedSeries, findSeriesDetailForInstance, applySeriesSelection, saveViewportState]
+  );
+
+  const handleSelectViewCine = useCallback(
+    async (_view: string, instanceUids: string[]) => {
+      if (instanceUids.length === 0) return;
+      const currentIdx = currentInstanceUid ? instanceUids.indexOf(currentInstanceUid) : -1;
+      const nextInstanceUid = instanceUids[(currentIdx + 1) % instanceUids.length];
+      await jumpToInstanceFrame(nextInstanceUid, 0);
+    },
+    [currentInstanceUid, jumpToInstanceFrame]
   );
 
   // Fetch study and series data
@@ -1934,6 +1717,22 @@ const ViewerPage: React.FC = () => {
             setSnackbarMessage('Series response invalid. Viewer may be limited.');
           }
           setSeriesList(safeSeries);
+
+          // Pre-populate series cache from inline details (avoids extra API round-trip)
+          const inlineDetails = seriesResult.value.details;
+          if (Array.isArray(inlineDetails)) {
+            for (const detail of inlineDetails) {
+              const uid = detail.series.series_instance_uid;
+              seriesCacheRef.current.set(uid, {
+                series: detail.series,
+                instances: detail.instances,
+                window_center: detail.window_center,
+                window_width: detail.window_width,
+                has_3d_data: detail.has_3d_data,
+              });
+            }
+          }
+
           if (safeSeries.length > 0) {
             await selectSeries(safeSeries[0].series_instance_uid);
           }
@@ -1950,6 +1749,10 @@ const ViewerPage: React.FC = () => {
 
         if (aiResult.status === 'fulfilled') {
           setAiResults(aiResult.value);
+          // Auto-open AI results panel if cardiac results exist from previous run
+          if (aiResult.value.cardiac && aiResult.value.cardiac.length > 0) {
+            setShowAiResultsPanel(true);
+          }
         }
       } catch (err) {
         console.error('Failed to load viewer data:', err);
@@ -1961,6 +1764,38 @@ const ViewerPage: React.FC = () => {
 
     fetchData();
   }, [studyUid, selectSeries]);
+
+  useEffect(() => {
+    if (!selectedSeries) {
+      setActiveInstanceUid(null);
+      return;
+    }
+    const instances = selectedSeries.instances ?? [];
+    if (instances.length === 0) {
+      setActiveInstanceUid(null);
+      return;
+    }
+    if (
+      activeInstanceUid &&
+      instances.some((instance) => instance.sop_instance_uid === activeInstanceUid)
+    ) {
+      return;
+    }
+    setActiveInstanceUid(instances[0].sop_instance_uid);
+  }, [selectedSeries, activeInstanceUid]);
+
+  useEffect(() => {
+    if (!selectedSeries) return;
+    const instances = selectedSeries.instances ?? [];
+    if (instances.length === 0) return;
+    if (!activeInstanceUid) return;
+    const grouping = getCineGrouping(instances, selectedSeries.series, selectedSeries.has_3d_data);
+    const frames = buildFramesForSelection(instances, activeInstanceUid, grouping);
+    setFrameIndex(frames);
+    setTotalSlices(frames.length || 1);
+    setCurrentSlice(0);
+    setImageError(null);
+  }, [selectedSeries, activeInstanceUid, buildFramesForSelection, getCineGrouping]);
 
   // Track latest viewport state for cache persistence.
   useEffect(() => {
@@ -2074,6 +1909,10 @@ const ViewerPage: React.FC = () => {
     if (storedCopilot !== null) {
       setGuidelineCopilotEnabled(storedCopilot === 'true');
     }
+    const storedPolygonSampling = localStorage.getItem('viewer_polygon_sampling');
+    if (storedPolygonSampling === 'sparse' || storedPolygonSampling === 'balanced' || storedPolygonSampling === 'dense') {
+      setPolygonSamplingPreset(storedPolygonSampling);
+    }
     const storedCineFps = localStorage.getItem('viewer_cine_fps');
     if (storedCineFps !== null) {
       const parsed = Number(storedCineFps);
@@ -2100,6 +1939,7 @@ const ViewerPage: React.FC = () => {
     localStorage.setItem('viewer_auto_fit_rotate', String(autoFitOnRotate));
     localStorage.setItem('viewer_auto_promote_tracking', String(autoPromoteTracking));
     localStorage.setItem('viewer_guideline_copilot', String(guidelineCopilotEnabled));
+    localStorage.setItem('viewer_polygon_sampling', polygonSamplingPreset);
     localStorage.setItem('viewer_cine_fps', String(Math.round(cineFps)));
     localStorage.setItem('viewer_measurement_scope', measurementScope);
   }, [
@@ -2114,17 +1954,26 @@ const ViewerPage: React.FC = () => {
     autoFitOnRotate,
     autoPromoteTracking,
     guidelineCopilotEnabled,
+    polygonSamplingPreset,
     cineFps,
     measurementScope,
   ]);
 
+  const bookmarkKey = useMemo(() => {
+    if (!seriesKey) return null;
+    if (cineGrouping === 'instance' && activeInstanceUid) {
+      return `${seriesKey}_${activeInstanceUid}`;
+    }
+    return seriesKey;
+  }, [seriesKey, activeInstanceUid, cineGrouping]);
+
   useEffect(() => {
-    if (!seriesKey) {
+    if (!bookmarkKey) {
       setCineBookmarks([]);
       return;
     }
     if (typeof localStorage === 'undefined') return;
-    const stored = localStorage.getItem(`viewer_bookmarks_${seriesKey}`);
+    const stored = localStorage.getItem(`viewer_bookmarks_${bookmarkKey}`);
     if (!stored) {
       setCineBookmarks([]);
       return;
@@ -2149,13 +1998,13 @@ const ViewerPage: React.FC = () => {
       console.warn('Failed to parse cine bookmarks', err);
       setCineBookmarks([]);
     }
-  }, [seriesKey]);
+  }, [bookmarkKey]);
 
   useEffect(() => {
-    if (!seriesKey) return;
+    if (!bookmarkKey) return;
     if (typeof localStorage === 'undefined') return;
-    localStorage.setItem(`viewer_bookmarks_${seriesKey}`, JSON.stringify(cineBookmarks));
-  }, [seriesKey, cineBookmarks]);
+    localStorage.setItem(`viewer_bookmarks_${bookmarkKey}`, JSON.stringify(cineBookmarks));
+  }, [bookmarkKey, cineBookmarks]);
 
   useEffect(() => {
     let active = true;
@@ -2311,6 +2160,32 @@ const ViewerPage: React.FC = () => {
     };
   }, [currentInstanceUid]);
 
+  useEffect(() => {
+    if (!currentInstanceMeta) return;
+    const instanceUid = currentInstanceMeta.sop_instance_uid;
+    if (!instanceUid) return;
+    setSelectedSeries((prev) => {
+      if (!prev) return prev;
+      const instances = prev.instances ?? [];
+      const index = instances.findIndex((inst) => inst.sop_instance_uid === instanceUid);
+      if (index < 0) return prev;
+      const currentCount = instances[index].number_of_frames ?? null;
+      const nextCount = currentInstanceMeta.number_of_frames ?? currentCount;
+      if (nextCount == null || currentCount === nextCount) return prev;
+      const nextInstances = instances.map((inst) =>
+        inst.sop_instance_uid === instanceUid
+          ? { ...inst, number_of_frames: nextCount }
+          : inst
+      );
+      const updated = { ...prev, instances: nextInstances };
+      const seriesUid = updated.series.series_instance_uid;
+      if (seriesUid) {
+        seriesCacheRef.current.set(seriesUid, updated);
+      }
+      return updated;
+    });
+  }, [currentInstanceMeta]);
+
   // Reset error when image changes
   useEffect(() => {
     setImageError(null);
@@ -2327,105 +2202,76 @@ const ViewerPage: React.FC = () => {
     if (!isPlaying) return 90;
     return isUltrasound ? 60 : 70;
   }, [isPlaying, isUltrasound]);
+  const renderOptions = useMemo<RenderOptions>(
+    () => ({
+      windowCenter: isColorImage ? undefined : windowLevel.center,
+      windowWidth: isColorImage ? undefined : windowLevel.width,
+      format: renderFormat,
+      quality: renderFormat === 'jpeg' ? renderQuality : undefined,
+    }),
+    [isColorImage, windowLevel.center, windowLevel.width, renderFormat, renderQuality]
+  );
 
   const touchImageCache = useCallback((url: string, image: HTMLImageElement) => {
-    const cache = imageCacheRef.current;
-    if (cache.has(url)) {
-      cache.delete(url);
-    }
-    cache.set(url, image);
-    while (cache.size > MAX_IMAGE_CACHE) {
-      const oldest = cache.keys().next().value;
-      if (!oldest) break;
-      cache.delete(oldest);
-    }
+    touchCachedImage(imageCacheRef.current, url, image, MAX_IMAGE_CACHE);
   }, []);
+
+  const inflightRef = useRef(new Set<string>());
 
   const preloadImage = useCallback(
     (url: string) => {
-      if (!url) return;
-      const cache = imageCacheRef.current;
-      const existing = cache.get(url);
-      if (existing) {
-        touchImageCache(url, existing);
-        return;
-      }
-      const image = new Image();
-      image.decoding = 'async';
-      image.src = url;
-      touchImageCache(url, image);
+      preloadCachedImage(imageCacheRef.current, inflightRef.current, url, MAX_IMAGE_CACHE);
     },
-    [touchImageCache]
+    []
+  );
+
+  const getPlaybackFrameUrl = useCallback(
+    (instanceUid: string, frameIndex: number) => {
+      const viewState = viewStateRef.current;
+      return buildFrameImageUrl(instanceUid, frameIndex, {
+        windowCenter: isColorImage ? undefined : viewState.windowLevel.center,
+        windowWidth: isColorImage ? undefined : viewState.windowLevel.width,
+        format: renderFormat,
+        quality: renderFormat === 'jpeg' ? renderQuality : undefined,
+      });
+    },
+    [isColorImage, renderFormat, renderQuality]
   );
 
   // Cine playback
   useEffect(() => {
-    if (!isPlaying || totalSlices <= 1 || !currentInstanceUid) return;
-    let active = true;
-    let lastTime = performance.now();
-    const frameDuration = 1000 / Math.max(1, cineFps);
-
-    const tick = (now: number) => {
-      if (!active) return;
-      const elapsed = now - lastTime;
-      if (elapsed >= frameDuration) {
-        lastTime = now - (elapsed % frameDuration);
-        const nextSlice = (currentSliceRef.current + 1) % totalSlices;
-        const frames = frameIndexRef.current;
-        const nextFrame = frames[nextSlice];
-        if (nextFrame) {
-          const url = api.instances.getPixelDataUrl(nextFrame.instanceUid, {
-            frame: nextFrame.frameIndex,
-            windowCenter: isColorImage ? undefined : viewStateRef.current.windowLevel.center,
-            windowWidth: isColorImage ? undefined : viewStateRef.current.windowLevel.width,
-            format: renderFormat,
-            quality: renderFormat === 'jpeg' ? renderQuality : undefined,
-          });
-          const cached = imageCacheRef.current.get(url);
-          if (cached?.complete) {
-            setCurrentSlice(nextSlice);
-          } else {
-            preloadImage(url);
-          }
-        }
-      }
-      requestAnimationFrame(tick);
-    };
-
-    const handle = requestAnimationFrame(tick);
-    return () => {
-      active = false;
-      cancelAnimationFrame(handle);
-    };
+    const cleanup = startCinePlayback({
+      isPlaying,
+      totalSlices,
+      cineFps,
+      instanceUid: currentInstanceUid,
+      currentSliceRef,
+      frameIndexRef,
+      imageCacheRef,
+      perfRef: cinePerfRef,
+      getFrameUrl: getPlaybackFrameUrl,
+      preloadImage,
+      setCurrentSlice,
+    });
+    return cleanup ?? undefined;
   }, [
     isPlaying,
     totalSlices,
     cineFps,
     currentInstanceUid,
-    renderFormat,
-    renderQuality,
+    currentSliceRef,
+    frameIndexRef,
+    imageCacheRef,
+    cinePerfRef,
+    getPlaybackFrameUrl,
     preloadImage,
-    isColorImage,
+    setCurrentSlice,
   ]);
 
   const imageUrl = useMemo(() => {
     if (!currentInstanceUid) return null;
-    return api.instances.getPixelDataUrl(currentInstanceUid, {
-      frame: currentFrameIndex,
-      windowCenter: isColorImage ? undefined : windowLevel.center,
-      windowWidth: isColorImage ? undefined : windowLevel.width,
-      format: renderFormat,
-      quality: renderFormat === 'jpeg' ? renderQuality : undefined,
-    });
-  }, [
-    currentInstanceUid,
-    currentFrameIndex,
-    windowLevel.center,
-    windowLevel.width,
-    renderFormat,
-    renderQuality,
-    isColorImage,
-  ]);
+    return buildFrameImageUrl(currentInstanceUid, currentFrameIndex, renderOptions);
+  }, [currentInstanceUid, currentFrameIndex, renderOptions]);
 
   const colorFilter = useMemo(() => {
     if (!isColorImage) return undefined;
@@ -2454,8 +2300,17 @@ const ViewerPage: React.FC = () => {
 
     const image = cached ?? new Image();
     image.decoding = 'async';
+    const decodeStart = performance.now();
     image.onload = () => {
       if (!active || latestImageUrlRef.current !== imageUrl) return;
+      const decodeMs = performance.now() - decodeStart;
+      const stats = frameRenderStatsRef.current;
+      stats.count += 1;
+      stats.totalMs += decodeMs;
+      if (stats.count % 30 === 0) {
+        const avg = stats.totalMs / stats.count;
+        console.info(`viewer_frame_decode_avg_ms=${avg.toFixed(1)}`);
+      }
       setDisplayedImageUrl(imageUrl);
     };
     image.onerror = () => {
@@ -2474,67 +2329,83 @@ const ViewerPage: React.FC = () => {
 
   useEffect(() => {
     if (!currentInstanceUid || totalSlices <= 1) return;
-    const ahead = isPlaying ? (isUltrasound ? 12 : 8) : isUltrasound ? 6 : 4;
-    const behind = isPlaying ? 4 : 1;
-    for (let offset = -behind; offset <= ahead; offset += 1) {
-      if (offset === 0) continue;
-      const rawIndex = currentSlice + offset;
-      const nextIndex = isPlaying
-        ? (rawIndex + totalSlices) % totalSlices
-        : rawIndex < 0 || rawIndex >= totalSlices
-          ? null
-          : rawIndex;
-      if (nextIndex === null) continue;
-      const nextFrame = frameIndex[nextIndex];
-      if (!nextFrame) continue;
-      const url = api.instances.getPixelDataUrl(nextFrame.instanceUid, {
-        frame: nextFrame.frameIndex,
-        windowCenter: windowLevel.center,
-        windowWidth: windowLevel.width,
-        format: renderFormat,
-        quality: renderFormat === 'jpeg' ? renderQuality : undefined,
-      });
-      preloadImage(url);
-    }
+    prefetchAdjacentFrames({
+      frameIndex,
+      currentSlice,
+      totalSlices,
+      isPlaying,
+      isUltrasound,
+      renderOptions,
+      preloadImage,
+    });
   }, [
     currentSlice,
     totalSlices,
     frameIndex,
-    windowLevel,
     currentInstanceUid,
     isPlaying,
-    renderFormat,
-    renderQuality,
     preloadImage,
     isUltrasound,
+    renderOptions,
   ]);
 
   useEffect(() => {
     if (!seriesKey || frameIndex.length === 0) return;
     if (prefetchedSeriesRef.current.has(seriesKey)) return;
-    const warmCount = Math.min(frameIndex.length, isUltrasound ? 12 : 6);
-    for (let i = 0; i < warmCount; i += 1) {
-      const nextFrame = frameIndex[i];
-      if (!nextFrame) continue;
-      const url = api.instances.getPixelDataUrl(nextFrame.instanceUid, {
-        frame: nextFrame.frameIndex,
-        windowCenter: windowLevel.center,
-        windowWidth: windowLevel.width,
-        format: renderFormat,
-        quality: renderFormat === 'jpeg' ? renderQuality : undefined,
-      });
-      preloadImage(url);
-    }
+    const warmCount = Math.min(frameIndex.length, isUltrasound ? Math.max(24, Math.ceil(cineFps * 1.5)) : 6);
+    prefetchWarmFrames({
+      frameIndex,
+      warmCount,
+      renderOptions,
+      preloadImage,
+    });
     prefetchedSeriesRef.current.add(seriesKey);
   }, [
     seriesKey,
     frameIndex,
-    windowLevel.center,
-    windowLevel.width,
-    renderFormat,
-    renderQuality,
     preloadImage,
     isUltrasound,
+    cineFps,
+    renderOptions,
+  ]);
+
+  useEffect(() => {
+    if (!seriesKey || frameIndex.length === 0) return;
+    const cacheKey = `${seriesKey}:${renderFormat}:${renderQuality}:${windowLevel.center}:${windowLevel.width}`;
+    if (prefetchedFullSeriesRef.current.has(cacheKey)) return;
+
+    const token = fullPrefetchTokenRef.current + 1;
+    fullPrefetchTokenRef.current = token;
+
+    const maxFrames = isUltrasound ? Math.min(frameIndex.length, 120) : Math.min(frameIndex.length, 60);
+    const concurrency = 4;
+
+    void prefetchFullSeries({
+      frameIndex,
+      maxFrames,
+      concurrency,
+      renderOptions,
+      preloadImage,
+      shouldCancel: () => fullPrefetchTokenRef.current !== token,
+      onComplete: () => {
+        prefetchedFullSeriesRef.current.add(cacheKey);
+      },
+    });
+
+    return () => {
+      // Cancel outstanding prefetch work for this series.
+      fullPrefetchTokenRef.current += 1;
+    };
+  }, [
+    seriesKey,
+    frameIndex,
+    preloadImage,
+    isUltrasound,
+    renderFormat,
+    renderQuality,
+    windowLevel.center,
+    windowLevel.width,
+    renderOptions,
   ]);
 
   const screenToImage = useCallback(
@@ -2640,7 +2511,12 @@ const ViewerPage: React.FC = () => {
   );
 
   const trackMeasurementFor = useCallback(
-    async (seriesUid: string, measurement: Measurement, startIndex: number) => {
+    async (
+      seriesUid: string,
+      measurement: LegacyLineMeasurement,
+      startIndex: number,
+      instanceUid?: string | null
+    ) => {
       if (!seriesUid) return;
       if (trackingMeasurementId) return;
       if (measurementTracks[measurement.id]) return;
@@ -2648,27 +2524,39 @@ const ViewerPage: React.FC = () => {
       setTrackingMeasurementId(measurement.id);
       setSnackbarMessage('Tracking cine measurement...');
       try {
+        const resolvedMeasurementInstanceUid = resolveMeasurementInstanceUid(measurement);
+        const targetInstanceUid =
+          cineGrouping === 'instance'
+            ? instanceUid ??
+              resolvedMeasurementInstanceUid ??
+              currentInstanceUid ??
+              activeInstanceUid ??
+              null
+            : null;
+        const safeStartIndex = Math.max(0, Math.floor(startIndex));
         const response = await api.series.trackMeasurement(seriesUid, {
-          start_index: startIndex,
+          start_index: safeStartIndex,
           track_full_loop: true,
           points: [measurement.start, measurement.end],
+          instance_uid: targetInstanceUid ?? undefined,
         });
         setMeasurementTracks((prev) => ({ ...prev, [measurement.id]: response }));
         measurementStore.setTrackingData(measurement.id, {
           seriesUid: response.series_uid,
+          instanceUid: response.instance_uid ?? targetInstanceUid ?? null,
           totalFrames: response.total_frames,
           startFrameIndex: response.frames[0]?.frame_index ?? 0,
           frames: response.frames.map((frame) => ({
             frameIndex: frame.frame_index,
             points: frame.points,
-            lengthMm: frame.length_mm,
+            lengthMm: frame.length_mm ?? null,
             areaMm2: frame.area_mm2 ?? null,
-            valid: frame.valid,
+            valid: frame.valid ?? true,
           })),
           summary: {
-            minMm: response.summary.min_mm,
-            maxMm: response.summary.max_mm,
-            meanMm: response.summary.mean_mm,
+            minMm: response.summary.min_mm ?? null,
+            maxMm: response.summary.max_mm ?? null,
+            meanMm: response.summary.mean_mm ?? null,
             minAreaMm2: response.summary.min_area_mm2 ?? undefined,
             maxAreaMm2: response.summary.max_area_mm2 ?? undefined,
             meanAreaMm2: response.summary.mean_area_mm2 ?? undefined,
@@ -2682,25 +2570,30 @@ const ViewerPage: React.FC = () => {
           setSnackbarMessage('Cine measurement recorded.');
         }
       } catch (err) {
-        const detail =
-          typeof (err as any)?.response?.data?.detail === 'string'
-            ? (err as any).response.data.detail
-            : null;
+        const detail = getApiErrorDetail(err);
         console.error('Failed to track cine measurement:', err);
         setSnackbarMessage(detail ? `Failed to track cine measurement: ${detail}` : 'Failed to track cine measurement.');
       } finally {
         setTrackingMeasurementId(null);
       }
     },
-    [trackingMeasurementId, measurementTracks, measurementStore]
+    [
+      trackingMeasurementId,
+      measurementTracks,
+      measurementStore,
+      currentInstanceUid,
+      activeInstanceUid,
+      cineGrouping,
+      resolveMeasurementInstanceUid,
+    ]
   );
 
   const promoteLineToSeries = useCallback(
-    (measurementId: string, line: Measurement) => {
+    (measurementId: string, line: LegacyLineMeasurement) => {
       if (!seriesKey) return;
       // Remove from frame buckets
       setMeasurementsByFrame((prev) => {
-        const nextState: Record<string, Measurement[]> = {};
+        const nextState: Record<string, LegacyLineMeasurement[]> = {};
         for (const [key, list] of Object.entries(prev)) {
           const filtered = list.filter((item) => item.id !== measurementId);
           if (filtered.length) {
@@ -2729,10 +2622,10 @@ const ViewerPage: React.FC = () => {
   );
 
   const promotePolygonToSeries = useCallback(
-    (measurementId: string, polygon: PolygonMeasurement) => {
+    (measurementId: string, polygon: LegacyPolygonMeasurement) => {
       if (!seriesKey) return;
       setPolygonsByFrame((prev) => {
-        const nextState: Record<string, PolygonMeasurement[]> = {};
+        const nextState: Record<string, LegacyPolygonMeasurement[]> = {};
         for (const [key, list] of Object.entries(prev)) {
           const filtered = list.filter((item) => item.id !== measurementId);
           if (filtered.length) {
@@ -2759,11 +2652,47 @@ const ViewerPage: React.FC = () => {
     [seriesKey, measurementStore]
   );
 
+  const buildMedsamPromptPayload = useCallback(
+    (
+      promptPoints?: SegmentPromptPoint[],
+      promptBox?: [number, number, number, number] | null
+    ) => {
+      if (!promptPoints || promptPoints.length === 0) return null;
+      const positives = promptPoints.filter((p) => p.label === 1).map((p) => ({
+        x: p.x,
+        y: p.y,
+      }));
+      const negatives = promptPoints.filter((p) => p.label === 0).map((p) => ({
+        x: p.x,
+        y: p.y,
+      }));
+      const points = positives.length ? positives : promptPoints.map((p) => ({ x: p.x, y: p.y }));
+      return {
+        points,
+        negative_points: negatives.length ? negatives : undefined,
+        box: promptBox ?? undefined,
+      };
+    },
+    []
+  );
+
   // Track a measurement from the panel by ID
   const trackMeasurementById = useCallback(
-    async (measurementId: string) => {
+    async (
+      measurementId: string,
+      options?: {
+        method?: 'optical_flow' | 'medsam_hybrid';
+        promptPoints?: SegmentPromptPoint[];
+        promptBox?: [number, number, number, number] | null;
+        keyframeStride?: number;
+      }
+    ) => {
       if (!seriesKey) {
         setSnackbarMessage('Please select a series first');
+        return;
+      }
+      if (!canUseCineMeasurements) {
+        setSnackbarMessage('Current cine has only one frame. Tracking is not available.');
         return;
       }
       if (trackingMeasurementId) {
@@ -2782,9 +2711,17 @@ const ViewerPage: React.FC = () => {
         setSnackbarMessage('Measurement belongs to a different series.');
         return;
       }
+      if (
+        cineGrouping === 'instance' &&
+        activeInstanceUid &&
+        resolveMeasurementInstanceUid(storeMeasurement ?? { id: measurementId }) !== activeInstanceUid
+      ) {
+        setSnackbarMessage('Switch to the cine where this measurement was created.');
+        return;
+      }
 
       if (storeMeasurement && isLineMeasurement(storeMeasurement)) {
-        const lineMeasurement: Measurement = {
+        const lineMeasurement: LegacyLineMeasurement = {
           id: storeMeasurement.id,
           start: storeMeasurement.points[0],
           end: storeMeasurement.points[1],
@@ -2800,12 +2737,25 @@ const ViewerPage: React.FC = () => {
         if (measurementScope !== 'cine') {
           setMeasurementScope('cine');
         }
-        await trackMeasurementFor(seriesKey, lineMeasurement, currentSlice);
+        if (cineGrouping === 'instance' && activeInstanceUid) {
+          const resolvedInstanceUid = resolveMeasurementInstanceUid(storeMeasurement);
+          if (!resolvedInstanceUid) {
+            measurementStore.updateMeasurement(storeMeasurement.id, { instanceUid: activeInstanceUid });
+          }
+        }
+        await trackMeasurementFor(
+          seriesKey,
+          lineMeasurement,
+          currentSlice,
+          cineGrouping === 'instance'
+            ? storeMeasurement?.instanceUid ?? currentInstanceUid ?? activeInstanceUid ?? null
+            : null
+        );
         return;
       }
 
       if (storeMeasurement && isPolygonMeasurement(storeMeasurement)) {
-        const polygonMeasurement: PolygonMeasurement = {
+        const polygonMeasurement: LegacyPolygonMeasurement = {
           id: storeMeasurement.id,
           points: storeMeasurement.points,
           areaMm2: storeMeasurement.areaMm2 ?? null,
@@ -2821,21 +2771,41 @@ const ViewerPage: React.FC = () => {
         if (measurementScope !== 'cine') {
           setMeasurementScope('cine');
         }
+        if (cineGrouping === 'instance' && activeInstanceUid) {
+          const resolvedInstanceUid = resolveMeasurementInstanceUid(storeMeasurement);
+          if (!resolvedInstanceUid) {
+            measurementStore.updateMeasurement(storeMeasurement.id, { instanceUid: activeInstanceUid });
+          }
+        }
         setTrackingMeasurementId(polygonMeasurement.id);
-        setSnackbarMessage('Tracking polygon with optical flow...');
+        const promptPayload = options?.method === 'medsam_hybrid'
+          ? buildMedsamPromptPayload(options?.promptPoints, options?.promptBox ?? null)
+          : null;
+        const useMedsamHybrid = options?.method === 'medsam_hybrid' && promptPayload !== null;
+        setSnackbarMessage(
+          useMedsamHybrid ? 'Tracking polygon with MedSAM hybrid...' : 'Tracking polygon with optical flow...'
+        );
         try {
           const trackingPoints = normalizeTrackingPoints(polygonMeasurement.points);
           const response = await api.series.trackMeasurement(seriesKey, {
             start_index: currentSlice,
             track_full_loop: true,
-            points: trackingPoints,
+            points: useMedsamHybrid ? promptPayload!.points : trackingPoints,
+            negative_points: useMedsamHybrid ? promptPayload!.negative_points : undefined,
+            box: useMedsamHybrid ? promptPayload!.box : undefined,
+            keyframe_stride: useMedsamHybrid ? (options?.keyframeStride ?? 5) : undefined,
+            tracking_method: useMedsamHybrid ? 'medsam_hybrid' : undefined,
+            instance_uid:
+              cineGrouping === 'instance'
+                ? currentInstanceUid ?? activeInstanceUid ?? undefined
+                : undefined,
           });
 
           const framesWithArea = response.frames.map((frame) => ({
             frame_index: frame.frame_index,
             points: frame.points,
             area_mm2: frame.area_mm2,
-            valid: frame.valid,
+            valid: frame.valid ?? true,
           }));
 
           setPolygonTracks((prev) => ({
@@ -2850,6 +2820,11 @@ const ViewerPage: React.FC = () => {
           }));
           measurementStore.setTrackingData(polygonMeasurement.id, {
             seriesUid: response.series_uid,
+            instanceUid:
+              response.instance_uid ??
+              (cineGrouping === 'instance'
+                ? currentInstanceUid ?? activeInstanceUid ?? null
+                : null),
             totalFrames: response.total_frames,
             startFrameIndex: response.frames[0]?.frame_index ?? 0,
             frames: framesWithArea.map((frame) => ({
@@ -2857,7 +2832,7 @@ const ViewerPage: React.FC = () => {
               points: frame.points,
               lengthMm: null,
               areaMm2: frame.area_mm2 ?? null,
-              valid: frame.valid,
+              valid: frame.valid ?? true,
             })),
             summary: {
               minMm: null,
@@ -2875,14 +2850,24 @@ const ViewerPage: React.FC = () => {
               ? ((summary.max_area_mm2 - summary.min_area_mm2) / summary.max_area_mm2 * 100).toFixed(1)
               : '0';
             setSnackbarMessage(
-              `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
+              useMedsamHybrid
+                ? `Polygon tracked with MedSAM hybrid. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
+                : `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
             );
           } else {
-            setSnackbarMessage('Polygon tracked across cine loop with optical flow.');
+            setSnackbarMessage(
+              useMedsamHybrid
+                ? 'Polygon tracked across cine loop with MedSAM hybrid.'
+                : 'Polygon tracked across cine loop with optical flow.'
+            );
           }
         } catch (err) {
           console.error('Failed to track polygon with optical flow:', err);
-          setSnackbarMessage('Optical flow tracking failed. Using static mode.');
+          setSnackbarMessage(
+            useMedsamHybrid
+              ? 'MedSAM hybrid tracking failed. Using static mode.'
+              : 'Optical flow tracking failed. Using static mode.'
+          );
           const frames = Array.from({ length: totalSlices }, (_, i) => ({
             frame_index: i,
             points: polygonMeasurement.points,
@@ -2894,6 +2879,8 @@ const ViewerPage: React.FC = () => {
           }));
           measurementStore.setTrackingData(polygonMeasurement.id, {
             seriesUid: seriesKey,
+            instanceUid:
+              cineGrouping === 'instance' ? currentInstanceUid ?? activeInstanceUid ?? null : null,
             totalFrames: totalSlices,
             startFrameIndex: 0,
             frames: frames.map((frame) => ({
@@ -2935,8 +2922,21 @@ const ViewerPage: React.FC = () => {
         if (measurementScope !== 'cine') {
           setMeasurementScope('cine');
         }
+        if (cineGrouping === 'instance' && activeInstanceUid) {
+          const resolvedInstanceUid = resolveMeasurementInstanceUid(storeMeasurement ?? lineMeasurement);
+          if (!resolvedInstanceUid) {
+            measurementStore.updateMeasurement(measurementId, { instanceUid: activeInstanceUid });
+          }
+        }
         // Track line measurement using existing API
-        await trackMeasurementFor(seriesKey, lineMeasurement, currentSlice);
+        await trackMeasurementFor(
+          seriesKey,
+          lineMeasurement,
+          currentSlice,
+          cineGrouping === 'instance'
+            ? storeMeasurement?.instanceUid ?? currentInstanceUid ?? activeInstanceUid ?? null
+            : null
+        );
         return;
       }
 
@@ -2957,6 +2957,12 @@ const ViewerPage: React.FC = () => {
         if (measurementScope !== 'cine') {
           setMeasurementScope('cine');
         }
+        if (cineGrouping === 'instance' && activeInstanceUid) {
+          const resolvedInstanceUid = resolveMeasurementInstanceUid(storeMeasurement ?? polygonMeasurement);
+          if (!resolvedInstanceUid) {
+            measurementStore.updateMeasurement(measurementId, { instanceUid: activeInstanceUid });
+          }
+        }
         // Track polygon using optical flow API (real tracking with motion detection)
         setTrackingMeasurementId(polygonMeasurement.id);
         setSnackbarMessage('Tracking polygon with optical flow...');
@@ -2966,6 +2972,10 @@ const ViewerPage: React.FC = () => {
             start_index: currentSlice,
             track_full_loop: true,
             points: trackingPoints,
+            instance_uid:
+              cineGrouping === 'instance'
+                ? currentInstanceUid ?? activeInstanceUid ?? undefined
+                : undefined,
           });
 
           // Use backend-calculated areas directly
@@ -2973,7 +2983,7 @@ const ViewerPage: React.FC = () => {
             frame_index: frame.frame_index,
             points: frame.points,
             area_mm2: frame.area_mm2, // Backend now calculates area
-            valid: frame.valid,
+            valid: frame.valid ?? true,
           }));
 
           setPolygonTracks((prev) => ({
@@ -2988,6 +2998,11 @@ const ViewerPage: React.FC = () => {
           }));
           measurementStore.setTrackingData(polygonMeasurement.id, {
             seriesUid: response.series_uid,
+            instanceUid:
+              response.instance_uid ??
+              (cineGrouping === 'instance'
+                ? currentInstanceUid ?? activeInstanceUid ?? null
+                : null),
             totalFrames: response.total_frames,
             startFrameIndex: response.frames[0]?.frame_index ?? 0,
             frames: framesWithArea.map((frame) => ({
@@ -2995,7 +3010,7 @@ const ViewerPage: React.FC = () => {
               points: frame.points,
               lengthMm: null,
               areaMm2: frame.area_mm2 ?? null,
-              valid: frame.valid,
+              valid: frame.valid ?? true,
             })),
             summary: {
               minMm: null,
@@ -3034,6 +3049,8 @@ const ViewerPage: React.FC = () => {
           }));
           measurementStore.setTrackingData(polygonMeasurement.id, {
             seriesUid: seriesKey,
+            instanceUid:
+              cineGrouping === 'instance' ? currentInstanceUid ?? activeInstanceUid ?? null : null,
             totalFrames: totalSlices,
             startFrameIndex: 0,
             frames: frames.map((frame) => ({
@@ -3074,9 +3091,15 @@ const ViewerPage: React.FC = () => {
       currentSlice,
       totalSlices,
       trackMeasurementFor,
+      buildMedsamPromptPayload,
       measurementStore,
       measurementScope,
+      canUseCineMeasurements,
       autoPromoteTracking,
+      currentInstanceUid,
+      activeInstanceUid,
+      cineGrouping,
+      resolveMeasurementInstanceUid,
     ]
   );
 
@@ -3089,8 +3112,126 @@ const ViewerPage: React.FC = () => {
     [segmentContourPoints, smoothContoursEnabled, smoothContoursIterations]
   );
 
+  const buildAutoSegmentPoints = useCallback(
+    (base: Point2D, label: 0 | 1) => {
+      const points: SegmentPromptPoint[] = [];
+      const boundedBase = {
+        x: clamp(base.x, 0, imageDimensions.columns),
+        y: clamp(base.y, 0, imageDimensions.rows),
+      };
+      points.push({ ...boundedBase, label });
+
+      if (segmentAutoSeed && label === 1 && segmentAutoPointCount > 1) {
+        const ringCount = Math.max(1, Math.min(12, Math.round(segmentAutoPointCount - 1)));
+        const radius = Math.max(1, Math.round(segmentAutoPointRadius));
+        for (let i = 0; i < ringCount; i += 1) {
+          const angle = (Math.PI * 2 * i) / ringCount;
+          const x = clamp(boundedBase.x + Math.cos(angle) * radius, 0, imageDimensions.columns);
+          const y = clamp(boundedBase.y + Math.sin(angle) * radius, 0, imageDimensions.rows);
+          points.push({ x, y, label: 1 });
+        }
+      }
+
+      if (segmentAutoNegativePoints && label === 1) {
+        const margin = Math.max(2, Math.round(Math.min(imageDimensions.columns, imageDimensions.rows) * 0.05));
+        const negatives: SegmentPromptPoint[] = [
+          { x: margin, y: margin, label: 0 },
+          { x: imageDimensions.columns - margin, y: margin, label: 0 },
+          { x: margin, y: imageDimensions.rows - margin, label: 0 },
+          { x: imageDimensions.columns - margin, y: imageDimensions.rows - margin, label: 0 },
+        ];
+        negatives.forEach((pt) => points.push(pt));
+      }
+
+      return points;
+    },
+    [
+      segmentAutoSeed,
+      segmentAutoPointCount,
+      segmentAutoPointRadius,
+      segmentAutoNegativePoints,
+      imageDimensions,
+    ]
+  );
+
+  const buildAutoSegmentBox = useCallback(
+    (points: SegmentPromptPoint[]) => {
+      if (!segmentAutoBox || points.length === 0) return null;
+      const anchor = points.find((pt) => pt.label === 1) ?? points[0];
+      const size = Math.min(imageDimensions.columns, imageDimensions.rows) * clamp(segmentAutoBoxScale, 0.15, 0.75);
+      const half = size / 2;
+      const x1 = clamp(anchor.x - half, 0, imageDimensions.columns);
+      const y1 = clamp(anchor.y - half, 0, imageDimensions.rows);
+      const x2 = clamp(anchor.x + half, 0, imageDimensions.columns);
+      const y2 = clamp(anchor.y + half, 0, imageDimensions.rows);
+      if (x2 <= x1 || y2 <= y1) return null;
+      return [Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)] as [number, number, number, number];
+    },
+    [segmentAutoBox, segmentAutoBoxScale, imageDimensions]
+  );
+
+  const updatePolygonMeasurementLocal = useCallback(
+    (measurementId: string, points: Point2D[], areaMm2: number | null, perimeterMm: number | null) => {
+      measurementStore.updateMeasurement(measurementId, {
+        points,
+        areaMm2,
+        perimeterMm,
+      });
+
+      setPolygonsBySeries((prev) => {
+        const next: Record<string, LegacyPolygonMeasurement[]> = { ...prev };
+        Object.entries(prev).forEach(([key, list]) => {
+          const idx = list.findIndex((item) => item.id === measurementId);
+          if (idx >= 0) {
+            const updated = { ...list[idx], points, areaMm2, perimeterMm };
+            const copy = [...list];
+            copy[idx] = updated;
+            next[key] = copy;
+          }
+        });
+        return next;
+      });
+
+      setPolygonsByFrame((prev) => {
+        const next: Record<string, LegacyPolygonMeasurement[]> = { ...prev };
+        Object.entries(prev).forEach(([key, list]) => {
+          const idx = list.findIndex((item) => item.id === measurementId);
+          if (idx >= 0) {
+            const updated = { ...list[idx], points, areaMm2, perimeterMm };
+            const copy = [...list];
+            copy[idx] = updated;
+            next[key] = copy;
+          }
+        });
+        return next;
+      });
+    },
+    [measurementStore]
+  );
+
+  useEffect(() => {
+    if (!lastSegmentContour || !lastSegmentMeasurementId) return;
+    const measurement = measurementStore.getMeasurement(lastSegmentMeasurementId);
+    if (!measurement || measurementStore.trackingData.has(lastSegmentMeasurementId)) return;
+
+    const polygonPoints = buildSegmentPolygon(lastSegmentContour);
+    const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
+    const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
+    const areaMm2 = calculatePolygonAreaMm2(polygonPoints, pixelSpacing);
+    const perimeterMm = calculatePerimeterMm(polygonPoints, pixelSpacing, true);
+
+    updatePolygonMeasurementLocal(lastSegmentMeasurementId, polygonPoints, areaMm2, perimeterMm);
+  }, [
+    lastSegmentContour,
+    lastSegmentMeasurementId,
+    measurementStore,
+    buildSegmentPolygon,
+    currentInstanceMeta,
+    updatePolygonMeasurementLocal,
+  ]);
+
   const runInteractiveSegmentation = useCallback(
-    async (pointsOverride?: SegmentPromptPoint[]) => {
+    async (pointsOverride?: SegmentPromptPoint[], boxOverride?: [number, number, number, number] | null) => {
       if (segmentRunning) return;
       if (!studyUid || !seriesKey || !currentInstanceUid) {
         setSnackbarMessage('Select a study series before running smart segmentation.');
@@ -3105,14 +3246,17 @@ const ViewerPage: React.FC = () => {
 
       setSegmentRunning(true);
       try {
+        const safeFrameIndex = Math.max(0, Math.floor(currentFrameIndex));
+        const box = boxOverride ?? buildAutoSegmentBox(points);
         const response: InteractiveSegmentationResponse = await api.ai.interactiveMedsam({
           studyUid,
           seriesUid: seriesKey,
           instanceUid: currentInstanceUid,
-          frameIndex: currentSlice,
+          frameIndex: safeFrameIndex,
           prompt: {
             points: points.map((point) => [Math.round(point.x), Math.round(point.y)]),
             pointLabels: points.map((point) => point.label),
+            box: box ?? undefined,
           },
         });
 
@@ -3124,7 +3268,7 @@ const ViewerPage: React.FC = () => {
               id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
               seriesUid: seriesKey,
               instanceUid: currentInstanceUid,
-              frameIndex: currentSlice,
+              frameIndex: safeFrameIndex,
               maskFilename: filename,
               maskShape: response.mask_shape,
               createdAt: Date.now(),
@@ -3137,13 +3281,20 @@ const ViewerPage: React.FC = () => {
           ? response.primary_contour
           : response.contours?.[0] ?? [];
         if (contour.length >= 3) {
+          setLastSegmentContour(contour);
           const polygonPoints = buildSegmentPolygon(contour);
           const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
           const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
           const areaMm2 = calculatePolygonAreaMm2(polygonPoints, pixelSpacing);
           const perimeterMm = calculatePerimeterMm(polygonPoints, pixelSpacing, true);
-          const scope = measurementScope === 'cine' ? 'series' : 'frame';
+          const scope = autoTrackCine ? 'series' : effectiveMeasurementScope === 'cine' ? 'series' : 'frame';
           const frameKeyForScope = scope === 'frame' ? frameKey : null;
+          const instanceUidForScope =
+            scope === 'frame'
+              ? currentInstanceUid ?? null
+              : cineGrouping === 'instance'
+                ? currentInstanceUid ?? null
+                : null;
 
           const measurementId = measurementStore.createMeasurement({
             type: 'polygon',
@@ -3154,18 +3305,21 @@ const ViewerPage: React.FC = () => {
             locked: false,
             seriesUid: seriesKey,
             frameKey: frameKeyForScope,
+            instanceUid: instanceUidForScope,
             points: polygonPoints,
             perimeterMm,
             areaMm2,
             volumeData: null,
             trackingData: null,
           } as Omit<NewPolygonMeasurement, 'id' | 'createdAt' | 'modifiedAt'>);
+          setLastSegmentMeasurementId(measurementId);
 
           const legacyPolygon = {
             id: measurementId,
             points: polygonPoints,
             areaMm2,
             perimeterMm,
+            instanceUid: instanceUidForScope,
           };
           if (scope === 'series') {
             setPolygonsBySeries((prev) => ({
@@ -3181,7 +3335,12 @@ const ViewerPage: React.FC = () => {
 
           if (autoTrackCine && scope === 'series') {
             setTimeout(() => {
-              trackMeasurementById(measurementId);
+              trackMeasurementById(measurementId, {
+                method: 'medsam_hybrid',
+                promptPoints: points,
+                promptBox: box ?? null,
+                keyframeStride: 5,
+              });
             }, 0);
           }
         }
@@ -3189,10 +3348,7 @@ const ViewerPage: React.FC = () => {
         setSegmentPromptPoints([]);
         setSnackbarMessage('Smart segmentation complete.');
       } catch (err) {
-        const detail =
-          typeof (err as any)?.response?.data?.detail === 'string'
-            ? (err as any).response.data.detail
-            : null;
+        const detail = getApiErrorDetail(err);
         console.error('Smart segmentation failed:', err);
         setSnackbarMessage(detail ? detail : 'Smart segmentation failed.');
       } finally {
@@ -3205,14 +3361,16 @@ const ViewerPage: React.FC = () => {
       seriesKey,
       currentInstanceUid,
       segmentPromptPoints,
-      currentSlice,
+      buildAutoSegmentBox,
+      currentFrameIndex,
       buildSegmentPolygon,
       currentInstanceMeta,
-      measurementScope,
+      effectiveMeasurementScope,
+      autoTrackCine,
       frameKey,
       measurementStore,
-      autoTrackCine,
       trackMeasurementById,
+      cineGrouping,
     ]
   );
 
@@ -3233,12 +3391,17 @@ const ViewerPage: React.FC = () => {
 
       let nextPoints: SegmentPromptPoint[] = [];
       setSegmentPromptPoints((prev) => {
+        if (segmentAutoSeed && prev.length === 0 && label === 1) {
+          nextPoints = buildAutoSegmentPoints(bounded, label);
+          return nextPoints;
+        }
         nextPoints = [...prev, { ...bounded, label }];
         return nextPoints;
       });
 
       if (segmentAutoRun && !segmentRunning) {
-        runInteractiveSegmentation(nextPoints);
+        const box = buildAutoSegmentBox(nextPoints);
+        runInteractiveSegmentation(nextPoints, box);
       }
     },
     [
@@ -3247,6 +3410,9 @@ const ViewerPage: React.FC = () => {
       segmentPointMode,
       imageDimensions,
       segmentAutoRun,
+      segmentAutoSeed,
+      buildAutoSegmentPoints,
+      buildAutoSegmentBox,
       segmentRunning,
       runInteractiveSegmentation,
     ]
@@ -3279,10 +3445,7 @@ const ViewerPage: React.FC = () => {
       }
       setSnackbarMessage('MedSAM preloaded. Smart Segment is ready.');
     } catch (err) {
-      const detail =
-        typeof (err as any)?.response?.data?.detail === 'string'
-          ? (err as any).response.data.detail
-          : null;
+      const detail = getApiErrorDetail(err);
       console.error('MedSAM preload failed:', err);
       setSnackbarMessage(detail ? detail : 'MedSAM preload failed.');
     } finally {
@@ -3290,8 +3453,73 @@ const ViewerPage: React.FC = () => {
     }
   }, [medsamPreloading, medsamModel, medsamStatus]);
 
+  const handlePolygonFreehandStart = useCallback(
+    (event: React.MouseEvent) => {
+      if (!currentInstanceUid || activeTool !== 'polygon') return;
+      if (!isPointInImage(event.clientX, event.clientY)) return;
+      if (effectiveMeasurementScope === 'frame' && !frameKey) return;
+      if (effectiveMeasurementScope === 'cine' && !seriesKey) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      if (isPlaying) {
+        setIsPlaying(false);
+      }
+
+      const point = screenToImage(event.clientX, event.clientY);
+      if (!point) return;
+      const clampedPoint = {
+        x: clamp(point.x, 0, imageDimensions.columns),
+        y: clamp(point.y, 0, imageDimensions.rows),
+      };
+
+      if (!activePolygonRef.current) {
+        const id =
+          typeof crypto !== 'undefined' && crypto.randomUUID
+            ? crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        setActivePolygon({
+          id,
+          points: [clampedPoint],
+          areaMm2: null,
+          perimeterMm: null,
+          instanceUid: currentInstanceUid ?? null,
+        });
+      } else {
+        setActivePolygon((prev) =>
+          prev
+            ? {
+                ...prev,
+                points: [...prev.points, clampedPoint],
+              }
+            : prev
+        );
+      }
+
+      freehandPolygonRef.current.active = true;
+      freehandPolygonRef.current.lastPoint = clampedPoint;
+    },
+    [
+      currentInstanceUid,
+      activeTool,
+      isPointInImage,
+      effectiveMeasurementScope,
+      frameKey,
+      seriesKey,
+      screenToImage,
+      imageDimensions,
+      isPlaying,
+    ]
+  );
+
   const handleMouseDown = (event: React.MouseEvent) => {
-    if (event.button !== 0 || !currentInstanceUid) return;
+    if (!currentInstanceUid) return;
+    if (event.button === 2 && activeTool === 'polygon') {
+      handlePolygonFreehandStart(event);
+      return;
+    }
+    if (event.button !== 0) return;
     event.preventDefault();
     event.stopPropagation();
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
@@ -3326,8 +3554,8 @@ const ViewerPage: React.FC = () => {
       return;
     }
     if (dragTool === 'measure') {
-      if (measurementScope === 'frame' && !frameKey) return;
-      if (measurementScope === 'cine' && !seriesKey) return;
+      if (effectiveMeasurementScope === 'frame' && !frameKey) return;
+      if (effectiveMeasurementScope === 'cine' && !seriesKey) return;
     }
     dragStateRef.current = {
       tool: dragTool,
@@ -3347,16 +3575,17 @@ const ViewerPage: React.FC = () => {
         typeof crypto !== 'undefined' && crypto.randomUUID
           ? crypto.randomUUID()
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      const start = {
-        x: clamp(point.x, 0, imageDimensions.columns),
-        y: clamp(point.y, 0, imageDimensions.rows),
-      };
-      dragStateRef.current.measureStart = start;
-      dragStateRef.current.measureId = id;
-      dragStateRef.current.measureFrameKey = frameKey || undefined;
-      dragStateRef.current.measureSeriesKey = seriesKey || undefined;
-      dragStateRef.current.measureScope = measurementScope;
-      setActiveMeasurement({ id, start, end: start, lengthMm: 0 });
+      const { dragState, measurement } = createMeasureDragStart({
+        point,
+        imageDimensions,
+        frameKey,
+        seriesKey,
+        instanceUid: currentInstanceUid,
+        scope: effectiveMeasurementScope,
+        id,
+      });
+      Object.assign(dragStateRef.current, dragState);
+      setActiveMeasurement(measurement);
     }
   };
 
@@ -3404,94 +3633,28 @@ const ViewerPage: React.FC = () => {
     [measurementTracks, polygonTracks, measurementStore, clearTrackingStateFor]
   );
 
-  // Hit test function to find measurement at a point
-  const hitTestMeasurement = useCallback(
-    (imagePoint: { x: number; y: number }, screenTolerance: number = 8): string | null => {
-      const tolerance = screenTolerance / Math.max(scale, 0.0001);
-      // Check line measurements
-      for (const measurement of visibleMeasurements) {
-        // Distance from point to line segment
-        const { start, end } = measurement;
-        const lineLengthSq = Math.pow(end.x - start.x, 2) + Math.pow(end.y - start.y, 2);
-        if (lineLengthSq === 0) {
-          // Line is a point
-          const dist = Math.sqrt(Math.pow(imagePoint.x - start.x, 2) + Math.pow(imagePoint.y - start.y, 2));
-          if (dist <= tolerance) return measurement.id;
-        } else {
-          // Project point onto line
-          const t = Math.max(0, Math.min(1,
-            ((imagePoint.x - start.x) * (end.x - start.x) + (imagePoint.y - start.y) * (end.y - start.y)) / lineLengthSq
-          ));
-          const projX = start.x + t * (end.x - start.x);
-          const projY = start.y + t * (end.y - start.y);
-          const dist = Math.sqrt(Math.pow(imagePoint.x - projX, 2) + Math.pow(imagePoint.y - projY, 2));
-          if (dist <= tolerance) return measurement.id;
-        }
-      }
-
-      // Check polygon measurements
-      for (const polygon of visiblePolygons) {
-        // Check if point is near any edge or inside polygon
-        const { points } = polygon;
-        if (points.length < 3) continue;
-
-        // Check edges
-        for (let i = 0; i < points.length; i++) {
-          const p1 = points[i];
-          const p2 = points[(i + 1) % points.length];
-          const lineLengthSq = Math.pow(p2.x - p1.x, 2) + Math.pow(p2.y - p1.y, 2);
-          if (lineLengthSq === 0) continue;
-          const t = Math.max(0, Math.min(1,
-            ((imagePoint.x - p1.x) * (p2.x - p1.x) + (imagePoint.y - p1.y) * (p2.y - p1.y)) / lineLengthSq
-          ));
-          const projX = p1.x + t * (p2.x - p1.x);
-          const projY = p1.y + t * (p2.y - p1.y);
-          const dist = Math.sqrt(Math.pow(imagePoint.x - projX, 2) + Math.pow(imagePoint.y - projY, 2));
-          if (dist <= tolerance) return polygon.id;
-        }
-
-        // Check if point is inside polygon (ray casting)
-        let inside = false;
-        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
-          const xi = points[i].x, yi = points[i].y;
-          const xj = points[j].x, yj = points[j].y;
-          if (((yi > imagePoint.y) !== (yj > imagePoint.y)) &&
-              (imagePoint.x < (xj - xi) * (imagePoint.y - yi) / (yj - yi) + xi)) {
-            inside = !inside;
-          }
-        }
-        if (inside) return polygon.id;
-      }
-
-      return null;
-    },
-    [visibleMeasurements, visiblePolygons, scale]
+  const findMeasurementHit = useCallback(
+    (imagePoint: Point2D, screenTolerance?: number) =>
+      hitTestMeasurement({
+        imagePoint,
+        scale,
+        screenTolerance,
+        measurements: visibleMeasurements,
+        polygons: visiblePolygons,
+      }),
+    [scale, visibleMeasurements, visiblePolygons]
   );
 
-  // Hit test for measurement handles (endpoints/vertices)
-  const hitTestHandle = useCallback(
-    (imagePoint: { x: number; y: number }, screenTolerance: number = 10): { id: string; type: 'line' | 'polygon'; handleIndex: number } | null => {
-      const tolerance = screenTolerance / Math.max(scale, 0.0001);
-      // Check line measurement endpoints
-      for (const measurement of visibleMeasurements) {
-        const distStart = Math.sqrt(Math.pow(imagePoint.x - measurement.start.x, 2) + Math.pow(imagePoint.y - measurement.start.y, 2));
-        if (distStart <= tolerance) return { id: measurement.id, type: 'line', handleIndex: 0 };
-        const distEnd = Math.sqrt(Math.pow(imagePoint.x - measurement.end.x, 2) + Math.pow(imagePoint.y - measurement.end.y, 2));
-        if (distEnd <= tolerance) return { id: measurement.id, type: 'line', handleIndex: 1 };
-      }
-
-      // Check polygon vertices
-      for (const polygon of visiblePolygons) {
-        for (let i = 0; i < polygon.points.length; i++) {
-          const p = polygon.points[i];
-          const dist = Math.sqrt(Math.pow(imagePoint.x - p.x, 2) + Math.pow(imagePoint.y - p.y, 2));
-          if (dist <= tolerance) return { id: polygon.id, type: 'polygon', handleIndex: i };
-        }
-      }
-
-      return null;
-    },
-    [visibleMeasurements, visiblePolygons, scale]
+  const findHandleHit = useCallback(
+    (imagePoint: Point2D, screenTolerance?: number) =>
+      hitTestHandle({
+        imagePoint,
+        scale,
+        screenTolerance,
+        measurements: visibleMeasurements,
+        polygons: visiblePolygons,
+      }),
+    [scale, visibleMeasurements, visiblePolygons]
   );
 
   // Handle pointer tool mouse down for selection and editing
@@ -3499,82 +3662,50 @@ const ViewerPage: React.FC = () => {
     (event: React.MouseEvent) => {
       if (activeTool !== 'pointer') return;
 
+      const selectionActions = {
+        setSelectedMeasurementId: setSelectedMeasurementIdLocal,
+        selectMeasurement: (id: string | null) => measurementStore.selectMeasurement(id),
+      };
+      const editActions = {
+        ...selectionActions,
+        setEditingMeasurement,
+        setIsDragging,
+      };
+
       const point = screenToImage(event.clientX, event.clientY);
       if (!point) {
-        setSelectedMeasurementIdLocal(null);
-        measurementStore.selectMeasurement(null);
+        clearMeasurementSelection(selectionActions);
         return;
       }
 
       // First check if clicking on a handle
-      const handleHit = hitTestHandle(point);
+      const handleHit = findHandleHit(point);
       if (handleHit) {
         clearTrackingForEdit(handleHit.id);
-        // Start handle drag
-        let originalPoints: Array<{ x: number; y: number }> = [];
-        if (handleHit.type === 'line') {
-          const m = visibleMeasurements.find(m => m.id === handleHit.id);
-          if (m) originalPoints = [m.start, m.end];
-        } else {
-          const p = visiblePolygons.find(p => p.id === handleHit.id);
-          if (p) originalPoints = [...p.points];
-        }
-
-        setEditingMeasurement({
-          id: handleHit.id,
-          type: handleHit.type,
-          mode: 'handle',
-          handleIndex: handleHit.handleIndex,
-          startImagePoint: point,
-          originalPoints,
-        });
-        setSelectedMeasurementIdLocal(handleHit.id);
-        measurementStore.selectMeasurement(handleHit.id);
-        setIsDragging(true);
+        const editState = buildHandleEditState(handleHit, point, visibleMeasurements, visiblePolygons);
+        if (!editState) return;
+        startMeasurementEdit(editActions, editState);
         return;
       }
 
       // Check if clicking on measurement body for moving
-      const hitId = hitTestMeasurement(point);
+      const hitId = findMeasurementHit(point);
       if (hitId) {
         clearTrackingForEdit(hitId);
-        // Start move drag
-        let type: 'line' | 'polygon' = 'line';
-        let originalPoints: Array<{ x: number; y: number }> = [];
-
-        const lineMeasurement = visibleMeasurements.find(m => m.id === hitId);
-        if (lineMeasurement) {
-          originalPoints = [lineMeasurement.start, lineMeasurement.end];
-        } else {
-          const polygonMeasurement = visiblePolygons.find(p => p.id === hitId);
-          if (polygonMeasurement) {
-            type = 'polygon';
-            originalPoints = [...polygonMeasurement.points];
-          }
-        }
-
-        setEditingMeasurement({
-          id: hitId,
-          type,
-          mode: 'move',
-          startImagePoint: point,
-          originalPoints,
-        });
-        setSelectedMeasurementIdLocal(hitId);
-        measurementStore.selectMeasurement(hitId);
-        setIsDragging(true);
+        const editState = buildBodyEditState(hitId, point, visibleMeasurements, visiblePolygons);
+        if (!editState) return;
+        startMeasurementEdit(editActions, editState);
         return;
       }
 
       // Click on empty space - deselect
-      setSelectedMeasurementIdLocal(null);
-      measurementStore.selectMeasurement(null);
+      clearMeasurementSelection(selectionActions);
     },
     [
       activeTool,
       screenToImage,
-      hitTestHandle,
-      hitTestMeasurement,
+      findHandleHit,
+      findMeasurementHit,
       measurementStore,
       visibleMeasurements,
       visiblePolygons,
@@ -3582,13 +3713,105 @@ const ViewerPage: React.FC = () => {
     ]
   );
 
+  // Finish polygon drawing
+  const finishPolygon = useCallback(() => {
+    const polygon = activePolygonRef.current ?? activePolygon;
+    if (!polygon || polygon.points.length < 3) {
+      setActivePolygon(null);
+      setPolygonPreviewPoint(null);
+      return;
+    }
+
+    // Calculate area and perimeter
+    const pixelSpacingData = currentInstanceMeta?.pixel_spacing;
+    const pixelSpacing = pixelSpacingData
+      ? { rowSpacing: pixelSpacingData[0], columnSpacing: pixelSpacingData[1] }
+      : null;
+
+    const areaMm2 = pixelSpacing
+      ? calculatePolygonAreaMm2(polygon.points, pixelSpacing)
+      : null;
+    const perimeterMm = pixelSpacing
+      ? calculatePerimeterMm(polygon.points, pixelSpacing, true)
+      : null;
+
+    const finishedPolygon: LegacyPolygonMeasurement = {
+      ...polygon,
+      areaMm2,
+      perimeterMm,
+    };
+
+    // Add to old state
+    if (effectiveMeasurementScope === 'cine' && seriesKey) {
+      setPolygonsBySeries((prev) => ({
+        ...prev,
+        [seriesKey]: [...(prev[seriesKey] ?? []), finishedPolygon],
+      }));
+    } else if (frameKey) {
+      setPolygonsByFrame((prev) => ({
+        ...prev,
+        [frameKey]: [...(prev[frameKey] ?? []), finishedPolygon],
+      }));
+    }
+
+    // Add to new measurement store
+    if (seriesKey) {
+      const isCineScope = effectiveMeasurementScope === 'cine';
+      const instanceUidForScope =
+        !isCineScope
+          ? polygon.instanceUid ?? currentInstanceUid ?? null
+          : cineGrouping === 'instance'
+            ? polygon.instanceUid ?? currentInstanceUid ?? null
+            : null;
+
+      measurementStore.createMeasurement({
+        type: 'polygon',
+        seriesUid: seriesKey,
+        frameKey: isCineScope ? null : frameKey,
+        scope: isCineScope ? 'series' : 'frame',
+        instanceUid: instanceUidForScope,
+        points: finishedPolygon.points,
+        label: null,
+        visible: true,
+        locked: false,
+        color: '#22c55e',
+        areaMm2: finishedPolygon.areaMm2,
+        perimeterMm: finishedPolygon.perimeterMm,
+        volumeData: null,
+        trackingData: null,
+      } as Omit<NewPolygonMeasurement, 'id' | 'createdAt' | 'modifiedAt'>, finishedPolygon.id);
+    }
+
+    // Note: Polygon tracking is now on-demand (user clicks Track button)
+    // No automatic static tracking - allows user to choose when to track
+    if (effectiveMeasurementScope === 'cine' && totalSlices > 1) {
+      setSnackbarMessage('Polygon created. Click Track button for optical flow tracking across frames.');
+    } else {
+      setSnackbarMessage('Polygon measurement added.');
+    }
+
+    setSelectedMeasurementIdLocal(finishedPolygon.id);
+    setActivePolygon(null);
+    setPolygonPreviewPoint(null);
+  }, [
+    activePolygon,
+    currentInstanceMeta,
+    effectiveMeasurementScope,
+    seriesKey,
+    frameKey,
+    measurementStore,
+    totalSlices,
+    cineGrouping,
+    currentInstanceUid,
+  ]);
+
   // Handle polygon click (adding points)
   const handlePolygonClick = useCallback(
     (event: React.MouseEvent) => {
       if (activeTool !== 'polygon') return;
       if (!isPointInImage(event.clientX, event.clientY)) return;
-      if (measurementScope === 'frame' && !frameKey) return;
-      if (measurementScope === 'cine' && !seriesKey) return;
+      if (effectiveMeasurementScope === 'frame' && !frameKey) return;
+      if (effectiveMeasurementScope === 'cine' && !seriesKey) return;
 
       setPolygonPreviewPoint(null);
       const point = screenToImage(event.clientX, event.clientY);
@@ -3610,6 +3833,7 @@ const ViewerPage: React.FC = () => {
           points: [clampedPoint],
           areaMm2: null,
           perimeterMm: null,
+          instanceUid: currentInstanceUid ?? null,
         });
       } else {
         // Check if clicking near first point to close polygon (within 10 pixels)
@@ -3630,80 +3854,19 @@ const ViewerPage: React.FC = () => {
         }
       }
     },
-    [activeTool, activePolygon, isPointInImage, screenToImage, imageDimensions, measurementScope, frameKey, seriesKey]
+    [
+      activeTool,
+      activePolygon,
+      isPointInImage,
+      screenToImage,
+      imageDimensions,
+      effectiveMeasurementScope,
+      frameKey,
+      seriesKey,
+      currentInstanceUid,
+      finishPolygon,
+    ]
   );
-
-  // Finish polygon drawing
-  const finishPolygon = useCallback(() => {
-    if (!activePolygon || activePolygon.points.length < 3) {
-      setActivePolygon(null);
-      setPolygonPreviewPoint(null);
-      return;
-    }
-
-    // Calculate area and perimeter
-    const pixelSpacingData = currentInstanceMeta?.pixel_spacing;
-    const pixelSpacing = pixelSpacingData
-      ? { rowSpacing: pixelSpacingData[0], columnSpacing: pixelSpacingData[1] }
-      : null;
-
-    const areaMm2 = pixelSpacing
-      ? calculatePolygonAreaMm2(activePolygon.points, pixelSpacing)
-      : null;
-    const perimeterMm = pixelSpacing
-      ? calculatePerimeterMm(activePolygon.points, pixelSpacing, true)
-      : null;
-
-    const finishedPolygon: PolygonMeasurement = {
-      ...activePolygon,
-      areaMm2,
-      perimeterMm,
-    };
-
-    // Add to old state
-    if (measurementScope === 'cine' && seriesKey) {
-      setPolygonsBySeries((prev) => ({
-        ...prev,
-        [seriesKey]: [...(prev[seriesKey] ?? []), finishedPolygon],
-      }));
-    } else if (frameKey) {
-      setPolygonsByFrame((prev) => ({
-        ...prev,
-        [frameKey]: [...(prev[frameKey] ?? []), finishedPolygon],
-      }));
-    }
-
-    // Add to new measurement store
-    if (seriesKey) {
-      measurementStore.createMeasurement({
-        type: 'polygon',
-        seriesUid: seriesKey,
-        frameKey: measurementScope === 'cine' ? null : frameKey,
-        scope: measurementScope === 'cine' ? 'series' : 'frame',
-        points: finishedPolygon.points,
-        label: null,
-        visible: true,
-        locked: false,
-        color: '#22c55e',
-        areaMm2: finishedPolygon.areaMm2,
-        perimeterMm: finishedPolygon.perimeterMm,
-        volumeData: null,
-        trackingData: null,
-      } as Omit<NewPolygonMeasurement, 'id' | 'createdAt' | 'modifiedAt'>, finishedPolygon.id);
-    }
-
-    // Note: Polygon tracking is now on-demand (user clicks Track button)
-    // No automatic static tracking - allows user to choose when to track
-    if (measurementScope === 'cine' && totalSlices > 1) {
-      setSnackbarMessage('Polygon created. Click Track button for optical flow tracking across frames.');
-    } else {
-      setSnackbarMessage('Polygon measurement added.');
-    }
-
-    setSelectedMeasurementIdLocal(finishedPolygon.id);
-    setActivePolygon(null);
-    setPolygonPreviewPoint(null);
-  }, [activePolygon, currentInstanceMeta, measurementScope, seriesKey, frameKey, measurementStore, totalSlices]);
 
   // Handle double-click to finish polygon
   const handlePolygonDoubleClick = useCallback(() => {
@@ -3722,7 +3885,7 @@ const ViewerPage: React.FC = () => {
 
       // Cancel measurement editing with Escape
       if (event.key === 'Escape' && editingMeasurement) {
-        setEditingMeasurement(null);
+        cancelMeasurementEdit(setEditingMeasurement);
         return;
       }
 
@@ -3730,13 +3893,17 @@ const ViewerPage: React.FC = () => {
       if (event.key === 'Escape' && activePolygon) {
         setActivePolygon(null);
         setPolygonPreviewPoint(null);
+        freehandPolygonRef.current.active = false;
+        freehandPolygonRef.current.lastPoint = null;
         return;
       }
 
       // Deselect with Escape
       if (event.key === 'Escape' && selectedMeasurementIdLocal) {
-        setSelectedMeasurementIdLocal(null);
-        measurementStore.selectMeasurement(null);
+        clearMeasurementSelection({
+          setSelectedMeasurementId: setSelectedMeasurementIdLocal,
+          selectMeasurement: (id: string | null) => measurementStore.selectMeasurement(id),
+        });
         return;
       }
 
@@ -3747,28 +3914,28 @@ const ViewerPage: React.FC = () => {
         clearTrackingStateFor([selectedMeasurementIdLocal]);
         // Also delete from old state
         setMeasurementsByFrame((prev) => {
-          const newState: Record<string, Measurement[]> = {};
+          const newState: Record<string, LegacyLineMeasurement[]> = {};
           for (const [key, measurements] of Object.entries(prev)) {
             newState[key] = measurements.filter((m) => m.id !== selectedMeasurementIdLocal);
           }
           return newState;
         });
         setMeasurementsBySeries((prev) => {
-          const newState: Record<string, Measurement[]> = {};
+          const newState: Record<string, LegacyLineMeasurement[]> = {};
           for (const [key, measurements] of Object.entries(prev)) {
             newState[key] = measurements.filter((m) => m.id !== selectedMeasurementIdLocal);
           }
           return newState;
         });
         setPolygonsByFrame((prev) => {
-          const newState: Record<string, PolygonMeasurement[]> = {};
+          const newState: Record<string, LegacyPolygonMeasurement[]> = {};
           for (const [key, polygons] of Object.entries(prev)) {
             newState[key] = polygons.filter((p) => p.id !== selectedMeasurementIdLocal);
           }
           return newState;
         });
         setPolygonsBySeries((prev) => {
-          const newState: Record<string, PolygonMeasurement[]> = {};
+          const newState: Record<string, LegacyPolygonMeasurement[]> = {};
           for (const [key, polygons] of Object.entries(prev)) {
             newState[key] = polygons.filter((p) => p.id !== selectedMeasurementIdLocal);
           }
@@ -3781,43 +3948,12 @@ const ViewerPage: React.FC = () => {
 
       // Tool shortcuts (only when no modifier keys)
       if (!event.ctrlKey && !event.metaKey && !event.altKey) {
-        switch (event.key.toLowerCase()) {
-          case 'v':
-          case '1':
-            setActiveTool('pointer');
-            break;
-          case 'h':
-          case '2':
-            setActiveTool('pan');
-            break;
-          case 'z':
-          case '3':
-            setActiveTool('zoom');
-            break;
-          case 'w':
-          case '4':
-            setActiveTool('wwwl');
-            break;
-          case 'm':
-          case '5':
-            setActiveTool('measure');
-            break;
-          case 'a':
-          case '6':
-            setActiveTool('polygon');
-            break;
-          case 's':
-          case '8':
-            setActiveTool('segment');
-            break;
-          case 'r':
-          case '7':
-            setActiveTool('rotate');
-            break;
-          case ' ': // Spacebar to play/pause cine
-            event.preventDefault();
-            setIsPlaying((prev) => !prev);
-            break;
+        const shortcutTool = resolveToolShortcut(event.key);
+        if (shortcutTool) {
+          setActiveTool(shortcutTool);
+        } else if (event.key === ' ') {
+          event.preventDefault();
+          setIsPlaying((prev) => !prev);
         }
       }
 
@@ -3834,7 +3970,7 @@ const ViewerPage: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activePolygon, selectedMeasurementIdLocal, measurementStore, clearTrackingStateFor]);
+  }, [activePolygon, editingMeasurement, selectedMeasurementIdLocal, measurementStore, clearTrackingStateFor]);
 
   const handleMouseMove = useCallback(
     (event: MouseEvent) => {
@@ -3844,117 +3980,78 @@ const ViewerPage: React.FC = () => {
       if (editingMeasurement) {
         const currentPoint = screenToImage(event.clientX, event.clientY);
         if (!currentPoint) return;
-
-        const dx = currentPoint.x - editingMeasurement.startImagePoint.x;
-        const dy = currentPoint.y - editingMeasurement.startImagePoint.y;
+        const newPoints = buildEditedPoints(editingMeasurement, currentPoint, imageDimensions);
 
         if (editingMeasurement.type === 'line') {
-          if (editingMeasurement.mode === 'handle' && editingMeasurement.handleIndex !== undefined) {
-            // Move single endpoint
-            const newPoints = [...editingMeasurement.originalPoints];
-            newPoints[editingMeasurement.handleIndex] = {
-              x: clamp(editingMeasurement.originalPoints[editingMeasurement.handleIndex].x + dx, 0, imageDimensions.columns),
-              y: clamp(editingMeasurement.originalPoints[editingMeasurement.handleIndex].y + dy, 0, imageDimensions.rows),
-            };
-            // Update in old state
-            const updateMeasurement = (measurements: Measurement[]) =>
-              measurements.map((m) =>
-                m.id === editingMeasurement.id
-                  ? { ...m, start: newPoints[0], end: newPoints[1] }
-                  : m
-              );
-            setMeasurementsByFrame((prev) => {
-              const newState: Record<string, Measurement[]> = {};
-              for (const [key, ms] of Object.entries(prev)) {
-                newState[key] = updateMeasurement(ms);
-              }
-              return newState;
-            });
-            setMeasurementsBySeries((prev) => {
-              const newState: Record<string, Measurement[]> = {};
-              for (const [key, ms] of Object.entries(prev)) {
-                newState[key] = updateMeasurement(ms);
-              }
-              return newState;
-            });
-          } else {
-            // Move entire measurement
-            const newPoints = editingMeasurement.originalPoints.map((p) => ({
-              x: clamp(p.x + dx, 0, imageDimensions.columns),
-              y: clamp(p.y + dy, 0, imageDimensions.rows),
-            }));
-            const updateMeasurement = (measurements: Measurement[]) =>
-              measurements.map((m) =>
-                m.id === editingMeasurement.id
-                  ? { ...m, start: newPoints[0], end: newPoints[1] }
-                  : m
-              );
-            setMeasurementsByFrame((prev) => {
-              const newState: Record<string, Measurement[]> = {};
-              for (const [key, ms] of Object.entries(prev)) {
-                newState[key] = updateMeasurement(ms);
-              }
-              return newState;
-            });
-            setMeasurementsBySeries((prev) => {
-              const newState: Record<string, Measurement[]> = {};
-              for (const [key, ms] of Object.entries(prev)) {
-                newState[key] = updateMeasurement(ms);
-              }
-              return newState;
-            });
-          }
+          const updateMeasurement = (measurements: LegacyLineMeasurement[]) =>
+            measurements.map((m) =>
+              m.id === editingMeasurement.id
+                ? { ...m, start: newPoints[0], end: newPoints[1] }
+                : m
+            );
+          setMeasurementsByFrame((prev) => {
+            const newState: Record<string, LegacyLineMeasurement[]> = {};
+            for (const [key, ms] of Object.entries(prev)) {
+              newState[key] = updateMeasurement(ms);
+            }
+            return newState;
+          });
+          setMeasurementsBySeries((prev) => {
+            const newState: Record<string, LegacyLineMeasurement[]> = {};
+            for (const [key, ms] of Object.entries(prev)) {
+              newState[key] = updateMeasurement(ms);
+            }
+            return newState;
+          });
         } else if (editingMeasurement.type === 'polygon') {
-          if (editingMeasurement.mode === 'handle' && editingMeasurement.handleIndex !== undefined) {
-            // Move single vertex
-            const newPoints = [...editingMeasurement.originalPoints];
-            newPoints[editingMeasurement.handleIndex] = {
-              x: clamp(editingMeasurement.originalPoints[editingMeasurement.handleIndex].x + dx, 0, imageDimensions.columns),
-              y: clamp(editingMeasurement.originalPoints[editingMeasurement.handleIndex].y + dy, 0, imageDimensions.rows),
-            };
-            const updatePolygon = (polygons: PolygonMeasurement[]) =>
-              polygons.map((p) =>
-                p.id === editingMeasurement.id ? { ...p, points: newPoints } : p
-              );
-            setPolygonsByFrame((prev) => {
-              const newState: Record<string, PolygonMeasurement[]> = {};
-              for (const [key, ps] of Object.entries(prev)) {
-                newState[key] = updatePolygon(ps);
-              }
-              return newState;
-            });
-            setPolygonsBySeries((prev) => {
-              const newState: Record<string, PolygonMeasurement[]> = {};
-              for (const [key, ps] of Object.entries(prev)) {
-                newState[key] = updatePolygon(ps);
-              }
-              return newState;
-            });
-          } else {
-            // Move entire polygon
-            const newPoints = editingMeasurement.originalPoints.map((p) => ({
-              x: clamp(p.x + dx, 0, imageDimensions.columns),
-              y: clamp(p.y + dy, 0, imageDimensions.rows),
-            }));
-            const updatePolygon = (polygons: PolygonMeasurement[]) =>
-              polygons.map((p) =>
-                p.id === editingMeasurement.id ? { ...p, points: newPoints } : p
-              );
-            setPolygonsByFrame((prev) => {
-              const newState: Record<string, PolygonMeasurement[]> = {};
-              for (const [key, ps] of Object.entries(prev)) {
-                newState[key] = updatePolygon(ps);
-              }
-              return newState;
-            });
-            setPolygonsBySeries((prev) => {
-              const newState: Record<string, PolygonMeasurement[]> = {};
-              for (const [key, ps] of Object.entries(prev)) {
-                newState[key] = updatePolygon(ps);
-              }
-              return newState;
-            });
-          }
+          const updatePolygon = (polygons: LegacyPolygonMeasurement[]) =>
+            polygons.map((p) =>
+              p.id === editingMeasurement.id ? { ...p, points: newPoints } : p
+            );
+          setPolygonsByFrame((prev) => {
+            const newState: Record<string, LegacyPolygonMeasurement[]> = {};
+            for (const [key, ps] of Object.entries(prev)) {
+              newState[key] = updatePolygon(ps);
+            }
+            return newState;
+          });
+          setPolygonsBySeries((prev) => {
+            const newState: Record<string, LegacyPolygonMeasurement[]> = {};
+            for (const [key, ps] of Object.entries(prev)) {
+              newState[key] = updatePolygon(ps);
+            }
+            return newState;
+          });
+        }
+        return;
+      }
+
+      if (freehandPolygonRef.current.active && activeTool === 'polygon') {
+        if ((event.buttons & 2) !== 2) {
+          return;
+        }
+        const currentPoint = screenToImage(event.clientX, event.clientY);
+        if (!currentPoint || !isPointInImage(event.clientX, event.clientY)) {
+          return;
+        }
+        const clampedPoint = {
+          x: clamp(currentPoint.x, 0, imageDimensions.columns),
+          y: clamp(currentPoint.y, 0, imageDimensions.rows),
+        };
+        const lastPoint = freehandPolygonRef.current.lastPoint;
+        const dist = lastPoint
+          ? Math.hypot(clampedPoint.x - lastPoint.x, clampedPoint.y - lastPoint.y)
+          : Infinity;
+        if (!lastPoint || dist >= freehandPointSpacing) {
+          setActivePolygon((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  points: [...prev.points, clampedPoint],
+                }
+              : prev
+          );
+          freehandPolygonRef.current.lastPoint = clampedPoint;
         }
         return;
       }
@@ -4017,25 +4114,15 @@ const ViewerPage: React.FC = () => {
       if (dragState.tool === 'measure' && dragState.measureStart) {
         const point = screenToImage(event.clientX, event.clientY);
         if (!point) return;
-        const end = {
-          x: clamp(point.x, 0, imageDimensions.columns),
-          y: clamp(point.y, 0, imageDimensions.rows),
-        };
         const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
-        const dxMm = (end.x - dragState.measureStart.x) * spacing[1];
-        const dyMm = (end.y - dragState.measureStart.y) * spacing[0];
-        const lengthMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm);
-        setActiveMeasurement((prev) => {
-          if (!prev) {
-            return {
-              id: dragState.measureId || `${Date.now()}`,
-              start: dragState.measureStart!,
-              end,
-              lengthMm,
-            };
-          }
-          return { ...prev, end, lengthMm };
+        const measureDrag = dragState as MeasureDragState;
+        const updated = updateMeasureDrag({
+          dragState: measureDrag,
+          currentPoint: point,
+          imageDimensions,
+          pixelSpacing: [spacing[0], spacing[1]],
         });
+        setActiveMeasurement((prev) => (prev ? { ...prev, end: updated.end, lengthMm: updated.lengthMm } : updated));
       }
     },
     [
@@ -4049,10 +4136,17 @@ const ViewerPage: React.FC = () => {
       editingMeasurement,
       activeTool,
       activePolygon,
+      freehandPointSpacing,
     ]
   );
 
   const handleMouseUp = useCallback(() => {
+    if (freehandPolygonRef.current.active) {
+      freehandPolygonRef.current.active = false;
+      freehandPolygonRef.current.lastPoint = null;
+      finishPolygon();
+      return;
+    }
     // Handle pointer tool editing completion
     if (editingMeasurement) {
       // Recalculate measurement values after editing
@@ -4060,101 +4154,36 @@ const ViewerPage: React.FC = () => {
       const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
 
       if (editingMeasurement.type === 'line') {
-        // Recalculate line length
-        const updateMeasurement = (measurements: Measurement[]) =>
-          measurements.map((m) => {
-            if (m.id !== editingMeasurement.id) return m;
-            const dxMm = (m.end.x - m.start.x) * spacing[1];
-            const dyMm = (m.end.y - m.start.y) * spacing[0];
-            const lengthMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm);
-            return { ...m, lengthMm };
-          });
-        setMeasurementsByFrame((prev) => {
-          const newState: Record<string, Measurement[]> = {};
-          for (const [key, ms] of Object.entries(prev)) {
-            newState[key] = updateMeasurement(ms);
-          }
-          return newState;
-        });
-        setMeasurementsBySeries((prev) => {
-          const newState: Record<string, Measurement[]> = {};
-          for (const [key, ms] of Object.entries(prev)) {
-            newState[key] = updateMeasurement(ms);
-          }
-          return newState;
-        });
+        setMeasurementsByFrame((prev) =>
+          recomputeLegacyLineLengths(prev, editingMeasurement, spacing)
+        );
+        setMeasurementsBySeries((prev) =>
+          recomputeLegacyLineLengths(prev, editingMeasurement, spacing)
+        );
       } else if (editingMeasurement.type === 'polygon') {
-        // Recalculate polygon area and perimeter
-        const updatePolygon = (polygons: PolygonMeasurement[]) =>
-          polygons.map((p) => {
-            if (p.id !== editingMeasurement.id) return p;
-            const areaMm2 = calculatePolygonAreaMm2(p.points, pixelSpacing);
-            const perimeterMm = calculatePerimeterMm(p.points, pixelSpacing, true);
-            return { ...p, areaMm2, perimeterMm };
-          });
-        setPolygonsByFrame((prev) => {
-          const newState: Record<string, PolygonMeasurement[]> = {};
-          for (const [key, ps] of Object.entries(prev)) {
-            newState[key] = updatePolygon(ps);
-          }
-          return newState;
-        });
-        setPolygonsBySeries((prev) => {
-          const newState: Record<string, PolygonMeasurement[]> = {};
-          for (const [key, ps] of Object.entries(prev)) {
-            newState[key] = updatePolygon(ps);
-          }
-          return newState;
-        });
+        setPolygonsByFrame((prev) =>
+          recomputeLegacyPolygonMetrics(prev, editingMeasurement, pixelSpacing)
+        );
+        setPolygonsBySeries((prev) =>
+          recomputeLegacyPolygonMetrics(prev, editingMeasurement, pixelSpacing)
+        );
       }
 
       const pointer = lastPointerRef.current;
       const currentPoint = pointer ? screenToImage(pointer.x, pointer.y) : null;
-      const dx = currentPoint ? currentPoint.x - editingMeasurement.startImagePoint.x : 0;
-      const dy = currentPoint ? currentPoint.y - editingMeasurement.startImagePoint.y : 0;
-      const hasMovement = Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01;
+      const { hasMovement } = computeEditMovement(editingMeasurement, currentPoint);
 
-      if (hasMovement) {
-        const clampPoint = (point: { x: number; y: number }) => ({
-          x: clamp(point.x + dx, 0, imageDimensions.columns),
-          y: clamp(point.y + dy, 0, imageDimensions.rows),
-        });
-
-        if (editingMeasurement.type === 'line') {
-          const newPoints = [...editingMeasurement.originalPoints];
-          if (editingMeasurement.mode === 'handle' && editingMeasurement.handleIndex !== undefined) {
-            newPoints[editingMeasurement.handleIndex] = clampPoint(
-              editingMeasurement.originalPoints[editingMeasurement.handleIndex]
-            );
-          } else {
-            for (let i = 0; i < newPoints.length; i += 1) {
-              newPoints[i] = clampPoint(newPoints[i]);
-            }
-          }
-
-          const dxMm = (newPoints[1].x - newPoints[0].x) * spacing[1];
-          const dyMm = (newPoints[1].y - newPoints[0].y) * spacing[0];
-          const lengthMm = Math.sqrt(dxMm * dxMm + dyMm * dyMm);
-
-          measurementStore.updateMeasurement(editingMeasurement.id, {
-            points: [newPoints[0], newPoints[1]],
-            lengthMm,
-          });
-        } else if (editingMeasurement.type === 'polygon') {
-          const newPoints = editingMeasurement.originalPoints.map(clampPoint);
-          const areaMm2 = calculatePolygonAreaMm2(newPoints, pixelSpacing);
-          const perimeterMm = calculatePerimeterMm(newPoints, pixelSpacing, true);
-
-          measurementStore.updateMeasurement(editingMeasurement.id, {
-            points: newPoints,
-            areaMm2,
-            perimeterMm,
-          });
+      if (hasMovement && currentPoint) {
+        const newPoints = buildEditedPoints(editingMeasurement, currentPoint, imageDimensions);
+        const updates = buildEditedStoreUpdate(editingMeasurement, newPoints, spacing, pixelSpacing);
+        if (updates) {
+          measurementStore.updateMeasurement(editingMeasurement.id, updates);
         }
       }
 
-      setEditingMeasurement(null);
-      setIsDragging(false);
+      const cleanup = getEditCleanupState();
+      setEditingMeasurement(cleanup.editingMeasurement);
+      setIsDragging(cleanup.isDragging);
       setSnackbarMessage('Measurement updated.');
       return;
     }
@@ -4162,63 +4191,54 @@ const ViewerPage: React.FC = () => {
     const dragState = dragStateRef.current;
     if (dragState?.tool === 'measure' && activeMeasurement) {
       const measurement = activeMeasurement;
-      if (dragState.measureScope === 'cine' && dragState.measureSeriesKey) {
-        const key = dragState.measureSeriesKey;
-        setMeasurementsBySeries((prev) => {
-          const existing = prev[key] ?? [];
-          return { ...prev, [key]: [...existing, measurement] };
-        });
+      const finalizeResult = finalizeMeasureDrag({
+        dragState: dragState as MeasureDragState,
+        measurement,
+        cineGrouping,
+        currentInstanceUid,
+        seriesKey,
+      });
 
-        // Also add to new measurement store for panel display (use same ID for sync)
-        measurementStore.createMeasurement({
-          type: 'line',
-          seriesUid: dragState.measureSeriesKey,
-          frameKey: dragState.measureFrameKey || null,
-          scope: 'series',
-          points: [measurement.start, measurement.end] as [{ x: number; y: number }, { x: number; y: number }],
-          label: null,
-          visible: true,
-          locked: false,
-          color: '#3b82f6',
-          lengthMm: measurement.lengthMm,
-          trackingData: null,
-        } as Omit<NewLineMeasurement, 'id' | 'createdAt' | 'modifiedAt'>, measurement.id);
-        setSelectedMeasurementIdLocal(measurement.id);
-      } else if (dragState.measureFrameKey) {
-        const key = dragState.measureFrameKey;
-        setMeasurementsByFrame((prev) => {
-          const existing = prev[key] ?? [];
-          return { ...prev, [key]: [...existing, measurement] };
-        });
-
-        // Also add to new measurement store for panel display (use same ID for sync)
-        if (seriesKey) {
-          measurementStore.createMeasurement({
-            type: 'line',
-            seriesUid: seriesKey,
-            frameKey: dragState.measureFrameKey,
-            scope: 'frame',
-            points: [measurement.start, measurement.end] as [{ x: number; y: number }, { x: number; y: number }],
-            label: null,
-            visible: true,
-            locked: false,
-            color: '#3b82f6',
-            lengthMm: measurement.lengthMm,
-            trackingData: null,
-          } as Omit<NewLineMeasurement, 'id' | 'createdAt' | 'modifiedAt'>, measurement.id);
+      if (finalizeResult.legacyInsert) {
+        if (finalizeResult.legacyInsert.scope === 'series') {
+          setMeasurementsBySeries((prev) => {
+            const existing = prev[finalizeResult.legacyInsert!.key] ?? [];
+            return {
+              ...prev,
+              [finalizeResult.legacyInsert!.key]: [...existing, measurement],
+            };
+          });
+        } else {
+          setMeasurementsByFrame((prev) => {
+            const existing = prev[finalizeResult.legacyInsert!.key] ?? [];
+            return {
+              ...prev,
+              [finalizeResult.legacyInsert!.key]: [...existing, measurement],
+            };
+          });
         }
-        setSelectedMeasurementIdLocal(measurement.id);
+      }
+
+      if (finalizeResult.storeInsert) {
+        measurementStore.createMeasurement(
+          finalizeResult.storeInsert.payload as Omit<NewLineMeasurement, 'id' | 'createdAt' | 'modifiedAt'>,
+          finalizeResult.storeInsert.id
+        );
+      }
+
+      if (finalizeResult.selectedId) {
+        setSelectedMeasurementIdLocal(finalizeResult.selectedId);
       }
       setActiveMeasurement(null);
       if (
-        dragState.measureScope === 'cine' &&
-        dragState.measureSeriesKey &&
+        finalizeResult.autoTrack &&
         autoTrackCine
       ) {
         trackMeasurementFor(
-          dragState.measureSeriesKey,
-          measurement,
-          currentSliceRef.current
+          finalizeResult.autoTrack.seriesKey,
+          finalizeResult.autoTrack.measurement,
+          currentSliceRef.current,
+          finalizeResult.autoTrack.instanceUid
         );
       }
     }
@@ -4232,8 +4252,10 @@ const ViewerPage: React.FC = () => {
     seriesKey,
     editingMeasurement,
     currentInstanceMeta,
+    currentInstanceUid,
     screenToImage,
     imageDimensions,
+    cineGrouping,
   ]);
 
   useEffect(() => {
@@ -4299,6 +4321,20 @@ const ViewerPage: React.FC = () => {
       setWindowLevel(getWindowDefaults(selectedSeries));
     }
   };
+
+  const patientExportDetails = useMemo(
+    () => ({
+      patientId: patientDetails?.patient_id ?? study?.patient_id ?? undefined,
+      patientName: patientDetails?.patient_name ?? study?.patient_name ?? undefined,
+      patientBirthDate: patientDetails?.birth_date ?? undefined,
+      patientSex: patientDetails?.sex ?? undefined,
+      issuerOfPatientId: patientDetails?.issuer_of_patient_id ?? undefined,
+      otherPatientIds: patientDetails?.other_patient_ids ?? undefined,
+      ethnicGroup: patientDetails?.ethnic_group ?? undefined,
+      patientComments: patientDetails?.comments ?? undefined,
+    }),
+    [patientDetails, study?.patient_id, study?.patient_name]
+  );
 
   // Export measurements handler
   const handleExportMeasurements = useCallback(async (format: ExportFormat) => {
@@ -4420,14 +4456,14 @@ const ViewerPage: React.FC = () => {
             const blob = await api.export.exportDicomWithMeasurements({
               studyUid: study?.study_instance_uid || '',
               seriesUid: seriesKey || '',
-              patientId: patientDetails?.patient_id ?? study?.patient_id ?? undefined,
-              patientName: patientDetails?.patient_name ?? study?.patient_name ?? undefined,
-              patientBirthDate: patientDetails?.birth_date ?? undefined,
-              patientSex: patientDetails?.sex ?? undefined,
-              issuerOfPatientId: patientDetails?.issuer_of_patient_id ?? undefined,
-              otherPatientIds: patientDetails?.other_patient_ids ?? undefined,
-              ethnicGroup: patientDetails?.ethnic_group ?? undefined,
-              patientComments: patientDetails?.comments ?? undefined,
+              patientId: patientExportDetails.patientId,
+              patientName: patientExportDetails.patientName,
+              patientBirthDate: patientExportDetails.patientBirthDate,
+              patientSex: patientExportDetails.patientSex,
+              issuerOfPatientId: patientExportDetails.issuerOfPatientId,
+              otherPatientIds: patientExportDetails.otherPatientIds,
+              ethnicGroup: patientExportDetails.ethnicGroup,
+              patientComments: patientExportDetails.patientComments,
               studyId: study?.study_id ?? undefined,
               studyDate: study?.study_date || undefined,
               studyTime: study?.study_time ?? undefined,
@@ -4453,6 +4489,7 @@ const ViewerPage: React.FC = () => {
                 areaMm2: m.type === 'polygon' && 'areaMm2' in m ? (m.areaMm2 as number) : undefined,
                 perimeterMm: m.type === 'polygon' && 'perimeterMm' in m ? (m.perimeterMm as number) : undefined,
                 frameIndex: m.frameKey ? parseInt(m.frameKey.split(':')[1] || '0', 10) : undefined,
+                instanceUid: m.instanceUid ?? undefined,
                 seriesUid: m.seriesUid,
               })),
               trackingData: trackingExport,
@@ -4482,7 +4519,7 @@ const ViewerPage: React.FC = () => {
     }
 
     setShowExportMenu(null);
-  }, [measurementStore, study, selectedSeries, seriesKey, trackingDataMap]);
+  }, [measurementStore, study, selectedSeries, seriesKey, trackingDataMap, patientExportDetails]);
 
   // Import measurements handler
   const handleImportMeasurements = useCallback(() => {
@@ -4506,7 +4543,13 @@ const ViewerPage: React.FC = () => {
         let importedCount = 0;
         for (const m of data.measurements) {
           if (m.type && m.seriesUid) {
-            measurementStore.createMeasurement(m);
+            const inferredInstanceUid =
+              m.instanceUid ?? resolveInstanceUidFromFrameKey(m.frameKey ?? null) ?? null;
+            const normalized = {
+              ...m,
+              instanceUid: inferredInstanceUid,
+            };
+            measurementStore.createMeasurement(normalized, m.id);
             importedCount++;
           }
         }
@@ -4557,15 +4600,9 @@ const ViewerPage: React.FC = () => {
     (frameIdx: number) => {
       const frame = frameIndex[frameIdx];
       if (!frame) return null;
-      return api.instances.getPixelDataUrl(frame.instanceUid, {
-        frame: frame.frameIndex,
-        windowCenter: isColorImage ? undefined : windowLevel.center,
-        windowWidth: isColorImage ? undefined : windowLevel.width,
-        format: renderFormat,
-        quality: renderFormat === 'jpeg' ? renderQuality : undefined,
-      });
+      return getFrameUrlForIndex(frame, renderOptions);
     },
-    [frameIndex, windowLevel.center, windowLevel.width, renderFormat, renderQuality, isColorImage]
+    [frameIndex, renderOptions]
   );
 
   const copilotPhaseUrls = useMemo(() => {
@@ -4608,7 +4645,7 @@ const ViewerPage: React.FC = () => {
     const subjectDisplay = patientDetails?.patient_name || study?.patient_name || 'Unknown Patient';
     const reportId = study?.study_instance_uid ? `report-${study.study_instance_uid}` : `report-${Date.now()}`;
 
-    const observationEntries = newStoreMeasurements
+    const observationEntries = contextMeasurements
       .map((measurement) => {
         const valueQuantity = isLineMeasurement(measurement)
           ? measurement.lengthMm
@@ -4703,7 +4740,7 @@ const ViewerPage: React.FC = () => {
     );
     setSnackbarMessage('Guideline Copilot FHIR export created.');
   }, [
-    newStoreMeasurements,
+    contextMeasurements,
     derivedMetrics.efPercent,
     derivedMetrics.fsPercent,
     patientDetails?.patient_name,
@@ -4724,11 +4761,22 @@ const ViewerPage: React.FC = () => {
       } else {
         setActiveTool('measure');
       }
-      setMeasurementScope('cine');
       setShowMeasurementPanel(true);
-      setSnackbarMessage(`Draw ${requirement.label} on the cine loop.`);
+      if (canUseCineMeasurements) {
+        setMeasurementScope('cine');
+        setSnackbarMessage(`Draw ${requirement.label} on the cine loop.`);
+      } else {
+        setSnackbarMessage(`Draw ${requirement.label} on the current frame.`);
+      }
     },
-    [seriesKey, setActiveTool, setMeasurementScope, setShowMeasurementPanel, setSnackbarMessage]
+    [
+      seriesKey,
+      canUseCineMeasurements,
+      setActiveTool,
+      setMeasurementScope,
+      setShowMeasurementPanel,
+      setSnackbarMessage,
+    ]
   );
 
   // Label edit handlers
@@ -4775,6 +4823,11 @@ const ViewerPage: React.FC = () => {
       setSnackbarMessage('Please select a series first');
       return null;
     }
+    if (!has3dData) {
+      setVolumeError('3D volume data is not available for this series.');
+      setSnackbarMessage('3D volume tools are only available for CT/MR/PT series.');
+      return null;
+    }
 
     if (volumeInfo && volumeInfo.series_uid === seriesKey) {
       return volumeInfo;
@@ -4794,9 +4847,19 @@ const ViewerPage: React.FC = () => {
     } finally {
       setVolumeLoading(false);
     }
-  }, [seriesKey, volumeInfo, setMprVolumeInfo, windowLevel.center, windowLevel.width]);
+  }, [
+    seriesKey,
+    has3dData,
+    volumeInfo,
+    setMprVolumeInfo,
+    windowLevel,
+  ]);
 
   const openVolumeViewer = useCallback(async () => {
+    if (!has3dData) {
+      setSnackbarMessage('3D volume tools are only available for CT/MR/PT series.');
+      return;
+    }
     setVolumeOpen(true);
     const info = await ensureVolumeInfo();
     if (!info) return;
@@ -4810,7 +4873,7 @@ const ViewerPage: React.FC = () => {
       coronal: Math.floor(info.dimensions.y / 2),
       sagittal: Math.floor(info.dimensions.x / 2),
     });
-  }, [ensureVolumeInfo]);
+  }, [ensureVolumeInfo, has3dData]);
 
   const handleToggleLayout = useCallback(async () => {
     if (layoutMode === 'mpr') {
@@ -4820,6 +4883,10 @@ const ViewerPage: React.FC = () => {
     }
     if (layoutMode === 'smart') {
       setLayoutMode('single');
+      return;
+    }
+    if (!has3dData) {
+      setSnackbarMessage('MPR layout is only available for CT/MR/PT series.');
       return;
     }
 
@@ -4835,7 +4902,7 @@ const ViewerPage: React.FC = () => {
     dragStateRef.current = null;
     setIsDragging(false);
     setLayoutMode('mpr');
-  }, [layoutMode, ensureVolumeInfo, clearMprVolume]);
+  }, [layoutMode, ensureVolumeInfo, clearMprVolume, has3dData]);
 
   const handleToggleSmartLayout = useCallback(() => {
     setActiveMeasurement(null);
@@ -4853,9 +4920,16 @@ const ViewerPage: React.FC = () => {
   }, [clearMprVolume]);
 
   useEffect(() => {
-    if (layoutMode !== 'mpr' || !seriesKey) return;
+    if (layoutMode !== 'mpr' || !seriesKey || !has3dData) return;
     ensureVolumeInfo();
-  }, [layoutMode, seriesKey, ensureVolumeInfo]);
+  }, [layoutMode, seriesKey, has3dData, ensureVolumeInfo]);
+
+  useEffect(() => {
+    if (layoutMode !== 'mpr') return;
+    if (has3dData) return;
+    setLayoutMode('single');
+    clearMprVolume();
+  }, [layoutMode, has3dData, clearMprVolume]);
 
   useEffect(() => {
     if (layoutMode !== 'smart') return;
@@ -4911,57 +4985,155 @@ const ViewerPage: React.FC = () => {
     [seriesKey, windowLevel.center, windowLevel.width]
   );
 
-  const handleRunAIModel = async (model: AIModel) => {
-    if (!studyUid || !selectedSeries) {
-      setSnackbarMessage('Please select a series first');
-      return;
+  const waitForJobWithProgress = useCallback(async (jobId: string) => {
+    const startTime = Date.now();
+    while (Date.now() - startTime < AI_JOB_TIMEOUT_MS) {
+      const job = await api.ai.getJob(jobId);
+      if (typeof job.progress === 'number') {
+        setAiJobProgress(job.progress);
+      }
+      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+        return job;
+      }
+      await new Promise((resolve) => setTimeout(resolve, AI_JOB_POLL_INTERVAL_MS));
     }
+    throw new Error(`Job ${jobId} timed out after ${AI_JOB_TIMEOUT_MS}ms`);
+  }, []);
 
-    const taskType = (model.details?.model_type || '').toLowerCase();
-    const supportedTasks = ['segmentation', 'detection', 'classification', 'enhancement', 'pathology', 'cardiac'];
-    if (!supportedTasks.includes(taskType)) {
-      setSnackbarMessage('AI model has an unsupported task type');
-      return;
-    }
+  const runAiModel = useCallback(
+    async (model: AIModel, extraParameters?: Record<string, unknown>) => {
+      if (!studyUid || !selectedSeries) {
+        setSnackbarMessage('Please select a series first');
+        return;
+      }
 
-    try {
-      setAiJobRunning(true);
-      setAIMenuAnchor(null);
+      const displayModelName = formatAiModelLabel(model.name);
+      const taskType = (model.details?.model_type || '').toLowerCase();
+      const supportedTasks = ['segmentation', 'detection', 'classification', 'enhancement', 'pathology', 'cardiac'];
+      if (!supportedTasks.includes(taskType)) {
+        setSnackbarMessage('AI model has an unsupported task type');
+        return;
+      }
+
+      try {
+        setAiJobRunning(true);
+        setAiJobProgress(0);
+        setAIMenuAnchor(null);
+
+        const parameters = {
+          instance_uid: currentInstanceUid ?? undefined,
+          ...(extraParameters ?? {}),
+        } as Record<string, unknown>;
+        if (patientContextOverride && model.name === 'horalix_ai' && parameters.patient_context === undefined) {
+          parameters.patient_context = patientContextOverride;
+        }
 
         const job = await api.ai.createJob({
           model_type: model.name,
           task_type: taskType,
           study_uid: studyUid,
           series_uid: selectedSeries.series.series_instance_uid,
+          parameters,
         });
 
-      setSnackbarMessage(`AI job started: ${model.name}`);
+        const suffix = extraParameters?.model_weights
+          ? ` (${String(extraParameters.model_weights).toUpperCase()})`
+          : '';
+        setSnackbarMessage(`AI job started: ${displayModelName}${suffix}`);
 
-      const completedJob = await api.ai.waitForJob(job.job_id, 2000, 300000);
+        const completedJob = await waitForJobWithProgress(job.job_id);
 
-      if (completedJob.status === 'completed') {
-        setSnackbarMessage(`AI analysis complete: ${model.name}`);
-        await refreshAiResults();
-      } else if (completedJob.status === 'failed') {
-        setSnackbarMessage(`AI analysis failed: ${completedJob.error_message || 'Unknown error'}`);
+        if (completedJob.status === 'completed') {
+          setSnackbarMessage(`AI analysis complete: ${displayModelName}`);
+          await refreshAiResults();
+          // Auto-open AI results panel for cardiac results
+          if (taskType === 'cardiac') {
+            setShowAiResultsPanel(true);
+          }
+        } else if (completedJob.status === 'failed') {
+          setSnackbarMessage(`AI analysis failed: ${completedJob.error_message || 'Unknown error'}`);
+        }
+      } catch (err) {
+        const detail = getApiErrorDetail(err);
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('timed out')) {
+          setSnackbarMessage('AI job is still running. Results will appear when it finishes.');
+          return;
+        }
+        console.error('AI job failed:', err);
+        setSnackbarMessage(detail ? `AI analysis failed: ${detail}` : 'AI analysis failed');
+      } finally {
+        setAiJobProgress(null);
+        setAiJobRunning(false);
       }
-    } catch (err) {
-      const detail =
-        typeof (err as any)?.response?.data?.detail === 'string'
-          ? (err as any).response.data.detail
-          : null;
-      console.error('AI job failed:', err);
-      setSnackbarMessage(detail ? `AI analysis failed: ${detail}` : 'AI analysis failed');
-    } finally {
-      setAiJobRunning(false);
+    },
+    [
+      studyUid,
+      selectedSeries,
+      currentInstanceUid,
+      patientContextOverride,
+      formatAiModelLabel,
+      refreshAiResults,
+      waitForJobWithProgress,
+    ]
+  );
+
+  const handleRunAIModel = useCallback(
+    (model: AIModel) => {
+      setAIMenuAnchor(null);
+      if (model.name === 'horalix_ai_measurements') {
+        setPendingAiModel(model);
+        setMeasurementsModelDialogOpen(true);
+        return;
+      }
+      runAiModel(model);
+    },
+    [runAiModel]
+  );
+
+  const handleMeasurementsDialogClose = useCallback(() => {
+    setMeasurementsModelDialogOpen(false);
+    setPendingAiModel(null);
+  }, []);
+
+  const handleMeasurementsDialogRun = useCallback(() => {
+    if (!pendingAiModel) {
+      setMeasurementsModelDialogOpen(false);
+      return;
     }
-  };
+    const model = pendingAiModel;
+    setPendingAiModel(null);
+    setMeasurementsModelDialogOpen(false);
+    runAiModel(model, { model_weights: measurementsModelSelection });
+  }, [pendingAiModel, runAiModel, measurementsModelSelection]);
+
+  const handleRerunAIWithContext = useCallback(
+    (context: PatientContext | null) => {
+      setPatientContextOverride(context);
+      persistPatientContext(context);
+      const cardiacModel = aiModels.find((m) => m.name === 'horalix_ai')
+        ?? aiModels.find((m) => (m.details?.model_type || '').toLowerCase() === 'cardiac');
+      if (cardiacModel) {
+        runAiModel(cardiacModel, { patient_context: context });
+      } else {
+        setSnackbarMessage('No cardiac AI model available');
+      }
+    },
+    [aiModels, runAiModel, persistPatientContext]
+  );
 
   const latestCineMeasurement = useMemo(() => {
     if (!seriesKey) return null;
     const list = measurementsBySeries[seriesKey] ?? [];
-    return list.length ? list[list.length - 1] : null;
-  }, [seriesKey, measurementsBySeries]);
+    const filtered =
+      cineGrouping === 'instance' && activeInstanceUid
+        ? list.filter((measurement) => {
+            const instanceUid = resolveMeasurementInstanceUid(measurement);
+            return instanceUid ? instanceUid === activeInstanceUid : false;
+          })
+        : list;
+    return filtered.length ? filtered[filtered.length - 1] : null;
+  }, [seriesKey, measurementsBySeries, activeInstanceUid, cineGrouping, resolveMeasurementInstanceUid]);
 
   const latestCineSummary = useMemo(() => {
     if (!latestCineMeasurement) return null;
@@ -4982,12 +5154,66 @@ const ViewerPage: React.FC = () => {
     return sorted[sorted.length - 1];
   }, [aiResults]);
 
+  const pathologyTileCount = useMemo(
+    () => getPathologyTileCount(latestPathologyJob?.results),
+    [latestPathologyJob?.results]
+  );
+
+  const latestCardiacJob = useMemo(() => {
+    if (!aiResults?.jobs?.length) return null;
+    const jobs = aiResults.jobs.filter((job) => job.task_type === 'cardiac');
+    if (jobs.length === 0) return null;
+    const sorted = [...jobs].sort((a, b) => {
+      const aTime = a.completed_at ? Date.parse(a.completed_at) : 0;
+      const bTime = b.completed_at ? Date.parse(b.completed_at) : 0;
+      return aTime - bTime;
+    });
+    return sorted[sorted.length - 1];
+  }, [aiResults]);
+
+  const aiViewPredictions = useMemo(() => {
+    const output = latestCardiacJob?.results?.output as { view_predictions?: Record<string, string> } | undefined;
+    if (!output || typeof output !== 'object') return {} as Record<string, string>;
+    const predictions = output.view_predictions;
+    if (!predictions || typeof predictions !== 'object') return {} as Record<string, string>;
+    return predictions as Record<string, string>;
+  }, [latestCardiacJob]);
+
+  const getAiViewLabelForInstance = useCallback(
+    (instanceUid?: string | null) => {
+      if (!instanceUid) return null;
+      const label = aiViewPredictions[instanceUid];
+      return typeof label === 'string' && label.trim().length > 0 ? label : null;
+    },
+    [aiViewPredictions]
+  );
+
+  const getAiViewLabelForSeries = useCallback(
+    (seriesUid: string) => {
+      const detail = seriesCacheRef.current.get(seriesUid);
+      if (!detail?.instances?.length) return null;
+      const counts = new Map<string, number>();
+      detail.instances.forEach((inst) => {
+        const label = getAiViewLabelForInstance(inst.sop_instance_uid);
+        if (!label) return;
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      });
+      if (!counts.size) return null;
+      return [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    },
+    [getAiViewLabelForInstance]
+  );
+
+  const activeAiViewLabel = useMemo(
+    () => getAiViewLabelForInstance(activeInstanceUid),
+    [activeInstanceUid, getAiViewLabelForInstance]
+  );
   const handleTrackMeasurement = useCallback(async () => {
     if (!seriesKey) {
       setSnackbarMessage('Please select a series first');
       return;
     }
-    if (measurementScope !== 'cine') {
+    if (!canUseCineMeasurements || effectiveMeasurementScope !== 'cine') {
       setSnackbarMessage('Switch to cine measurements to track the full loop.');
       return;
     }
@@ -4996,110 +5222,111 @@ const ViewerPage: React.FC = () => {
       setSnackbarMessage('Draw a measurement first.');
       return;
     }
-    await trackMeasurementFor(seriesKey, measurement, currentSlice);
-  }, [seriesKey, measurementScope, latestCineMeasurement, currentSlice, trackMeasurementFor]);
+    await trackMeasurementFor(
+      seriesKey,
+      measurement,
+      currentSlice,
+      cineGrouping === 'instance'
+        ? resolveMeasurementInstanceUid(measurement) ?? currentInstanceUid ?? activeInstanceUid ?? null
+        : null
+    );
+  }, [
+    seriesKey,
+    canUseCineMeasurements,
+    effectiveMeasurementScope,
+    latestCineMeasurement,
+    currentSlice,
+    trackMeasurementFor,
+    currentInstanceUid,
+    activeInstanceUid,
+    cineGrouping,
+    resolveMeasurementInstanceUid,
+  ]);
 
   const orientationMarkers = getOrientationMarkers(currentInstanceMeta?.image_orientation_patient);
 
-  const detectionOverlays = useMemo(() => {
-    if (!aiResults || !selectedSeries) return [];
-    const overlays: Array<{
-      x: number;
-      y: number;
-      width: number;
-      height: number;
-      label: string;
-    }> = [];
+  const showLegacyAiOverlays = false;
 
-    aiResults.detections.forEach((result) => {
-      if (!result || typeof result !== 'object') return;
-      const resultAny = result as Record<string, unknown>;
-      const seriesUid = typeof resultAny.series_uid === 'string' ? resultAny.series_uid : null;
-      if (seriesUid && seriesUid !== selectedSeries.series.series_instance_uid) return;
-      const sliceIndex = typeof resultAny.slice_index === 'number' ? resultAny.slice_index : null;
-      if (sliceIndex !== null && sliceIndex !== currentSlice) return;
-      const inputShape = Array.isArray(resultAny.input_shape) ? resultAny.input_shape : null;
-      const detections = Array.isArray(resultAny.detections) ? resultAny.detections : [];
-      const safeInputShape =
-        inputShape && inputShape.length >= 2
-          ? ([inputShape[0], inputShape[1]] as [number, number])
-          : ([imageDimensions.rows, imageDimensions.columns] as [number, number]);
+  const detectionOverlays = useMemo(
+    () =>
+      showLegacyAiOverlays
+        ? buildDetectionOverlays({
+          aiResults,
+          seriesUid: selectedSeries?.series.series_instance_uid ?? null,
+          currentSlice,
+          imageDimensions,
+        })
+        : [],
+    [showLegacyAiOverlays, aiResults, selectedSeries, currentSlice, imageDimensions]
+  );
 
-      detections.forEach((det) => {
-        if (!det || typeof det !== 'object') return;
-        const detAny = det as Record<string, unknown>;
-        if (
-          typeof detAny.x !== 'number' ||
-          typeof detAny.y !== 'number' ||
-          typeof detAny.width !== 'number' ||
-          typeof detAny.height !== 'number'
-        ) {
-          return;
-        }
-        const label =
-          typeof detAny.class_name === 'string'
-            ? detAny.class_name
-            : `Class ${detAny.class_id ?? ''}`;
-        const scaled = scaleDetectionBox(
-          {
-            x: detAny.x,
-            y: detAny.y,
-            width: detAny.width,
-            height: detAny.height,
-          },
-          safeInputShape,
-          [imageDimensions.rows, imageDimensions.columns]
-        );
-        overlays.push({ ...scaled, label });
-      });
-    });
+  const segmentationOverlays = useMemo(
+    () =>
+      showLegacyAiOverlays
+        ? buildSegmentationOverlays({
+          aiResults,
+          studyUid,
+          seriesUid: selectedSeries?.series.series_instance_uid ?? null,
+          currentSlice,
+        })
+        : [],
+    [showLegacyAiOverlays, aiResults, studyUid, selectedSeries, currentSlice]
+  );
 
-    return overlays;
-  }, [aiResults, selectedSeries, currentSlice, imageDimensions]);
+  const cardiacOverlays = useMemo(
+    () =>
+      buildCardiacOverlays({
+        aiResults,
+        seriesUid: selectedSeries?.series.series_instance_uid ?? null,
+        currentInstanceUid,
+        currentFrameIndex,
+      }),
+    [aiResults, selectedSeries, currentInstanceUid, currentFrameIndex]
+  );
 
-  const segmentationOverlays = useMemo(() => {
-    if (!aiResults || !studyUid || !selectedSeries) return [] as Array<{ id: string; url: string }>;
-    const overlays: Array<{ id: string; url: string }> = [];
+  const overlayPalette = useMemo(() => {
+    const isDark = theme.palette.mode === 'dark';
+    return {
+      measurement: theme.palette.info.main,
+      measurementGlow: alpha(theme.palette.info.main, isDark ? 0.45 : 0.35),
+      measurementLabelBg: isDark ? 'rgba(6, 10, 18, 0.75)' : 'rgba(240, 246, 255, 0.92)',
+      measurementLabelText: isDark ? '#f8fafc' : '#0f172a',
+      contour: theme.palette.error.main,
+      contourFill: alpha(theme.palette.error.main, isDark ? 0.22 : 0.14),
+      contourShadow: isDark ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.35)',
+      shadow: isDark ? 'rgba(0,0,0,0.55)' : 'rgba(255,255,255,0.45)',
+    };
+  }, [theme]);
 
-    aiResults.jobs.forEach((job) => {
-      if (job.task_type !== 'segmentation') return;
-      const results = job.results || {};
-      const seriesUid = typeof results.series_uid === 'string' ? results.series_uid : null;
-      if (seriesUid && seriesUid !== selectedSeries.series.series_instance_uid) return;
-      const maskPath = job.result_files?.mask || (typeof results.mask === 'string' ? results.mask : null);
-      if (!maskPath) return;
-      const filename = maskPath.split('/').pop();
-      if (!filename) return;
-      const maskShape = Array.isArray(results.mask_shape) ? results.mask_shape : null;
-      const sliceIndex = clampMaskSliceIndex(currentSlice, maskShape);
-      overlays.push({
-        id: job.job_id,
-        url: api.ai.getMaskOverlayUrl(studyUid, filename, sliceIndex),
-      });
-    });
+  const overlayTargets = useMemo<OverlayTarget[]>(() => collectOverlayTargets(aiResults), [aiResults]);
 
-    return overlays;
-  }, [aiResults, studyUid, selectedSeries, currentSlice]);
+  const visibleCardiacOverlayCount =
+    (showMeasurementOverlay ? cardiacOverlays.lines.length : 0) +
+    (showContourOverlay ? cardiacOverlays.polylines.length : 0);
 
-  const interactiveSegmentationOverlays = useMemo(() => {
-    if (!studyUid || !seriesKey) return [] as Array<{ id: string; url: string }>;
-    return interactiveSegmentations
-      .filter((result) => result.seriesUid === seriesKey)
-      .filter((result) => {
-        if (!result.maskShape) return false;
-        if (result.maskShape.length === 2) {
-          return result.frameIndex === currentSlice;
-        }
-        return true;
-      })
-      .map((result) => {
-        const sliceIndex = clampMaskSliceIndex(currentSlice, result.maskShape);
-        return {
-          id: result.id,
-          url: api.ai.getMaskOverlayUrl(studyUid, result.maskFilename, sliceIndex),
-        };
-      });
-  }, [interactiveSegmentations, studyUid, seriesKey, currentSlice]);
+  const handleJumpToNextOverlay = useCallback(async () => {
+    if (overlayTargets.length === 0) return;
+    const currentKeyMatch = overlayTargets.findIndex(
+      (target) =>
+        target.instanceUid === currentInstanceUid &&
+        (target.frameIndex ?? 0) === currentFrameIndex
+    );
+    const nextIndex = currentKeyMatch >= 0 ? (currentKeyMatch + 1) % overlayTargets.length : 0;
+    const next = overlayTargets[nextIndex];
+    await jumpToInstanceFrame(next.instanceUid, next.frameIndex ?? 0);
+  }, [overlayTargets, currentInstanceUid, currentFrameIndex, jumpToInstanceFrame]);
+
+  const interactiveSegmentationOverlays = useMemo(
+    () =>
+      buildInteractiveSegmentationOverlays({
+        interactiveSegmentations,
+        studyUid,
+        seriesKey,
+        currentInstanceUid,
+        currentFrameIndex,
+      }),
+    [interactiveSegmentations, studyUid, seriesKey, currentInstanceUid, currentFrameIndex]
+  );
 
   const cursor = useMemo(() => {
     if (layoutMode !== 'single') return 'default';
@@ -5126,20 +5353,11 @@ const ViewerPage: React.FC = () => {
     }
   }, [activeTool, isDragging, canPan, layoutMode]);
 
-  const tools = [
-    { id: 'pointer', label: 'Select', icon: <PointerIcon /> },
-    { id: 'pan', label: 'Pan', icon: <PanIcon /> },
-    { id: 'zoom', label: 'Zoom', icon: <ZoomIcon /> },
-    { id: 'wwwl', label: 'Window/Level', icon: <ContrastIcon /> },
-    { id: 'measure', label: 'Measure', icon: <MeasureIcon /> },
-    { id: 'polygon', label: 'Area', icon: <AreaIcon /> },
-    { id: 'segment', label: 'Smart Segment', icon: <SmartSegmentIcon /> },
-    { id: 'rotate', label: 'Rotate', icon: <RotateIcon /> },
-  ] as const;
+  const tools = VIEWER_TOOL_CONFIGS;
 
   if (loading) {
     return (
-      <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#000' }}>
+      <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: 'background.default' }}>
         <Paper sx={{ px: 2, py: 1, borderRadius: 0 }} elevation={0}>
           <Skeleton variant="rectangular" width="100%" height={48} />
         </Paper>
@@ -5182,15 +5400,41 @@ const ViewerPage: React.FC = () => {
   }
 
   return (
-    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: '#000' }}>
+    <Box sx={{ height: '100vh', display: 'flex', flexDirection: 'column', bgcolor: 'background.default' }}>
       <Paper
         sx={{
           display: 'flex',
           alignItems: 'center',
-          px: 2,
-          py: 1,
+          px: 1.5,
+          py: 0.75,
           borderRadius: 0,
           bgcolor: 'background.paper',
+          borderBottom: 1,
+          borderColor: 'divider',
+          boxShadow: '0 1px 0 rgba(0,0,0,0.08)',
+          gap: 0.25,
+          '& .MuiIconButton-root': {
+            borderRadius: 1,
+            padding: 0.75,
+            color: 'text.secondary',
+            transition: 'all 0.15s ease',
+            '&:hover': {
+              bgcolor: 'action.hover',
+              color: 'text.primary',
+            },
+          },
+          '& .MuiIconButton-colorPrimary': {
+            color: 'primary.main',
+            bgcolor: 'action.selected',
+            '&:hover': {
+              bgcolor: 'action.selected',
+            },
+          },
+          '& .MuiButton-root': {
+            borderRadius: 1.4,
+            textTransform: 'none',
+            fontWeight: 600,
+          },
         }}
         elevation={0}
       >
@@ -5200,7 +5444,7 @@ const ViewerPage: React.FC = () => {
           </IconButton>
         </Tooltip>
 
-        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+        <Divider orientation="vertical" flexItem sx={{ mx: 1, borderColor: 'divider', opacity: 0.6 }} />
 
         {tools.map((tool) => (
           <Tooltip key={tool.id} title={tool.label}>
@@ -5222,17 +5466,27 @@ const ViewerPage: React.FC = () => {
           </Tooltip>
         ))}
 
-        <Tooltip title={`Measurements: ${measurementScope === 'cine' ? 'Cine' : 'Frame'}`}>
+        <Tooltip
+          title={
+            canUseCineMeasurements
+              ? `Measurements: ${effectiveMeasurementScope === 'cine' ? 'Cine' : 'Frame'}`
+              : 'Measurements: Frame (locked)'
+          }
+        >
           <span>
             <IconButton
-              onClick={() =>
-                setMeasurementScope((prev) => (prev === 'cine' ? 'frame' : 'cine'))
-              }
-              color={measurementScope === 'cine' ? 'primary' : 'default'}
+              onClick={() => {
+                if (!canUseCineMeasurements) {
+                  setSnackbarMessage('Cine measurements are disabled for this series.');
+                  return;
+                }
+                setMeasurementScope((prev) => (prev === 'cine' ? 'frame' : 'cine'));
+              }}
+              color={effectiveMeasurementScope === 'cine' ? 'primary' : 'default'}
               aria-label="Toggle measurement scope"
-              disabled={activeTool !== 'measure' && activeTool !== 'polygon'}
+              disabled={(activeTool !== 'measure' && activeTool !== 'polygon') || !canUseCineMeasurements}
             >
-              {measurementScope === 'cine' ? <LinkIcon /> : <LinkOffIcon />}
+              {effectiveMeasurementScope === 'cine' ? <LinkIcon /> : <LinkOffIcon />}
             </IconButton>
           </span>
         </Tooltip>
@@ -5243,7 +5497,7 @@ const ViewerPage: React.FC = () => {
               onClick={handleTrackMeasurement}
               disabled={
                 activeTool !== 'measure' ||
-                measurementScope !== 'cine' ||
+                effectiveMeasurementScope !== 'cine' ||
                 !latestCineMeasurement ||
                 !!trackingMeasurementId
               }
@@ -5261,7 +5515,7 @@ const ViewerPage: React.FC = () => {
         <Tooltip title="Cardiac Function Calculator (EF/FS)">
           <IconButton
             onClick={() => setEfCalculatorOpen(true)}
-            color={newStoreMeasurements.length > 0 ? 'primary' : 'default'}
+            color={contextMeasurements.length > 0 ? 'primary' : 'default'}
           >
             <FavoriteIcon />
           </IconButton>
@@ -5315,11 +5569,11 @@ const ViewerPage: React.FC = () => {
           </MenuItem>
         </Menu>
 
-        <Divider orientation="vertical" flexItem sx={{ mx: 1 }} />
+        <Divider orientation="vertical" flexItem sx={{ mx: 1, borderColor: 'divider', opacity: 0.6 }} />
 
         <Tooltip title="3D Volume">
           <span>
-            <IconButton onClick={openVolumeViewer} disabled={!selectedSeries?.has_3d_data}>
+            <IconButton onClick={openVolumeViewer} disabled={!has3dData}>
               <ThreeDIcon />
             </IconButton>
           </span>
@@ -5328,6 +5582,7 @@ const ViewerPage: React.FC = () => {
           <IconButton
             onClick={handleToggleLayout}
             color={layoutMode === 'mpr' ? 'primary' : 'default'}
+            disabled={!has3dData}
           >
             <GridIcon />
           </IconButton>
@@ -5340,6 +5595,42 @@ const ViewerPage: React.FC = () => {
             <SmartLayoutIcon />
           </IconButton>
         </Tooltip>
+        {cineGrouping === 'instance' && seriesInstances.length > 1 && (
+          <>
+            <Tooltip title="Select cine instance">
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={(event) => setInstanceMenuAnchor(event.currentTarget)}
+                sx={{ ml: 1 }}
+              >
+                {activeInstanceIndex >= 0
+                  ? `Cine ${activeInstanceIndex + 1}/${seriesInstances.length}`
+                  : 'Cine'}
+              </Button>
+            </Tooltip>
+            <Menu
+              anchorEl={instanceMenuAnchor}
+              open={Boolean(instanceMenuAnchor)}
+              onClose={() => setInstanceMenuAnchor(null)}
+            >
+              {seriesInstances.map((instance, idx) => (
+                <MenuItem
+                  key={instance.sop_instance_uid}
+                  selected={instance.sop_instance_uid === activeInstanceUid}
+                  onClick={() => {
+                    setActiveInstanceUid(instance.sop_instance_uid);
+                    setInstanceMenuAnchor(null);
+                  }}
+                >
+                  Cine {idx + 1}
+                  {instance.instance_number != null ? ` · #${instance.instance_number}` : ''}
+                  {instance.number_of_frames != null ? ` · ${instance.number_of_frames} frames` : ''}
+                </MenuItem>
+              ))}
+            </Menu>
+          </>
+        )}
         <Tooltip title="Series Panel">
           <IconButton onClick={() => setShowSeriesPanel((prev) => !prev)}>
             <LayersIcon />
@@ -5360,18 +5651,42 @@ const ViewerPage: React.FC = () => {
         </Tooltip>
 
         <Box sx={{ flex: 1, minWidth: 0, mx: 2 }}>
-          <Typography
-            variant="body2"
-            sx={{
-              color: 'text.secondary',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}
+          <Stack
+            direction="row"
+            spacing={1}
+            alignItems="center"
+            flexWrap="wrap"
+            sx={{ minWidth: 0 }}
           >
-            Patient: {patientLabel} | Study: {studyLabel} | Series: {seriesLabel}
-          </Typography>
+            <Chip
+              size="small"
+              label={`Patient ${patientLabel}`}
+              variant="outlined"
+              sx={{ fontWeight: 600 }}
+            />
+            <Chip
+              size="small"
+              label={`Study ${studyLabel}`}
+              variant="outlined"
+              sx={{ fontWeight: 600 }}
+            />
+            <Chip
+              size="small"
+              label={`Series ${seriesLabel}`}
+              variant="outlined"
+              sx={{ fontWeight: 600 }}
+            />
+          </Stack>
         </Box>
+
+        <Tooltip title="AI Results Panel">
+          <IconButton
+            onClick={() => setShowAiResultsPanel((prev) => !prev)}
+            color={showAiResultsPanel ? 'primary' : 'default'}
+          >
+            <FavoriteIcon />
+          </IconButton>
+        </Tooltip>
 
         <Tooltip title={showAiOverlay ? 'Hide AI overlay' : 'Show AI overlay'}>
           <span>
@@ -5405,7 +5720,7 @@ const ViewerPage: React.FC = () => {
                   <AIIcon fontSize="small" />
                 </ListItemIcon>
                 <ListItemText
-                  primary={model.name}
+                  primary={formatAiModelLabel(model.name)}
                   secondary={model.available ? model.details.model_type : 'Not available'}
                 />
               </MenuItem>
@@ -5430,11 +5745,37 @@ const ViewerPage: React.FC = () => {
         </Tooltip>
       </Paper>
 
+      {(aiJobRunning || segmentRunning) && (
+        <Box sx={{ px: 2, pb: 1 }}>
+          <LinearProgress
+            variant={aiJobRunning && aiJobProgress != null ? 'determinate' : 'indeterminate'}
+            value={aiJobRunning && aiJobProgress != null ? aiJobProgress : undefined}
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+            {segmentRunning
+              ? 'Smart segmentation in progress...'
+              : aiJobProgress != null
+                ? `AI job progress: ${Math.round(aiJobProgress)}%`
+                : 'AI job running...'}
+          </Typography>
+        </Box>
+      )}
+
       <Box sx={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         {showSeriesPanel && (
-          <Paper sx={{ width: 260, borderRadius: 0, overflow: 'auto' }} elevation={0}>
+          <Paper
+            sx={{
+              width: 280,
+              borderRadius: 0,
+              overflow: 'auto',
+              borderRight: 1,
+              borderColor: 'divider',
+              bgcolor: 'background.paper',
+            }}
+            elevation={0}
+          >
             <Box sx={{ p: 2 }}>
-              <Typography variant="subtitle2" color="text.secondary">
+              <Typography variant="caption" sx={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700, color: 'text.secondary' }}>
                 Series ({seriesList.length})
               </Typography>
             </Box>
@@ -5449,17 +5790,31 @@ const ViewerPage: React.FC = () => {
               ) : (
                 seriesList.map((s) => {
                   const thumbnail = seriesThumbnails[s.series_instance_uid];
+                  const aiViewLabel = getAiViewLabelForSeries(s.series_instance_uid);
+                  const viewLabel = s.modality === 'US'
+                    ? (aiViewLabel ?? getSeriesViewLabel(s) ?? 'Unknown')
+                    : null;
                   return (
                     <ListItem key={s.series_instance_uid} disablePadding>
                       <ListItemButton
                         selected={selectedSeries?.series.series_instance_uid === s.series_instance_uid}
                         onClick={() => selectSeries(s.series_instance_uid)}
+                        sx={{
+                          mx: 1,
+                          my: 0.5,
+                          borderRadius: 2,
+                          border: '1px solid transparent',
+                          '&.Mui-selected': {
+                            bgcolor: 'action.selected',
+                            borderColor: 'primary.main',
+                          },
+                        }}
                       >
                         <Box
                           sx={{
                             width: 60,
                             height: 60,
-                            bgcolor: 'grey.900',
+                            bgcolor: 'action.hover',
                             borderRadius: 1,
                             mr: 1,
                             overflow: 'hidden',
@@ -5482,9 +5837,28 @@ const ViewerPage: React.FC = () => {
                         </Box>
                         <ListItemText
                           primary={s.series_description || `Series ${s.series_number || '-'}`}
-                          secondary={`${s.num_instances} images`}
+                          secondary={(
+                            <Stack direction="row" spacing={0.6} alignItems="center">
+                              <Typography variant="caption" color="text.secondary">
+                                {s.num_instances} images
+                              </Typography>
+                              {viewLabel && (
+                                <Chip
+                                  size="small"
+                                  label={viewLabel}
+                                  sx={{
+                                    height: 18,
+                                    fontSize: '0.55rem',
+                                    fontWeight: 700,
+                                    bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.12),
+                                    color: theme.palette.primary.main,
+                                  }}
+                                />
+                              )}
+                            </Stack>
+                          )}
                           primaryTypographyProps={{ variant: 'body2', noWrap: true }}
-                          secondaryTypographyProps={{ variant: 'caption' }}
+                          secondaryTypographyProps={{ component: 'div' }}
                         />
                       </ListItemButton>
                     </ListItem>
@@ -5492,6 +5866,186 @@ const ViewerPage: React.FC = () => {
                 })
               )}
             </List>
+            {cineSeriesList.length > 0 && (
+              <>
+                <Divider sx={{ my: 1 }} />
+                <Box sx={{ px: 2, pb: 1 }}>
+                  <Typography variant="caption" sx={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700, color: 'text.secondary' }}>
+                    Cines ({cineSeriesList.length})
+                  </Typography>
+                </Box>
+                <List disablePadding>
+                  {cineSeriesList.map((cineSeries) => {
+                    const thumbnail = seriesThumbnails[cineSeries.series_instance_uid];
+                    const aiViewLabel = getAiViewLabelForSeries(cineSeries.series_instance_uid);
+                    const viewLabel = cineSeries.modality === 'US'
+                      ? (aiViewLabel ?? getSeriesViewLabel(cineSeries) ?? 'Unknown')
+                      : null;
+                    const detail = seriesCacheRef.current.get(cineSeries.series_instance_uid);
+                    const cineFrames = detail?.instances?.reduce(
+                      (sum, instance) => sum + (instance.number_of_frames ?? 1),
+                      0
+                    );
+                    const frameLabel = cineFrames ?? cineSeries.num_instances ?? 1;
+                    return (
+                      <ListItem key={cineSeries.series_instance_uid} disablePadding>
+                      <ListItemButton
+                        selected={
+                          selectedSeries?.series.series_instance_uid === cineSeries.series_instance_uid
+                        }
+                        onClick={() => selectSeries(cineSeries.series_instance_uid)}
+                        sx={{
+                          mx: 1,
+                          my: 0.5,
+                          borderRadius: 2,
+                          border: '1px solid transparent',
+                          '&.Mui-selected': {
+                            bgcolor: 'action.selected',
+                            borderColor: 'primary.main',
+                          },
+                        }}
+                      >
+                        <Box
+                          sx={{
+                            width: 48,
+                            height: 48,
+                            bgcolor: 'action.hover',
+                            borderRadius: 1,
+                            mr: 1,
+                            overflow: 'hidden',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                            {thumbnail ? (
+                              <img
+                                src={thumbnail}
+                                alt={`${cineSeries.series_description || 'Cine'} thumbnail`}
+                                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                              />
+                            ) : (
+                              <Typography variant="caption" color="grey.500">
+                                {cineSeries.modality}
+                              </Typography>
+                            )}
+                          </Box>
+                          <ListItemText
+                            primary={cineSeries.series_description || `Series ${cineSeries.series_number || '-'}`}
+                            secondary={(
+                              <Stack direction="row" spacing={0.6} alignItems="center">
+                                <Typography variant="caption" color="text.secondary">
+                                  {frameLabel} frames
+                                </Typography>
+                                {viewLabel && (
+                                  <Chip
+                                    size="small"
+                                    label={viewLabel}
+                                    sx={{
+                                      height: 18,
+                                      fontSize: '0.55rem',
+                                      fontWeight: 700,
+                                      bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.12),
+                                      color: theme.palette.primary.main,
+                                    }}
+                                  />
+                                )}
+                              </Stack>
+                            )}
+                            primaryTypographyProps={{ variant: 'body2', noWrap: true }}
+                            secondaryTypographyProps={{ component: 'div' }}
+                          />
+                        </ListItemButton>
+                      </ListItem>
+                    );
+                  })}
+                </List>
+              </>
+            )}
+            {selectedSeries && cineGrouping === 'instance' && seriesInstances.length > 1 && (
+              <>
+                <Divider sx={{ my: 1 }} />
+                <Box sx={{ px: 2, pb: 1 }}>
+                  <Typography variant="caption" sx={{ textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700, color: 'text.secondary' }}>
+                    Cines ({seriesInstances.length})
+                  </Typography>
+                </Box>
+                <List disablePadding>
+                  {seriesInstances.map((instance, index) => {
+                    const thumb = api.instances.getThumbnailUrl(instance.sop_instance_uid, 64);
+                    const isActive = instance.sop_instance_uid === activeInstanceUid;
+                    const frames = instance.number_of_frames ?? 1;
+                    const aiViewLabel = getAiViewLabelForInstance(instance.sop_instance_uid);
+                    const cineViewLabel = selectedSeries?.series.modality === 'US'
+                      ? (aiViewLabel ?? selectedSeriesViewLabel ?? 'Unknown')
+                      : null;
+                    return (
+                      <ListItem key={instance.sop_instance_uid} disablePadding>
+                        <ListItemButton
+                          selected={isActive}
+                          onClick={() => setActiveInstanceUid(instance.sop_instance_uid)}
+                          sx={{
+                            mx: 1,
+                            my: 0.5,
+                            borderRadius: 2,
+                            border: '1px solid transparent',
+                            '&.Mui-selected': {
+                              bgcolor: 'action.selected',
+                              borderColor: 'primary.main',
+                            },
+                          }}
+                        >
+                          <Box
+                            sx={{
+                              width: 48,
+                              height: 48,
+                              bgcolor: 'action.hover',
+                              borderRadius: 1,
+                              mr: 1,
+                              overflow: 'hidden',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                            }}
+                          >
+                            <img
+                              src={thumb}
+                              alt={`Cine ${index + 1}`}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                          </Box>
+                          <ListItemText
+                            primary={`Cine ${index + 1}`}
+                            secondary={(
+                              <Stack direction="row" spacing={0.6} alignItems="center">
+                                <Typography variant="caption" color="text.secondary">
+                                  {frames} frames
+                                </Typography>
+                                {cineViewLabel && (
+                                  <Chip
+                                    size="small"
+                                    label={cineViewLabel}
+                                    sx={{
+                                      height: 18,
+                                      fontSize: '0.55rem',
+                                      fontWeight: 700,
+                                      bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.12),
+                                      color: theme.palette.primary.main,
+                                    }}
+                                  />
+                                )}
+                              </Stack>
+                            )}
+                            primaryTypographyProps={{ variant: 'body2', noWrap: true }}
+                            secondaryTypographyProps={{ component: 'div' }}
+                          />
+                        </ListItemButton>
+                      </ListItem>
+                    );
+                  })}
+                </List>
+              </>
+            )}
           </Paper>
         )}
 
@@ -5562,8 +6116,22 @@ const ViewerPage: React.FC = () => {
               ) : (
                 smartHangSeries.map((series) => {
                   const detail = smartHangDetails[series.series_instance_uid];
-                  const instanceUid = detail?.instances?.[0]?.sop_instance_uid;
-                  const thumbnail = instanceUid ? api.instances.getThumbnailUrl(instanceUid, 256) : null;
+                  const firstInstance = detail?.instances?.[0];
+                  const instanceUid = firstInstance?.sop_instance_uid ?? null;
+                  const previewWindow = detail ? getWindowDefaults(detail) : null;
+                  const thumbnail = instanceUid
+                    ? api.instances.getPixelDataUrl(instanceUid, {
+                        frame: 0,
+                        windowCenter: previewWindow?.center,
+                        windowWidth: previewWindow?.width,
+                        format: 'jpeg',
+                        quality: 80,
+                      })
+                    : null;
+                  const frameCount =
+                    firstInstance?.number_of_frames ??
+                    detail?.instances?.length ??
+                    series.num_instances;
                   const isSelected = series.series_instance_uid === seriesKey;
                   return (
                     <Paper
@@ -5623,7 +6191,7 @@ const ViewerPage: React.FC = () => {
                         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 0.5 }}>
                           <Chip label={series.modality} size="small" />
                           <Typography variant="caption" color="text.secondary">
-                            {detail?.instances?.length ?? series.num_instances} frames
+                            {frameCount ?? '-'} frames
                           </Typography>
                           <Box sx={{ flex: 1 }} />
                           <Button
@@ -5680,7 +6248,7 @@ const ViewerPage: React.FC = () => {
                   viewBox={`0 0 ${imageDimensions.columns} ${imageDimensions.rows}`}
                   style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
                 >
-                  {showAiOverlay &&
+                  {showLegacyAiOverlays && showAiOverlay &&
                     segmentationOverlays.map((overlay) => (
                       <image
                         key={overlay.id}
@@ -5693,7 +6261,7 @@ const ViewerPage: React.FC = () => {
                       />
                     ))}
 
-                  {showAiOverlay &&
+                  {showLegacyAiOverlays && showAiOverlay &&
                     interactiveSegmentationOverlays.map((overlay) => (
                       <image
                         key={`interactive-${overlay.id}`}
@@ -5706,7 +6274,7 @@ const ViewerPage: React.FC = () => {
                       />
                     ))}
 
-                  {showAiOverlay &&
+                  {showLegacyAiOverlays && showAiOverlay &&
                     detectionOverlays.map((box, idx) => (
                       <g key={`det-${idx}`}>
                         <rect
@@ -5715,18 +6283,129 @@ const ViewerPage: React.FC = () => {
                           width={box.width}
                           height={box.height}
                           fill="none"
-                          stroke="#f59e0b"
+                          stroke={theme.palette.warning.main}
                           strokeWidth={2}
                         />
                         <text
                           x={box.x}
                           y={Math.max(12, box.y - 4)}
-                          fill="#f59e0b"
+                          fill={theme.palette.warning.main}
                           fontSize={12}
                           fontFamily="monospace"
                         >
                           {box.label}
                         </text>
+                      </g>
+                    ))}
+
+                  {/* Cardiac line overlays (measurements from horalix_ai) */}
+                  {showAiOverlay && showMeasurementOverlay &&
+                    cardiacOverlays.lines.map((line) => {
+                      const measurementValue =
+                        typeof line.measurementValue === 'number' && Number.isFinite(line.measurementValue)
+                          ? line.measurementValue
+                          : null;
+                      const labelText = measurementValue !== null
+                        ? `${line.label} ${measurementValue.toFixed(2)} ${line.measurementUnit || ''}`
+                        : line.label;
+                      const labelX = (line.x1 + line.x2) / 2;
+                      const labelY = Math.max(12, Math.min(line.y1, line.y2) - 12);
+                      const labelWidth = Math.max(36, labelText.length * 6.2 + 8);
+                      const labelHeight = 14;
+                      const lineColor = overlayPalette.measurement;
+                      return (
+                        <g key={`cardiac-line-${line.id}`}>
+                          {/* Shadow line for contrast */}
+                          <line
+                            x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2}
+                            stroke={overlayPalette.shadow} strokeWidth={4} strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          {/* Measurement line */}
+                          <line
+                            x1={line.x1} y1={line.y1} x2={line.x2} y2={line.y2}
+                            stroke={lineColor} strokeWidth={2.2} strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                          {/* Endpoint markers */}
+                          <circle cx={line.x1} cy={line.y1} r={4} fill={lineColor} stroke="#0b1220" strokeWidth={1} />
+                          <circle cx={line.x2} cy={line.y2} r={4} fill={lineColor} stroke="#0b1220" strokeWidth={1} />
+                          {/* Label with background */}
+                          {labelText && (
+                            <>
+                              <rect
+                                x={labelX - labelWidth / 2}
+                                y={labelY - labelHeight}
+                                width={labelWidth}
+                                height={labelHeight}
+                                fill={overlayPalette.measurementLabelBg}
+                                rx={3}
+                              />
+                              <text
+                                x={labelX}
+                                y={labelY - 3}
+                                fill={overlayPalette.measurementLabelText}
+                                fontSize={10}
+                                fontFamily="monospace"
+                                fontWeight="bold"
+                                textAnchor="middle"
+                              >
+                                {labelText}
+                              </text>
+                            </>
+                          )}
+                        </g>
+                      );
+                    })}
+
+                  {/* Cardiac polyline overlays (contours from horalix_ai) */}
+                  {showAiOverlay && showContourOverlay &&
+                    cardiacOverlays.polylines.map((poly) => (
+                      <g key={`cardiac-poly-${poly.id}`}>
+                        {/* Shadow for contrast */}
+                        {poly.closed ? (
+                          <polygon
+                            points={poly.points}
+                            fill="none"
+                            stroke={overlayPalette.contourShadow}
+                            strokeWidth={4}
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ) : (
+                          <polyline
+                            points={poly.points}
+                            fill="none"
+                            stroke={overlayPalette.contourShadow}
+                            strokeWidth={4}
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
+                        {/* Contour */}
+                        {poly.closed ? (
+                          <polygon
+                            points={poly.points}
+                            fill={overlayPalette.contourFill}
+                            stroke={overlayPalette.contour}
+                            strokeWidth={2.2}
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        ) : (
+                          <polyline
+                            points={poly.points}
+                            fill="none"
+                            stroke={overlayPalette.contour}
+                            strokeWidth={2.2}
+                            strokeLinejoin="round"
+                            strokeLinecap="round"
+                            vectorEffect="non-scaling-stroke"
+                          />
+                        )}
                       </g>
                     ))}
 
@@ -5756,196 +6435,148 @@ const ViewerPage: React.FC = () => {
                     </g>
                   )}
 
-                  {/* Legacy measurements (old system) */}
-                  {visibleMeasurements.map((measurement) => {
-                    const isSelected = selectedMeasurementIdLocal === measurement.id;
-                    const strokeColor = isSelected ? '#f59e0b' : '#3b82f6';
-                    const strokeWidth = isSelected ? 3 : 2;
-                    const handleRadius = isSelected ? 6 : 4;
-                    const track =
-                      measurementScope === 'cine'
-                        ? displayMeasurementTracks[measurement.id]
-                        : null;
-                    const trailFrames =
-                      showTrackingTrails && track
-                        ? getTrailFrames(track.frames, currentSlice, trackingTrailLength)
-                        : [];
-
-                    return (
-                      <g key={measurement.id} style={{ cursor: activeTool === 'pointer' ? 'pointer' : 'default' }}>
-                        {/* Motion trail */}
-                        {trailFrames.map(({ frame, distance }) => (
-                          <line
-                            key={`trail-${measurement.id}-${frame.frame_index}`}
-                            x1={frame.points[0]?.x ?? measurement.start.x}
-                            y1={frame.points[0]?.y ?? measurement.start.y}
-                            x2={frame.points[1]?.x ?? measurement.end.x}
-                            y2={frame.points[1]?.y ?? measurement.end.y}
-                            stroke={strokeColor}
-                            strokeWidth={Math.max(1, strokeWidth - 1)}
-                            opacity={getTrailOpacity(distance, trackingTrailLength)}
-                          />
-                        ))}
-                        {/* Selection highlight */}
-                        {isSelected && (
-                          <line
-                            x1={measurement.start.x}
-                            y1={measurement.start.y}
-                            x2={measurement.end.x}
-                            y2={measurement.end.y}
-                            stroke="#fff"
-                            strokeWidth={strokeWidth + 2}
-                            opacity={0.5}
-                          />
-                        )}
+                  {/* Measurements */}
+                  {lineRenderModels.map((model) => (
+                    <g
+                      key={model.id}
+                      style={{ cursor: activeTool === 'pointer' ? 'pointer' : 'default' }}
+                    >
+                      {model.trailSegments.map((segment) => (
                         <line
-                          x1={measurement.start.x}
-                          y1={measurement.start.y}
-                          x2={measurement.end.x}
-                          y2={measurement.end.y}
-                          stroke={strokeColor}
-                          strokeWidth={strokeWidth}
+                          key={segment.id}
+                          x1={segment.x1}
+                          y1={segment.y1}
+                          x2={segment.x2}
+                          y2={segment.y2}
+                          stroke={model.strokeColor}
+                          strokeWidth={segment.strokeWidth}
+                          opacity={segment.opacity}
                         />
-                        <circle cx={measurement.start.x} cy={measurement.start.y} r={handleRadius} fill={strokeColor} stroke={isSelected ? '#fff' : 'none'} strokeWidth={2} />
-                        <circle cx={measurement.end.x} cy={measurement.end.y} r={handleRadius} fill={strokeColor} stroke={isSelected ? '#fff' : 'none'} strokeWidth={2} />
-                        {measurement.lengthMm !== null && (
-                          <text
-                            x={(measurement.start.x + measurement.end.x) / 2}
-                            y={(measurement.start.y + measurement.end.y) / 2 - 8}
-                            fill={strokeColor}
-                            fontSize={12}
-                            fontFamily="monospace"
-                            fontWeight={isSelected ? 'bold' : 'normal'}
-                          >
-                            {measurement.lengthMm.toFixed(1)} mm
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
+                      ))}
+                      {model.isSelected && (
+                        <line
+                          x1={model.start.x}
+                          y1={model.start.y}
+                          x2={model.end.x}
+                          y2={model.end.y}
+                          stroke="#fff"
+                          strokeWidth={model.strokeWidth + 2}
+                          opacity={0.5}
+                        />
+                      )}
+                      <line
+                        x1={model.start.x}
+                        y1={model.start.y}
+                        x2={model.end.x}
+                        y2={model.end.y}
+                        stroke={model.strokeColor}
+                        strokeWidth={model.strokeWidth}
+                      />
+                      <circle
+                        cx={model.start.x}
+                        cy={model.start.y}
+                        r={model.handleRadius}
+                        fill={model.strokeColor}
+                        stroke={model.isSelected ? '#fff' : 'none'}
+                        strokeWidth={2}
+                      />
+                      <circle
+                        cx={model.end.x}
+                        cy={model.end.y}
+                        r={model.handleRadius}
+                        fill={model.strokeColor}
+                        stroke={model.isSelected ? '#fff' : 'none'}
+                        strokeWidth={2}
+                      />
+                      {model.label && (
+                        <text
+                          x={model.label.x}
+                          y={model.label.y}
+                          fill={model.strokeColor}
+                          fontSize={12}
+                          fontFamily="monospace"
+                          fontWeight={model.label.emphasized ? 'bold' : 'normal'}
+                        >
+                          {model.label.text}
+                        </text>
+                      )}
+                    </g>
+                  ))}
 
-                  {/* Polygon/Area measurements */}
-                  {visiblePolygons.map((polygon) => {
-                    const isActive = activePolygon && polygon.id === activePolygon.id;
-                    const isSelected = selectedMeasurementIdLocal === polygon.id;
-                    const track =
-                      measurementScope === 'cine'
-                        ? displayPolygonTracks[polygon.id]
-                        : null;
-                    const trailFrames =
-                      showTrackingTrails && track && !isActive
-                        ? getTrailFrames(track.frames, currentSlice, trackingTrailLength)
-                        : [];
-                    const basePoints =
-                      isActive && polygonPreviewPoint
-                        ? [...polygon.points, polygonPreviewPoint]
-                        : polygon.points;
-                    const renderPoints =
-                      !isActive && smoothContoursEnabled && basePoints.length >= 3
-                        ? smoothPolygon(basePoints, smoothContoursIterations)
-                        : basePoints;
-                    const previewSmoothPoints =
-                      isActive && smoothContoursEnabled && basePoints.length >= 3
-                        ? smoothPolygon(basePoints, smoothContoursIterations)
-                        : null;
-                    const pathD = buildPathFromPoints(renderPoints, !isActive);
-                    const previewPath = previewSmoothPoints
-                      ? buildPathFromPoints(previewSmoothPoints, false)
-                      : '';
-                    const centroidX = polygon.points.length
-                      ? polygon.points.reduce((sum, p) => sum + p.x, 0) / polygon.points.length
-                      : 0;
-                    const centroidY = polygon.points.length
-                      ? polygon.points.reduce((sum, p) => sum + p.y, 0) / polygon.points.length
-                      : 0;
-                    const strokeColor = isSelected ? '#f59e0b' : '#10b981';
-                    const fillColor = isActive ? 'rgba(16, 185, 129, 0.2)' : isSelected ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.15)';
-
-                    return (
-                      <g key={polygon.id} style={{ cursor: activeTool === 'pointer' ? 'pointer' : 'default' }}>
-                        {/* Motion trail */}
-                        {trailFrames.map(({ frame, distance }) => {
-                          const trailPoints =
-                            smoothContoursEnabled && frame.points.length >= 3
-                              ? smoothPolygon(frame.points, smoothContoursIterations)
-                              : frame.points;
-                          const trailPath = buildPathFromPoints(trailPoints, true);
-                          return (
-                            <path
-                              key={`trail-${polygon.id}-${frame.frame_index}`}
-                              d={trailPath}
-                              fill="none"
-                              stroke={strokeColor}
-                              strokeWidth={Math.max(1, (isSelected ? 3 : 2) - 1)}
-                              opacity={getTrailOpacity(distance, trackingTrailLength)}
-                            />
-                          );
-                        })}
-                        {/* Smooth preview path while drawing */}
-                        {previewSmoothPoints && (
-                          <path
-                            d={previewPath}
-                            fill="none"
-                            stroke={strokeColor}
-                            strokeWidth={isSelected ? 2 : 1.5}
-                            opacity={0.35}
-                            strokeLinejoin="round"
-                          />
-                        )}
-                        {/* Polygon fill and stroke */}
+                  {polygonRenderModels.map((model) => (
+                    <g
+                      key={model.id}
+                      style={{ cursor: activeTool === 'pointer' ? 'pointer' : 'default' }}
+                    >
+                      {model.trailPaths.map((trail) => (
                         <path
-                          d={pathD}
-                          fill={isActive ? 'none' : fillColor}
-                          stroke={strokeColor}
-                          strokeWidth={isSelected ? 3 : 2}
-                          strokeDasharray={isActive ? '5,5' : 'none'}
+                          key={trail.id}
+                          d={trail.d}
+                          fill="none"
+                          stroke={model.strokeColor}
+                          strokeWidth={trail.strokeWidth}
+                          opacity={trail.opacity}
+                        />
+                      ))}
+                      {model.previewPath && (
+                        <path
+                          d={model.previewPath}
+                          fill="none"
+                          stroke={model.strokeColor}
+                          strokeWidth={model.isSelected ? 2 : 1.5}
+                          opacity={0.35}
                           strokeLinejoin="round"
                         />
-                        {/* Vertex handles */}
-                        {polygon.points.map((point, idx) => (
-                          <circle
-                            key={idx}
-                            cx={point.x}
-                            cy={point.y}
-                            r={isActive && idx === 0 ? 6 : isSelected ? 5 : 4}
-                            fill={isActive && idx === 0 ? '#22c55e' : strokeColor}
-                            stroke={(isActive && idx === 0) || isSelected ? '#fff' : 'none'}
-                            strokeWidth={2}
-                          />
-                        ))}
-                        {/* Area label (only for finished polygons) */}
-                        {!isActive && polygon.areaMm2 !== null && (
-                          <text
-                            x={centroidX}
-                            y={centroidY}
-                            fill={strokeColor}
-                            fontSize={12}
-                            fontFamily="monospace"
-                            fontWeight={isSelected ? 'bold' : 'normal'}
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                          >
-                            {polygon.areaMm2.toFixed(1)} mm^2
-                          </text>
-                        )}
-                        {/* Active polygon instruction */}
-                        {isActive && polygon.points.length >= 3 && (
-                          <text
-                            x={centroidX}
-                            y={centroidY}
-                            fill="#10b981"
-                            fontSize={10}
-                            fontFamily="sans-serif"
-                            textAnchor="middle"
-                            dominantBaseline="middle"
-                            opacity={0.8}
-                          >
-                            Double-click to close
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
+                      )}
+                      <path
+                        d={model.pathD}
+                        fill={model.isActive ? 'none' : model.fillColor}
+                        stroke={model.strokeColor}
+                        strokeWidth={model.strokeWidth}
+                        strokeDasharray={model.isActive ? '5,5' : 'none'}
+                        strokeLinejoin="round"
+                      />
+                      {model.vertexHandles.map((handle) => (
+                        <circle
+                          key={handle.id}
+                          cx={handle.x}
+                          cy={handle.y}
+                          r={handle.radius}
+                          fill={handle.fill}
+                          stroke={handle.stroke}
+                          strokeWidth={2}
+                        />
+                      ))}
+                      {model.areaLabel && (
+                        <text
+                          x={model.areaLabel.x}
+                          y={model.areaLabel.y}
+                          fill={model.strokeColor}
+                          fontSize={12}
+                          fontFamily="monospace"
+                          fontWeight={model.areaLabel.emphasized ? 'bold' : 'normal'}
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                        >
+                          {model.areaLabel.text}
+                        </text>
+                      )}
+                      {model.instructionLabel && (
+                        <text
+                          x={model.instructionLabel.x}
+                          y={model.instructionLabel.y}
+                          fill="#10b981"
+                          fontSize={10}
+                          fontFamily="sans-serif"
+                          textAnchor="middle"
+                          dominantBaseline="middle"
+                          opacity={0.8}
+                        >
+                          {model.instructionLabel.text}
+                        </text>
+                      )}
+                    </g>
+                  ))}
                 </svg>
 
               </Box>
@@ -6242,14 +6873,85 @@ const ViewerPage: React.FC = () => {
                 }
                 label="Auto-run after click"
               />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={segmentAutoSeed}
+                    onChange={(event) => setSegmentAutoSeed(event.target.checked)}
+                  />
+                }
+                label="Auto-seed around click"
+              />
+              {segmentAutoSeed && (
+                <Box sx={{ pl: 3, pr: 1, mb: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Auto points per click
+                  </Typography>
+                  <Slider
+                    value={segmentAutoPointCount}
+                    onChange={(_, value) => setSegmentAutoPointCount(value as number)}
+                    min={1}
+                    max={9}
+                    step={1}
+                    size="small"
+                    sx={{ mt: 0.5 }}
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    Auto point radius (px)
+                  </Typography>
+                  <Slider
+                    value={segmentAutoPointRadius}
+                    onChange={(_, value) => setSegmentAutoPointRadius(value as number)}
+                    min={4}
+                    max={30}
+                    step={2}
+                    size="small"
+                    sx={{ mt: 0.5 }}
+                  />
+                </Box>
+              )}
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={segmentAutoNegativePoints}
+                    onChange={(event) => setSegmentAutoNegativePoints(event.target.checked)}
+                  />
+                }
+                label="Add background points"
+              />
+              <FormControlLabel
+                control={
+                  <Switch
+                    checked={segmentAutoBox}
+                    onChange={(event) => setSegmentAutoBox(event.target.checked)}
+                  />
+                }
+                label="Auto box focus"
+              />
+              {segmentAutoBox && (
+                <Box sx={{ pl: 3, pr: 1, mb: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Box size
+                  </Typography>
+                  <Slider
+                    value={segmentAutoBoxScale}
+                    onChange={(_, value) => setSegmentAutoBoxScale(value as number)}
+                    min={0.2}
+                    max={0.6}
+                    step={0.05}
+                    size="small"
+                    sx={{ mt: 0.5 }}
+                  />
+                </Box>
+              )}
               <Typography variant="caption" color="text.secondary">
                 Contour points
               </Typography>
               <Slider
                 value={segmentContourPoints}
                 onChange={(_, value) => setSegmentContourPoints(value as number)}
-                min={8}
-                max={64}
+                min={16}
+                max={128}
                 step={4}
                 size="small"
                 sx={{ mt: 0.5 }}
@@ -6262,6 +6964,7 @@ const ViewerPage: React.FC = () => {
               >
                 {segmentRunning ? 'Segmenting...' : 'Run Segment'}
               </Button>
+              {segmentRunning && <LinearProgress sx={{ mt: 1 }} />}
 
               <Divider sx={{ my: 2 }} />
 
@@ -6446,14 +7149,9 @@ const ViewerPage: React.FC = () => {
                   <Typography variant="body2">
                     Status: {latestPathologyJob.completed_at ? 'Completed' : 'Pending'}
                   </Typography>
-                  {latestPathologyJob.results &&
-                    typeof latestPathologyJob.results === 'object' &&
-                    typeof (latestPathologyJob.results as Record<string, any>).output === 'object' && (
-                      <Typography variant="body2">
-                        Tiles: {(latestPathologyJob.results as Record<string, any>).output
-                          ?.tile_count ?? '-'}
-                      </Typography>
-                    )}
+                  {pathologyTileCount != null && (
+                    <Typography variant="body2">Tiles: {pathologyTileCount}</Typography>
+                  )}
                   {latestPathologyJob.result_files &&
                     Object.keys(latestPathologyJob.result_files).length > 0 && (
                       <Typography variant="body2" color="text.secondary">
@@ -6470,6 +7168,35 @@ const ViewerPage: React.FC = () => {
               <Divider sx={{ my: 2 }} />
 
               <Typography variant="subtitle2" color="text.secondary" gutterBottom>
+                Horalix AI (Cardiac)
+              </Typography>
+              {latestCardiacJob ? (
+                <>
+                  <Typography variant="body2">
+                    Model: {formatAiModelLabel(latestCardiacJob.model_type || '-')}
+                  </Typography>
+                  <Typography variant="body2">
+                    Status: {latestCardiacJob.completed_at ? 'Completed' : 'Pending'}
+                  </Typography>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    sx={{ mt: 1 }}
+                    onClick={() => setShowAiResultsPanel(true)}
+                    startIcon={<FavoriteIcon />}
+                  >
+                    Open AI Results Panel
+                  </Button>
+                </>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  No cardiac AI results yet.
+                </Typography>
+              )}
+
+              <Divider sx={{ my: 2 }} />
+
+              <Typography variant="subtitle2" color="text.secondary" gutterBottom>
                 Series Information
               </Typography>
               <Typography variant="body2">
@@ -6478,6 +7205,11 @@ const ViewerPage: React.FC = () => {
               <Typography variant="body2">
                 Description: {selectedSeries?.series.series_description || '-'}
               </Typography>
+              {(activeAiViewLabel || selectedSeriesViewLabel) && (
+                <Typography variant="body2">
+                  Echo View: {activeAiViewLabel ?? selectedSeriesViewLabel}
+                </Typography>
+              )}
               <Typography variant="body2">
                 Instances: {selectedSeries?.series.num_instances ?? '-'}
               </Typography>
@@ -6508,15 +7240,21 @@ const ViewerPage: React.FC = () => {
         {/* New Measurement Panel */}
         {showMeasurementPanel && seriesKey && (
           <MeasurementPanel
-            measurements={newStoreMeasurements}
+            measurements={contextMeasurements}
             selectedId={selectedMeasurementId}
             canUndo={measurementStore.canUndo()}
             canRedo={measurementStore.canRedo()}
             seriesUid={seriesKey}
             frameKey={currentFrameKey}
+            instanceLabelByUid={instanceLabelByUid}
             onSelectMeasurement={(id) => {
-              measurementStore.selectMeasurement(id);
-              setSelectedMeasurementIdLocal(id);
+              applyMeasurementSelection(
+                {
+                  setSelectedMeasurementId: setSelectedMeasurementIdLocal,
+                  selectMeasurement: (selectedId: string | null) => measurementStore.selectMeasurement(selectedId),
+                },
+                id
+              );
             }}
             onDeleteMeasurement={(id) => {
               // Delete from new store
@@ -6527,14 +7265,14 @@ const ViewerPage: React.FC = () => {
               }
               // Also delete from old state (sync both systems)
               setMeasurementsByFrame((prev) => {
-                const newState: Record<string, Measurement[]> = {};
+                const newState: Record<string, LegacyLineMeasurement[]> = {};
                 for (const [key, measurements] of Object.entries(prev)) {
                   newState[key] = measurements.filter((m) => m.id !== id);
                 }
                 return newState;
               });
               setMeasurementsBySeries((prev) => {
-                const newState: Record<string, Measurement[]> = {};
+                const newState: Record<string, LegacyLineMeasurement[]> = {};
                 for (const [key, measurements] of Object.entries(prev)) {
                   newState[key] = measurements.filter((m) => m.id !== id);
                 }
@@ -6542,14 +7280,14 @@ const ViewerPage: React.FC = () => {
               });
               // Also delete polygons from old state
               setPolygonsByFrame((prev) => {
-                const newState: Record<string, PolygonMeasurement[]> = {};
+                const newState: Record<string, LegacyPolygonMeasurement[]> = {};
                 for (const [key, polygons] of Object.entries(prev)) {
                   newState[key] = polygons.filter((p) => p.id !== id);
                 }
                 return newState;
               });
               setPolygonsBySeries((prev) => {
-                const newState: Record<string, PolygonMeasurement[]> = {};
+                const newState: Record<string, LegacyPolygonMeasurement[]> = {};
                 for (const [key, polygons] of Object.entries(prev)) {
                   newState[key] = polygons.filter((p) => p.id !== id);
                 }
@@ -6570,7 +7308,7 @@ const ViewerPage: React.FC = () => {
               setMeasurementsBySeries((prev) => ({ ...prev, [seriesKey]: [] }));
               // Clear all frame measurements for this series
               setMeasurementsByFrame((prev) => {
-                const newState: Record<string, Measurement[]> = {};
+                const newState: Record<string, LegacyLineMeasurement[]> = {};
                 for (const key of Object.keys(prev)) {
                   // Clear all frame measurements
                   newState[key] = [];
@@ -6580,7 +7318,7 @@ const ViewerPage: React.FC = () => {
               // Also clear polygons from old state
               setPolygonsBySeries((prev) => ({ ...prev, [seriesKey]: [] }));
               setPolygonsByFrame((prev) => {
-                const newState: Record<string, PolygonMeasurement[]> = {};
+                const newState: Record<string, LegacyPolygonMeasurement[]> = {};
                 for (const key of Object.keys(prev)) {
                   newState[key] = [];
                 }
@@ -6596,6 +7334,40 @@ const ViewerPage: React.FC = () => {
             onTrackMeasurement={trackMeasurementById}
             currentFrameIndex={currentSlice}
             onJumpToFrame={handleJumpToFrame}
+          />
+        )}
+
+        {/* AI Results Panel */}
+        {showAiResultsPanel && (
+          <AIResultsPanel
+            cardiacResults={aiResults?.cardiac ?? []}
+            latestCardiacJob={latestCardiacJob}
+            showOverlay={showAiOverlay}
+            onToggleOverlay={() => setShowAiOverlay((prev) => !prev)}
+            showMeasurementOverlay={showMeasurementOverlay}
+            onToggleMeasurementOverlay={() => setShowMeasurementOverlay((prev) => !prev)}
+            showContourOverlay={showContourOverlay}
+            onToggleContourOverlay={() => setShowContourOverlay((prev) => !prev)}
+            activeInstanceUid={currentInstanceUid ?? activeInstanceUid}
+            overlayVisibleCount={visibleCardiacOverlayCount}
+            lineOverlayCount={cardiacOverlays.lines.length}
+            contourOverlayCount={cardiacOverlays.polylines.length}
+            onJumpToNextOverlay={handleJumpToNextOverlay}
+            onSelectView={handleSelectViewCine}
+            patientContextOverride={patientContextOverride}
+            onRerunAI={() => {
+              // Always use the composite horalix_ai model (runs PanEcho + EchoPrime + Measurements + EchoNet)
+              const cardiacModel = aiModels.find((m) => m.name === 'horalix_ai')
+                ?? aiModels.find((m) => (m.details?.model_type || '').toLowerCase() === 'cardiac');
+              if (cardiacModel) {
+                runAiModel(cardiacModel);
+              } else {
+                setSnackbarMessage('No cardiac AI model available');
+              }
+            }}
+            onRerunAIWithContext={handleRerunAIWithContext}
+            isRunning={aiJobRunning}
+            progress={aiJobProgress}
           />
         )}
 
@@ -6630,9 +7402,24 @@ const ViewerPage: React.FC = () => {
         sx={{
           display: 'flex',
           alignItems: 'center',
-          px: 2,
-          py: 1,
+          px: 1.5,
+          py: 0.75,
           borderRadius: 0,
+          borderTop: 1,
+          borderColor: 'divider',
+          bgcolor: 'background.paper',
+          boxShadow: '0 -1px 0 rgba(0,0,0,0.08)',
+          gap: 0.5,
+          '& .MuiIconButton-root': {
+            borderRadius: 1,
+            padding: 0.75,
+            color: 'text.secondary',
+            transition: 'all 0.15s ease',
+            '&:hover': {
+              bgcolor: 'action.hover',
+              color: 'text.primary',
+            },
+          },
         }}
         elevation={0}
       >
@@ -6714,19 +7501,64 @@ const ViewerPage: React.FC = () => {
           disabled={totalSlices <= 1}
         />
 
-        <Chip label={selectedSeries?.series.modality || '-'} size="small" sx={{ mr: 1 }} />
+        <Chip
+          label={selectedSeries?.series.modality || '-'}
+          size="small"
+          color="primary"
+          variant="outlined"
+          sx={{ mr: 1, fontWeight: 600 }}
+        />
         <Chip
           label={`Zoom ${Math.round(zoom * 100)}%`}
           size="small"
           variant="outlined"
-          sx={{ mr: 1 }}
+          sx={{ mr: 1, fontWeight: 600 }}
         />
         <Chip
           label={`${imageDimensions.columns} x ${imageDimensions.rows}`}
           size="small"
           variant="outlined"
+          sx={{ fontWeight: 600 }}
         />
       </Paper>
+
+      <Dialog
+        open={measurementsModelDialogOpen}
+        onClose={handleMeasurementsDialogClose}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Horalix AI Measurements</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary">
+            Select a measurement model to run on the active cine. Run once per measurement type.
+          </Typography>
+          <FormControl fullWidth size="small" sx={{ mt: 2 }}>
+            <InputLabel id="horalix-measurement-label">Measurement type</InputLabel>
+            <Select
+              labelId="horalix-measurement-label"
+              value={measurementsModelSelection}
+              label="Measurement type"
+              onChange={(event) => setMeasurementsModelSelection(event.target.value)}
+            >
+              {HORALIX_MEASUREMENT_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>
+                  {option.label}
+                </MenuItem>
+              ))}
+            </Select>
+            <FormHelperText>
+              For best results, use a matching view (e.g., PLAX for LVID/IVS/LVPW).
+            </FormHelperText>
+          </FormControl>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={handleMeasurementsDialogClose}>Cancel</Button>
+          <Button variant="contained" onClick={handleMeasurementsDialogRun}>
+            Run
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       <Dialog open={volumeOpen} onClose={closeVolumeViewer} maxWidth="lg" fullWidth>
         <DialogTitle>3D Volume: {seriesLabel}</DialogTitle>
@@ -7156,6 +7988,26 @@ const ViewerPage: React.FC = () => {
               />
             </Box>
           )}
+          <Box sx={{ pl: 0.5, pr: 0.5, mb: 2 }}>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
+              Freehand polygon sampling
+            </Typography>
+            <ToggleButtonGroup
+              size="small"
+              exclusive
+              value={polygonSamplingPreset}
+              onChange={(_, value) => {
+                if (value === null) return;
+                if (value === 'sparse' || value === 'balanced' || value === 'dense') {
+                  setPolygonSamplingPreset(value);
+                }
+              }}
+            >
+              <ToggleButton value="sparse">Sparse</ToggleButton>
+              <ToggleButton value="balanced">Balanced</ToggleButton>
+              <ToggleButton value="dense">Dense</ToggleButton>
+            </ToggleButtonGroup>
+          </Box>
           <FormControlLabel
             control={
               <Switch
@@ -7328,7 +8180,7 @@ const ViewerPage: React.FC = () => {
                 End-Diastolic (EDV):
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {newStoreMeasurements
+                {contextMeasurements
                   .filter((m) => m.type === 'polygon')
                   .map((m) => (
                     <Chip
@@ -7339,7 +8191,7 @@ const ViewerPage: React.FC = () => {
                       onClick={() => setEfEdvMeasurementId(m.id)}
                     />
                   ))}
-                {newStoreMeasurements.filter((m) => m.type === 'polygon').length === 0 && (
+                {contextMeasurements.filter((m) => m.type === 'polygon').length === 0 && (
                   <Typography variant="body2" color="text.secondary">
                     Draw polygon areas first
                   </Typography>
@@ -7350,7 +8202,7 @@ const ViewerPage: React.FC = () => {
                 End-Systolic (ESV):
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {newStoreMeasurements
+                {contextMeasurements
                   .filter((m) => m.type === 'polygon')
                   .map((m) => (
                     <Chip
@@ -7365,8 +8217,8 @@ const ViewerPage: React.FC = () => {
 
               {/* EF Result */}
               {efEdvMeasurementId && efEsvMeasurementId && (() => {
-                const edvMeasurement = newStoreMeasurements.find((m) => m.id === efEdvMeasurementId);
-                const esvMeasurement = newStoreMeasurements.find((m) => m.id === efEsvMeasurementId);
+                const edvMeasurement = contextMeasurements.find((m) => m.id === efEdvMeasurementId);
+                const esvMeasurement = contextMeasurements.find((m) => m.id === efEsvMeasurementId);
                 const edv = edvMeasurement && 'areaMm2' in edvMeasurement ? edvMeasurement.areaMm2 : null;
                 const esv = esvMeasurement && 'areaMm2' in esvMeasurement ? esvMeasurement.areaMm2 : null;
                 if (edv && esv && edv > 0) {
@@ -7409,7 +8261,7 @@ const ViewerPage: React.FC = () => {
                 LV End-Diastolic (LVEDD):
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {newStoreMeasurements
+                {contextMeasurements
                   .filter((m) => m.type === 'line')
                   .map((m) => (
                     <Chip
@@ -7420,7 +8272,7 @@ const ViewerPage: React.FC = () => {
                       onClick={() => setEfEdvMeasurementId(`fs_ed_${m.id}`)}
                     />
                   ))}
-                {newStoreMeasurements.filter((m) => m.type === 'line').length === 0 && (
+                {contextMeasurements.filter((m) => m.type === 'line').length === 0 && (
                   <Typography variant="body2" color="text.secondary">
                     Draw line measurements first
                   </Typography>
@@ -7431,7 +8283,7 @@ const ViewerPage: React.FC = () => {
                 LV End-Systolic (LVESD):
               </Typography>
               <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {newStoreMeasurements
+                {contextMeasurements
                   .filter((m) => m.type === 'line')
                   .map((m) => (
                     <Chip
@@ -7448,8 +8300,8 @@ const ViewerPage: React.FC = () => {
               {efEdvMeasurementId?.startsWith('fs_ed_') && efEsvMeasurementId?.startsWith('fs_es_') && (() => {
                 const edId = efEdvMeasurementId.replace('fs_ed_', '');
                 const esId = efEsvMeasurementId.replace('fs_es_', '');
-                const lvedd = newStoreMeasurements.find((m) => m.id === edId);
-                const lvesd = newStoreMeasurements.find((m) => m.id === esId);
+                const lvedd = contextMeasurements.find((m) => m.id === edId);
+                const lvesd = contextMeasurements.find((m) => m.id === esId);
                 const edd = lvedd && 'lengthMm' in lvedd ? lvedd.lengthMm : null;
                 const esd = lvesd && 'lengthMm' in lvesd ? lvesd.lengthMm : null;
                 if (edd && esd && edd > 0) {

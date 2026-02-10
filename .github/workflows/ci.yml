@@ -124,10 +124,30 @@ jobs:
           cd frontend
           npm run lint
 
+      - name: Run Prettier check
+        run: |
+          cd frontend
+          npm run format:check
+
       - name: Run TypeScript check
         run: |
           cd frontend
           npm run type-check
+
+      - name: Run Type coverage (viewer core)
+        run: |
+          cd frontend
+          npm run type-coverage:viewer
+
+      - name: Check dependency cycles
+        run: |
+          cd frontend
+          npm run deps:check
+
+      - name: Check unused exports
+        run: |
+          cd frontend
+          npm run deadcode:check
 
   frontend-test:
     name: Frontend Tests
@@ -212,20 +232,21 @@ jobs:
           npm ci
 
       - name: Run npm audit
-        continue-on-error: true
         run: |
           cd frontend
-          npm audit --audit-level=high || echo "npm audit found vulnerabilities (review required)"
+          npm audit --audit-level=high
 
       - name: Install pip-audit
         run: pip install pip-audit
 
       - name: Run pip-audit
-        continue-on-error: true
         run: |
           cd backend
           pip install -e "." --quiet
-          pip-audit --ignore-vuln GHSA-jwhx-xcg6-8xhj || echo "pip-audit found vulnerabilities (review required)"
+          pip-audit --ignore-vuln GHSA-jwhx-xcg6-8xhj
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
 
   docker-build:
     name: Docker Build

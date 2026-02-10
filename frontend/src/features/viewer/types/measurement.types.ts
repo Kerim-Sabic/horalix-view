@@ -86,6 +86,7 @@ export interface TrackingSummary {
  */
 export interface TrackingData {
   seriesUid: string;
+  instanceUid?: string | null;
   totalFrames: number;
   startFrameIndex: number;
   frames: TrackedFrame[];
@@ -146,6 +147,9 @@ export interface BaseMeasurement {
 
   /** Frame key for frame-scoped measurements (null for series scope) */
   frameKey: string | null;
+
+  /** SOP Instance UID for cine/instance-specific measurements */
+  instanceUid?: string | null;
 }
 
 // ============================================================================
@@ -384,7 +388,8 @@ export function createBaseMeasurementProps(
   type: MeasurementType,
   seriesUid: string,
   scope: MeasurementScope = 'series',
-  frameKey: string | null = null
+  frameKey: string | null = null,
+  instanceUid: string | null = null
 ): Omit<BaseMeasurement, 'id'> {
   const now = Date.now();
   return {
@@ -398,5 +403,6 @@ export function createBaseMeasurementProps(
     modifiedAt: now,
     seriesUid,
     frameKey: scope === 'frame' ? frameKey : null,
+    instanceUid: instanceUid ?? null,
   };
 }

@@ -116,9 +116,18 @@ export interface SeriesUpdateRequest {
   window_width?: number | null;
 }
 
+export interface SeriesWithInstances {
+  series: Series;
+  instances: Instance[];
+  window_center: number | null;
+  window_width: number | null;
+  has_3d_data: boolean;
+}
+
 export interface SeriesListResponse {
   total: number;
   series: Series[];
+  details?: SeriesWithInstances[] | null;
 }
 
 export interface Instance {
@@ -177,10 +186,16 @@ export interface TrackMeasurementRequest {
   max_frames?: number;
   track_full_loop?: boolean;
   points: Array<{ x: number; y: number }>;
+  instance_uid?: string;
+  tracking_method?: 'optical_flow' | 'medsam_hybrid';
+  negative_points?: Array<{ x: number; y: number }>;
+  box?: [number, number, number, number];
+  keyframe_stride?: number;
 }
 
 export interface TrackMeasurementResponse {
   series_uid: string;
+  instance_uid?: string | null;
   total_frames: number;
   frames: Array<{
     frame_index: number;
@@ -787,7 +802,7 @@ export const api = {
      * Load an AI model.
      */
     async loadModel(modelId: string): Promise<void> {
-      await apiClient.post(`/ai/models/${modelId}/load`);
+      await apiClient.post(`/ai/models/${modelId}/load`, null, { timeout: 180000 });
     },
 
     /**
@@ -804,6 +819,14 @@ export const api = {
         box?: [number, number, number, number];
       };
     }): Promise<InteractiveSegmentationResponse> {
+      const queryParams: Record<string, unknown> = {
+        study_uid: params.studyUid,
+        series_uid: params.seriesUid,
+        instance_uid: params.instanceUid,
+      };
+      if (typeof params.frameIndex === 'number' && Number.isFinite(params.frameIndex)) {
+        queryParams.frame_index = Math.max(0, Math.floor(params.frameIndex));
+      }
       const response = await apiClient.post<InteractiveSegmentationResponse>(
         '/ai/interactive/medsam',
         {
@@ -812,12 +835,8 @@ export const api = {
           box: params.prompt.box,
         },
         {
-          params: {
-            study_uid: params.studyUid,
-            series_uid: params.seriesUid,
-            instance_uid: params.instanceUid,
-            frame_index: params.frameIndex,
-          },
+          params: queryParams,
+          timeout: 180000,
         }
       );
       return response.data;

@@ -1,0 +1,10 @@
+* @Kerim-Sabic
+
+# Viewer core
+/frontend/src/features/viewer/ @Kerim-Sabic
+
+# AI runtime
+/backend/app/services/ai/ @Kerim-Sabic
+
+# DICOM export + IO
+/backend/app/services/dicom/ @Kerim-Sabic

@@ -68,10 +68,13 @@ const MeasurementRenderer: React.FC<MeasurementRendererProps> = ({
   onMouseLeave,
 }) => {
   // Wrap with hover handlers
-  const handleClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onClick?.(e);
-  };
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onClick?.(e);
+    },
+    [onClick],
+  );
 
   const content = useMemo(() => {
     if (isLineMeasurement(measurement)) {
@@ -102,7 +105,7 @@ const MeasurementRenderer: React.FC<MeasurementRendererProps> = ({
 
     // TODO: Add other measurement type renderers
     return null;
-  }, [measurement, isSelected, isHovered, onHandleMouseDown]);
+  }, [handleClick, measurement, isSelected, isHovered, onHandleMouseDown]);
 
   return (
     <g

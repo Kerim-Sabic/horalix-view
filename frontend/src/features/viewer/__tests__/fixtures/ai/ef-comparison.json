@@ -1,0 +1,54 @@
+{
+  "view_predictions": {
+    "1.2.3.4": "A4C"
+  },
+  "findings": {
+    "panecho": {
+      "1.2.3.4": {
+        "raw_output": {
+          "EF": [[0.6]]
+        }
+      }
+    },
+    "fused_metrics": {
+      "EF": {
+        "value": 58,
+        "panecho": 60,
+        "echoprime": 56,
+        "source": "fused",
+        "confidence": "high"
+      },
+      "EF_Teichholz": {
+        "value": 52,
+        "source": "teichholz",
+        "confidence": "medium"
+      }
+    }
+  },
+  "measurements": [
+    {
+      "measurement_type": "ef_teichholz",
+      "measurement_name": "LVEF Teichholz",
+      "value": 52,
+      "unit": "%",
+      "view": "PLAX"
+    }
+  ],
+  "curves": [
+    {
+      "name": "LV Volume",
+      "unit": "mL",
+      "instance_uid": "1.2.3.4",
+      "t_ms": [0, 33, 66],
+      "y": [120, 60, 110],
+      "markers": { "ED": 0, "ES": 1 }
+    }
+  ],
+  "overlays": [],
+  "report": {
+    "sections": {},
+    "text": "Test report"
+  },
+  "inference_time_ms": 4200,
+  "timestamp": "2026-02-05T17:00:00Z"
+}
