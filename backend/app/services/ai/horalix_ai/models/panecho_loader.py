@@ -60,29 +60,30 @@ def load_panecho_model(
     logger.info(f"Loading PanEcho model from {hub_dir} with weights {weights_path}")
 
     try:
-        # Use torch.hub.load with local directory
-        # This calls PanEcho() function from hubconf.py
-        # IMPORTANT: Set TORCH_HOME to avoid downloading pretrained ConvNeXt backbone
+        # Use torch.hub.load with local directory.
+        # Keep torch hub cache in a writable location because model bundle mounts
+        # (e.g., /app/models/horalix_ai) can be read-only in Docker.
         import os
         original_torch_home = os.environ.get("TORCH_HOME")
-        cache_dir = hub_dir / "pytorch_hub_cache"
+        cache_dir = Path(original_torch_home) if original_torch_home else Path("/app/cache/pytorch_hub_cache")
         cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ["TORCH_HOME"] = str(cache_dir)
 
-        # Load model via hub (offline mode)
-        # Note: PanEcho hubconf.py automatically loads weights from weights/panecho.pt
-        model = torch.hub.load(
-            str(hub_dir),
-            "PanEcho",
-            source="local",
-            pretrained=True,
-        )
-
-        # Restore TORCH_HOME
-        if original_torch_home:
-            os.environ["TORCH_HOME"] = original_torch_home
-        else:
-            os.environ.pop("TORCH_HOME", None)
+        try:
+            # Load model via hub (offline mode)
+            # Note: PanEcho hubconf.py automatically loads weights from weights/panecho.pt
+            model = torch.hub.load(
+                str(hub_dir),
+                "PanEcho",
+                source="local",
+                pretrained=True,
+            )
+        finally:
+            # Restore TORCH_HOME
+            if original_torch_home:
+                os.environ["TORCH_HOME"] = original_torch_home
+            else:
+                os.environ.pop("TORCH_HOME", None)
 
         # Move to device and set to eval mode
         model = model.to(device)

@@ -16,22 +16,30 @@ ARG AI_EXTRAS=ai
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies for PyTorch, MONAI, OpenCV, Pydicom, and PostgreSQL client
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    libpq-dev \
-    postgresql-client \
-    ffmpeg \
-    libgl1 \
-    libglib2.0-0 \
-    libgomp1 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    libfontconfig1 \
-    libjpeg62-turbo \
-    libopenjp2-7 \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies for PyTorch, MONAI, OpenCV, Pydicom, and PostgreSQL client.
+# Use HTTPS mirrors + retries/timeouts to make builds more resilient on restricted networks.
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g' /etc/apt/sources.list; \
+    fi; \
+    find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -print0 | \
+      xargs -0 -r sed -i 's|http://deb.debian.org|https://deb.debian.org|g; s|http://security.debian.org|https://security.debian.org|g'; \
+    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update; \
+    apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends \
+      build-essential \
+      libpq-dev \
+      postgresql-client \
+      ffmpeg \
+      libgl1 \
+      libglib2.0-0 \
+      libgomp1 \
+      libsm6 \
+      libxext6 \
+      libxrender-dev \
+      libfontconfig1 \
+      libjpeg62-turbo \
+      libopenjp2-7; \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
 COPY backend/pyproject.toml ./

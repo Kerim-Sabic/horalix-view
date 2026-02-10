@@ -120,43 +120,119 @@ Storage (bind mounts):
 ## Quick Start
 ### Using Docker Compose (Recommended)
 
-1. **Clone the repository:**
+1. **Clone the repository**
 
 ```bash
 git clone https://github.com/horalix/horalix-view.git
 cd horalix-view
 ```
 
-2. **Configure environment:**
+2. **Copy environment files**
 
 ```bash
-# Copy the environment template to the repo root
+# Required (Docker startup source of truth)
 cp .env.example .env
 
-# Generate a secure SECRET_KEY
-# Linux/macOS:
-openssl rand -hex 32
-# Windows PowerShell:
-python -c "import secrets; print(secrets.token_hex(32))"
+# Optional: local backend development without Docker
+cp backend/.env.example backend/.env
 
-# Edit .env and paste the generated key into SECRET_KEY=...
+# Optional: only if you prefer running compose commands from ./docker
+cp docker/.env.example docker/.env
 ```
 
-3. **Build and start services:**
+Windows PowerShell equivalents:
+
+```powershell
+Copy-Item .env.example .env
+Copy-Item backend/.env.example backend/.env
+Copy-Item docker/.env.example docker/.env
+```
+
+3. **Generate a secure `SECRET_KEY` and set it in `./.env`**
 
 ```bash
-# From the repo root (recommended):
-docker compose -f docker/docker-compose.yml up -d --build
+# Linux/macOS
+openssl rand -hex 32
 
-# OR from the docker/ directory:
-cd docker
-docker compose up -d --build
+# Windows PowerShell
+python -c "import secrets; print(secrets.token_hex(32))"
 ```
 
-**AI build profiles (Docker):**
-- Default (fast CPU build): `AI_EXTRAS=ai`, `TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu`
-- Full research stack: `AI_EXTRAS=ai-full` (slower build, heavier image)
-- GPU builds (CUDA): `TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121` and set `AI_DEVICE=cuda:0`
+4. **Edit required `./.env` keys**
+
+Use these defaults as references:
+- `HORALIX_AI_MODELS_HOST_PATH` ([`.env.example#L98`](.env.example#L98))
+- `AI_DEVICE` ([`.env.example#L104`](.env.example#L104))
+- `TORCH_INDEX_URL` ([`.env.example#L109`](.env.example#L109))
+- `NVIDIA_VISIBLE_DEVICES` ([`.env.example#L115`](.env.example#L115))
+- `CUDA_VISIBLE_DEVICES` ([`.env.example#L117`](.env.example#L117))
+- `WORKER_0_GPU_COUNT` ([`.env.example#L122`](.env.example#L122))
+- `AI_HORALIX_AI_NUM_WORKERS` ([`.env.example#L142`](.env.example#L142))
+- `AI_HORALIX_AI_PRELOAD` ([`.env.example#L145`](.env.example#L145))
+
+### Path A: CUDA GPU
+
+`./.env` values:
+
+```env
+HORALIX_AI_MODELS_HOST_PATH=../models/horalix_ai
+AI_HORALIX_AI_PRELOAD=true
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+NVIDIA_VISIBLE_DEVICES=all
+
+# Single GPU
+AI_DEVICE=cuda:0
+CUDA_VISIBLE_DEVICES=0
+WORKER_0_GPU_COUNT=1
+AI_HORALIX_AI_NUM_WORKERS=1
+
+# Dual GPU (add worker-1 profile)
+# AI_DEVICE=cuda:0
+# CUDA_VISIBLE_DEVICES=0,1
+# WORKER_0_GPU_COUNT=1
+# AI_HORALIX_AI_NUM_WORKERS=2
+```
+
+Start commands:
+
+```bash
+# From repo root: single GPU
+docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build
+
+# From repo root: dual GPU (worker-0 + worker-1)
+docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu up -d --build
+
+# From ./docker folder: single GPU
+docker compose --env-file ../.env -f docker-compose.yml up -d --build
+
+# From ./docker folder: dual GPU
+docker compose --env-file ../.env -f docker-compose.yml --profile gpu up -d --build
+```
+
+### Path B: CPU-only
+
+`./.env` values:
+
+```env
+HORALIX_AI_MODELS_HOST_PATH=../models/horalix_ai
+AI_HORALIX_AI_PRELOAD=true
+AI_DEVICE=cpu
+TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+NVIDIA_VISIBLE_DEVICES=void
+CUDA_VISIBLE_DEVICES=
+WORKER_0_GPU_COUNT=0
+AI_HORALIX_AI_NUM_WORKERS=1
+```
+
+Start commands:
+
+```bash
+# From repo root
+docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build
+
+# From ./docker folder
+docker compose --env-file ../.env -f docker-compose.yml up -d --build
+```
 
 The backend will automatically:
 - Wait for PostgreSQL to be ready
@@ -166,37 +242,54 @@ The backend will automatically:
 Wait for containers to be healthy (30-60 seconds):
 
 ```bash
-docker compose -f docker/docker-compose.yml ps
+# CPU or single GPU
+docker compose --env-file ./.env -f docker/docker-compose.yml ps
+
+# Dual GPU
+docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu ps
 ```
 
-4. **Access the application:**
+5. **Access the application**
 
 - Frontend: http://localhost:3000
 - Backend API: http://localhost:8000
 - API Docs: http://localhost:8000/docs
 
-5. **Login with default credentials:**
+6. **Login with default credentials**
 
 - Username: `admin`, Password: `admin123` (admin role)
 - Username: `radiologist`, Password: `rad123` (radiologist role)
 - Username: `technologist`, Password: `tech123` (technologist role)
 
-**Important:** Change these passwords immediately in production!
+**Important:** Change these passwords immediately in production.
 
-6. **Create additional admin users (optional):**
+7. **Create additional admin users (optional)**
 
 ```bash
-# From repo root:
-docker compose -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
+docker compose --env-file ./.env -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
   --username myadmin \
   --email myadmin@example.com \
   --password your-secure-password
+```
 
-# OR from docker/ directory:
-docker compose exec backend python -m app.cli create-admin \
-  --username myadmin \
-  --email myadmin@example.com \
-  --password your-secure-password
+8. **Stop services**
+
+```bash
+# CPU or single GPU
+docker compose --env-file ./.env -f docker/docker-compose.yml down --remove-orphans
+
+# Dual GPU
+docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu down --remove-orphans
+
+# From ./docker folder (CPU or single GPU)
+docker compose --env-file ../.env -f docker-compose.yml down --remove-orphans
+
+# From ./docker folder (dual GPU)
+docker compose --env-file ../.env -f docker-compose.yml --profile gpu down --remove-orphans
+
+# Optional full reset (includes volumes/data)
+# CPU/single: docker compose --env-file ./.env -f docker/docker-compose.yml down -v --remove-orphans
+# Dual:       docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu down -v --remove-orphans
 ```
 
 ---
@@ -245,8 +338,8 @@ cp .env.example .env
 4. **Start PostgreSQL and Redis:**
 
 ```bash
-# Using Docker (Linux/macOS/Windows)
-docker-compose up -d postgres redis
+# Using Docker (Linux/macOS/Windows), from repo root:
+docker compose --env-file ./.env -f docker/docker-compose.yml up -d postgres redis
 
 # Or on Windows, ensure services are running:
 # - PostgreSQL service in Services (services.msc)
@@ -361,7 +454,7 @@ alembic upgrade head
 Migrations run automatically when the backend container starts. To manually run migrations:
 
 ```bash
-docker-compose exec backend alembic upgrade head
+docker compose --env-file ./.env -f docker/docker-compose.yml exec backend alembic upgrade head
 ```
 
 ### Rolling Back
@@ -476,9 +569,9 @@ CORS_ORIGINS=["http://localhost:3000","http://localhost:5173"]
 1. **Prepare environment:**
 
 ```bash
-cd horalix-view/backend
+cd horalix-view
 cp .env.example .env
-# Edit .env with production values
+# Edit ./.env with production values
 # CRITICAL: Set a strong SECRET_KEY using: openssl rand -hex 32
 ```
 
@@ -501,8 +594,8 @@ services:
 
 ```bash
 # From repo root (recommended):
-docker compose -f docker/docker-compose.yml build
-docker compose -f docker/docker-compose.yml up -d
+docker compose --env-file ./.env -f docker/docker-compose.yml build
+docker compose --env-file ./.env -f docker/docker-compose.yml up -d
 
 # The entrypoint script automatically:
 # - Waits for PostgreSQL
@@ -513,14 +606,14 @@ docker compose -f docker/docker-compose.yml up -d
 4. **Verify services:**
 
 ```bash
-docker compose -f docker/docker-compose.yml ps
-docker compose -f docker/docker-compose.yml logs -f backend
+docker compose --env-file ./.env -f docker/docker-compose.yml ps
+docker compose --env-file ./.env -f docker/docker-compose.yml logs -f backend
 ```
 
 5. **Create additional admin users (optional):**
 
 ```bash
-docker compose -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
+docker compose --env-file ./.env -f docker/docker-compose.yml exec backend python -m app.cli create-admin \
   --username myadmin \
   --email myadmin@example.com \
   --password your-secure-password
@@ -564,8 +657,8 @@ server {
 **View logs:**
 
 ```bash
-docker-compose logs -f backend
-docker-compose logs -f frontend
+docker compose --env-file ./.env -f docker/docker-compose.yml logs -f backend
+docker compose --env-file ./.env -f docker/docker-compose.yml logs -f frontend
 ```
 
 **Prometheus metrics:**
@@ -583,20 +676,20 @@ curl http://localhost:8000/health
 **Database backup:**
 
 ```bash
-docker-compose exec postgres pg_dump -U horalix horalix_view > backup.sql
+docker compose --env-file ./.env -f docker/docker-compose.yml exec postgres pg_dump -U horalix horalix_view > backup.sql
 ```
 
 **Database restore:**
 
 ```bash
-docker-compose exec -T postgres psql -U horalix horalix_view < backup.sql
+docker compose --env-file ./.env -f docker/docker-compose.yml exec -T postgres psql -U horalix horalix_view < backup.sql
 ```
 
 **DICOM files backup:**
 
 ```bash
-docker-compose exec backend tar -czf /tmp/dicom-backup.tar.gz storage/dicom
-docker cp $(docker-compose ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backup.tar.gz
+docker compose --env-file ./.env -f docker/docker-compose.yml exec backend tar -czf /tmp/dicom-backup.tar.gz storage/dicom
+docker cp $(docker compose --env-file ./.env -f docker/docker-compose.yml ps -q backend):/tmp/dicom-backup.tar.gz ./dicom-backup.tar.gz
 ```
 
 ---

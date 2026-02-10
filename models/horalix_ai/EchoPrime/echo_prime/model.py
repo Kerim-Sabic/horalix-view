@@ -118,21 +118,51 @@ class EchoPrime:
                 pixels = dcm.pixel_array
                 
                 # exclude images like (600,800) or (600,800,3)
-                if pixels.ndim < 3 or pixels.shape[2]==3:
-                    continue 
-                    
-                # if single channel repeat to 3 channels    
-                if pixels.ndim==3:
-                    
+                if pixels.ndim < 3:
+                    continue
+                if pixels.ndim == 3 and pixels.shape[2] == 3:
+                    continue
+
+                # Normalize to (F, H, W, 3)
+                if pixels.ndim == 3:
                     pixels = np.repeat(pixels[..., None], 3, axis=3)
-                
+                elif pixels.ndim == 4:
+                    if pixels.shape[-1] == 1:
+                        pixels = np.repeat(pixels, 3, axis=3)
+                    elif pixels.shape[-1] > 3:
+                        pixels = pixels[..., :3]
+                else:
+                    continue
+
+                # Convert non-uint8 cines (e.g. 10/12/16-bit) to uint8 via min-max scaling.
+                if pixels.dtype != np.uint8:
+                    pixels_f = pixels.astype(np.float32)
+                    p_min = float(np.nanmin(pixels_f))
+                    p_max = float(np.nanmax(pixels_f))
+                    if not np.isfinite(p_min) or not np.isfinite(p_max):
+                        continue
+                    if p_max > p_min:
+                        pixels = np.clip((pixels_f - p_min) * (255.0 / (p_max - p_min)), 0, 255).astype(np.uint8)
+                    else:
+                        pixels = np.zeros(pixels.shape, dtype=np.uint8)
+                else:
+                    pixels = np.ascontiguousarray(pixels)
+
                 # mask everything outside ultrasound region
-                pixels=utils.mask_outside_ultrasound(dcm.pixel_array)
-                
-                
-                
+                pixels = utils.mask_outside_ultrasound(pixels)
+                if pixels.ndim == 3:
+                    pixels = np.repeat(pixels[..., None], 3, axis=3)
+                elif pixels.ndim == 4 and pixels.shape[-1] == 1:
+                    pixels = np.repeat(pixels, 3, axis=3)
+                if pixels.ndim != 4:
+                    continue
+                if pixels.shape[-1] > 3:
+                    pixels = pixels[..., :3]
+                if pixels.shape[-1] != 3:
+                    continue
+
                 #model specific preprocessing
-                x = np.zeros((len(pixels),224,224,3))
+                x = np.zeros((len(pixels),224,224,3), dtype=np.float32)
                 for i in range(len(x)):
                     x[i] = utils.crop_and_scale(pixels[i])
                 

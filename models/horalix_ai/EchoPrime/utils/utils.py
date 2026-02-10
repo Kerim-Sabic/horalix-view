@@ -317,76 +317,86 @@ def mask_outside_ultrasound(original_pixels: np.array) -> np.array:
     np.ndarray: A numpy array with pixels outside the ultrasound region masked.
     """
     try:
-        testarray=np.copy(original_pixels)
-        vid=np.copy(original_pixels)
-        ##################### CREATE MASK #####################
-        # Sum all the frames
-        frame_sum = testarray[0].astype(np.float32)  # Start off the frameSum with the first frame
-        frame_sum = cv2.cvtColor(frame_sum, cv2.COLOR_YUV2RGB)
-        frame_sum = cv2.cvtColor(frame_sum, cv2.COLOR_RGB2GRAY)
-        frame_sum = np.where(frame_sum > 0, 1, 0) # make all non-zero values 1
-        frames = testarray.shape[0]
-        for i in range(frames): # Go through every frame
-            frame = testarray[i, :, :, :].astype(np.uint8)
-            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2RGB)
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
-            frame = np.where(frame>0,1,0) # make all non-zero values 1
-            frame_sum = np.add(frame_sum,frame)
+        vid = np.copy(original_pixels)
 
-        # Erode to get rid of the EKG tracing
-        kernel = np.ones((3,3), np.uint8)
+        # Normalize input to (F, H, W, 3)
+        if vid.ndim == 3:
+            if vid.shape[-1] == 3:
+                vid = np.expand_dims(vid, axis=0)
+            else:
+                vid = np.repeat(vid[..., None], 3, axis=3)
+        elif vid.ndim == 4:
+            if vid.shape[-1] == 1:
+                vid = np.repeat(vid, 3, axis=3)
+            elif vid.shape[-1] > 3:
+                vid = vid[..., :3]
+        else:
+            return original_pixels
+
+        # Convert to uint8 for morphology operations.
+        if vid.dtype != np.uint8:
+            vid_f = vid.astype(np.float32)
+            v_min = float(np.nanmin(vid_f))
+            v_max = float(np.nanmax(vid_f))
+            if not np.isfinite(v_min) or not np.isfinite(v_max):
+                return vid
+            if v_max > v_min:
+                vid = np.clip((vid_f - v_min) * (255.0 / (v_max - v_min)), 0, 255).astype(np.uint8)
+            else:
+                vid = np.zeros_like(vid, dtype=np.uint8)
+        else:
+            vid = vid.astype(np.uint8, copy=False)
+
+        testarray = np.copy(vid)
+
+        ##################### CREATE MASK #####################
+        frame_sum = cv2.cvtColor(testarray[0], cv2.COLOR_BGR2GRAY)
+        frame_sum = np.where(frame_sum > 0, 1, 0)
+        frames = testarray.shape[0]
+        for i in range(frames):
+            frame = cv2.cvtColor(testarray[i], cv2.COLOR_BGR2GRAY)
+            frame = np.where(frame > 0, 1, 0)
+            frame_sum = np.add(frame_sum, frame)
+
+        # Erode to get rid of EKG tracing
+        kernel = np.ones((3, 3), np.uint8)
         frame_sum = cv2.erode(np.uint8(frame_sum), kernel, iterations=10)
 
         # Make binary
         frame_sum = np.where(frame_sum > 0, 1, 0)
 
-        # Make the difference frame fr difference between 1st and last frame
-        # This gets rid of static elements
-        frame0 = testarray[0].astype(np.uint8)
-        frame0 = cv2.cvtColor(frame0, cv2.COLOR_YUV2RGB)
-        frame0 = cv2.cvtColor(frame0, cv2.COLOR_RGB2GRAY)
-        frame_last = testarray[testarray.shape[0] - 1].astype(np.uint8)
-        frame_last = cv2.cvtColor(frame_last, cv2.COLOR_YUV2RGB)
-        frame_last = cv2.cvtColor(frame_last, cv2.COLOR_RGB2GRAY)
+        # Use first-vs-last frame difference to suppress static UI artifacts
+        frame0 = cv2.cvtColor(testarray[0], cv2.COLOR_BGR2GRAY)
+        frame_last = cv2.cvtColor(testarray[testarray.shape[0] - 1], cv2.COLOR_BGR2GRAY)
         frame_diff = abs(np.subtract(frame0, frame_last))
         frame_diff = np.where(frame_diff > 0, 1, 0)
 
-        # Ensure the upper left hand corner 20x20 box all 0s.
-        # There is a weird dot that appears here some frames on Stanford echoes
+        # Remove noisy upper-left corner dot seen in some studies
         frame_diff[0:20, 0:20] = np.zeros([20, 20])
 
-        # Take the overlap of the sum frame and the difference frame
-        frame_overlap = np.add(frame_sum,frame_diff)
+        # Overlap dynamic + non-zero regions
+        frame_overlap = np.add(frame_sum, frame_diff)
         frame_overlap = np.where(frame_overlap > 1, 1, 0)
 
         # Dilate
-        kernel = np.ones((3,3), np.uint8)
         frame_overlap = cv2.dilate(np.uint8(frame_overlap), kernel, iterations=10).astype(np.uint8)
 
-        # Fill everything that's outside the mask sector with some other number like 100
-        cv2.floodFill(frame_overlap, None, (0,0), 100)
-        # make all non-100 values 255. The rest are 0
-        frame_overlap = np.where(frame_overlap!=100,255,0).astype(np.uint8)
+        # Fill outside sector
+        cv2.floodFill(frame_overlap, None, (0, 0), 100)
+        frame_overlap = np.where(frame_overlap != 100, 255, 0).astype(np.uint8)
         contours, hierarchy = cv2.findContours(frame_overlap, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-        # contours[0] has shape (445, 1, 2). 445 coordinates. each coord is 1 row, 2 numbers
-        # Find the convex hull
         for i in range(len(contours)):
             hull = cv2.convexHull(contours[i])
             cv2.drawContours(frame_overlap, [hull], -1, (255, 0, 0), 3)
-        frame_overlap = np.where(frame_overlap > 0, 1, 0).astype(np.uint8) #make all non-0 values 1
-        # Fill everything that's outside hull with some other number like 100
-        cv2.floodFill(frame_overlap, None, (0,0), 100)
-        # make all non-100 values 255. The rest are 0
-        frame_overlap = np.array(np.where(frame_overlap != 100, 255, 0),dtype=bool)
-        ################## Create your .avi file and apply mask ##################
-        # Store the dimension values
+        frame_overlap = np.where(frame_overlap > 0, 1, 0).astype(np.uint8)
+        cv2.floodFill(frame_overlap, None, (0, 0), 100)
+        frame_overlap = np.array(np.where(frame_overlap != 100, 255, 0), dtype=bool)
 
-        # Apply the mask to every frame and channel (changing in place)
+        # Apply the mask to every frame and channel
         for i in range(len(vid)):
-            frame = vid[i, :, :, :].astype('uint8')
-            frame = cv2.cvtColor(frame, cv2.COLOR_YUV2BGR)
-            frame = cv2.bitwise_and(frame, frame, mask = frame_overlap.astype(np.uint8))
-            vid[i,:,:,:]=frame
+            frame = vid[i].astype(np.uint8)
+            frame = cv2.bitwise_and(frame, frame, mask=frame_overlap.astype(np.uint8))
+            vid[i] = frame
         return vid
     except Exception as e:
         print("Error masking returned as is.")

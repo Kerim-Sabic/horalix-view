@@ -51,9 +51,33 @@ class DummyEchoPrimeNoMeta:
         return torch.zeros((len(paths), 3, 16, 224, 224))
 
 
-class DummyEchoPrimeGetViewsFailure:
-    def get_views(self, stack, visualize=False, return_view_list=True, return_scores=True):
-        raise RuntimeError("simulated get_views failure")
+class DummyConstantClassifier(torch.nn.Module):
+    def __init__(self, class_idx: int):
+        super().__init__()
+        self.class_idx = int(class_idx)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        logits = torch.full((x.shape[0], 11), -5.0, dtype=torch.float32, device=x.device)
+        logits[:, self.class_idx] = 5.0
+        return logits
+
+
+class DummyEnergyClassifier(torch.nn.Module):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        means = x.mean(dim=(1, 2, 3))
+        logits = torch.full((x.shape[0], 11), -4.0, dtype=torch.float32, device=x.device)
+        logits[:, 0] = 2.0
+        logits[:, 2] = torch.where(
+            means > 1e-3,
+            torch.tensor(6.0, device=x.device),
+            torch.tensor(-6.0, device=x.device),
+        )
+        return logits
+
+
+class DummyEchoPrimeWithClassifier:
+    def __init__(self, classifier: torch.nn.Module):
+        self.view_classifier = classifier
 
 
 def _mock_collect():
@@ -120,12 +144,44 @@ def test_load_echoprime_stack_return_meta_unsupported(monkeypatch):
     assert worker._echoprime_view_mapping_reason == "return_meta_unsupported"
 
 
-def test_view_prediction_unknown_on_get_views_failure():
+def test_view_prediction_unknown_without_classifier():
     worker = HoralixAIWorker(gpu_id=0)
-    worker.echoprime_model = DummyEchoPrimeGetViewsFailure()
+    worker.echoprime_model = None
+    worker.view_classifier = None
     stack = torch.zeros((2, 3, 16, 224, 224))
 
     views, confidences = worker._predict_views_from_stack(stack)
 
     assert views == ["Unknown", "Unknown"]
     assert confidences == [0.0, 0.0]
+
+
+def test_view_prediction_prefers_configured_classifier_over_model_classifier():
+    worker = HoralixAIWorker(gpu_id=0)
+    worker.settings.ai.horalix_ai_view_aggregation = "first"
+    worker.view_classifier = DummyConstantClassifier(class_idx=2)  # A4C
+    worker.echoprime_model = DummyEchoPrimeWithClassifier(
+        DummyConstantClassifier(class_idx=0)  # A2C
+    )
+    stack = torch.ones((1, 3, 16, 224, 224))
+
+    views, confidences = worker._predict_views_from_stack(stack)
+
+    assert views == ["A4C"]
+    assert len(confidences) == 1
+    assert confidences[0] > 0.9
+
+
+def test_view_prediction_first_mode_uses_first_non_empty_frame():
+    worker = HoralixAIWorker(gpu_id=0)
+    worker.settings.ai.horalix_ai_view_aggregation = "first"
+    worker.view_classifier = DummyEnergyClassifier()
+    worker.echoprime_model = DummyEchoPrimeWithClassifier(DummyConstantClassifier(class_idx=0))
+
+    # First frame is all zeros (empty), second frame has signal.
+    stack = torch.zeros((1, 3, 16, 224, 224))
+    stack[0, :, 1, :, :] = 1.0
+
+    views, _ = worker._predict_views_from_stack(stack)
+
+    assert views == ["A4C"]

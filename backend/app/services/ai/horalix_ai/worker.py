@@ -197,6 +197,12 @@ class HoralixAIWorker:
                 view_classifier_path=models_root / self.settings.ai.horalix_ai_view_classifier,
                 device=self.device,
             )
+            if self.echoprime_model is not None and self.view_classifier is not None:
+                try:
+                    setattr(self.echoprime_model, "view_classifier", self.view_classifier)
+                    logger.info("Attached configured EchoPrime view classifier to runtime model")
+                except Exception as exc:
+                    logger.warning(f"Failed to attach configured EchoPrime view classifier: {exc}")
             load_timings["echoprime_ms"] = (time.perf_counter() - t0) * 1000
 
             # Load Measurements models
@@ -598,46 +604,49 @@ class HoralixAIWorker:
         Predict view labels for a preprocessed EchoPrime stack.
 
         Modes:
-        - first: use EchoPrime get_views (frame-0 path; parity default)
+        - first: classify on the first non-empty frame per cine
         - sampled_mean: sample K frames and average logits per cine
         """
         n_videos = int(stack.shape[0])
         if n_videos <= 0:
             return [], []
 
-        mode = str(getattr(self.settings.ai, "horalix_ai_view_aggregation", "first")).strip().lower()
+        mode = str(getattr(self.settings.ai, "horalix_ai_view_aggregation", "sampled_mean")).strip().lower()
         if mode not in {"first", "sampled_mean"}:
-            logger.warning(f"Unknown view aggregation mode '{mode}', defaulting to 'first'")
-            mode = "first"
+            logger.warning(f"Unknown view aggregation mode '{mode}', defaulting to 'sampled_mean'")
+            mode = "sampled_mean"
 
-        if mode == "first":
-            try:
-                view_list, view_conf_list = self.echoprime_model.get_views(
-                    stack,
-                    visualize=False,
-                    return_view_list=True,
-                    return_scores=True,
-                )
-                if len(view_list) != n_videos or len(view_conf_list) != n_videos:
-                    logger.warning(
-                        "EchoPrime get_views returned unexpected lengths "
-                        f"(views={len(view_list)}, confs={len(view_conf_list)}, expected={n_videos})"
+        # Prefer the configured classifier loaded by our stack, then fall back to
+        # EchoPrime's bundled classifier if needed.
+        classifier = self.view_classifier or getattr(self.echoprime_model, "view_classifier", None)
+        if classifier is None:
+            if mode == "first" and self.echoprime_model is not None:
+                # Legacy fallback path for older deployments.
+                try:
+                    view_list, view_conf_list = self.echoprime_model.get_views(
+                        stack,
+                        visualize=False,
+                        return_view_list=True,
+                        return_scores=True,
+                    )
+                    if len(view_list) != n_videos or len(view_conf_list) != n_videos:
+                        logger.warning(
+                            "EchoPrime get_views returned unexpected lengths "
+                            f"(views={len(view_list)}, confs={len(view_conf_list)}, expected={n_videos})"
+                        )
+                        return (["Unknown"] * n_videos, [0.0] * n_videos)
+                    return [str(v) for v in view_list], [float(c) for c in view_conf_list]
+                except Exception as exc:
+                    model_module_name = getattr(self.echoprime_model.__class__, "__module__", "unknown")
+                    model_file = getattr(sys.modules.get(model_module_name), "__file__", "unknown")
+                    logger.exception(
+                        "EchoPrime get_views failed "
+                        f"mode=first device={self.device} stack_shape={tuple(stack.shape)} "
+                        f"model_file={model_file}: {exc}"
                     )
                     return (["Unknown"] * n_videos, [0.0] * n_videos)
-                return [str(v) for v in view_list], [float(c) for c in view_conf_list]
-            except Exception as exc:
-                model_module_name = getattr(self.echoprime_model.__class__, "__module__", "unknown")
-                model_file = getattr(sys.modules.get(model_module_name), "__file__", "unknown")
-                logger.exception(
-                    "EchoPrime get_views failed "
-                    f"mode=first device={self.device} stack_shape={tuple(stack.shape)} "
-                    f"model_file={model_file}: {exc}"
-                )
-                return (["Unknown"] * n_videos, [0.0] * n_videos)
 
-        classifier = getattr(self.echoprime_model, "view_classifier", None) or self.view_classifier
-        if classifier is None:
-            logger.error("No EchoPrime view classifier available for sampled_mean aggregation")
+            logger.error("No EchoPrime view classifier available for view aggregation")
             return (["Unknown"] * n_videos, [0.0] * n_videos)
 
         view_classes = get_echoprime_view_classes()
@@ -660,17 +669,20 @@ class HoralixAIWorker:
                 else:
                     frames = frames[:1]
 
-                if frames.shape[0] > max_frames:
-                    idx = torch.linspace(0, frames.shape[0] - 1, steps=max_frames).round().long()
-                    frames = frames[idx]
+                if mode == "first":
+                    selected_frames = frames[:1]
+                else:
+                    if frames.shape[0] > max_frames:
+                        idx = torch.linspace(0, frames.shape[0] - 1, steps=max_frames).round().long()
+                        frames = frames[idx]
+                    if frames.shape[0] > sample_k:
+                        idx = torch.linspace(0, frames.shape[0] - 1, steps=sample_k).round().long()
+                        frames = frames[idx]
+                    selected_frames = frames
 
-                if mode == "sampled_mean" and frames.shape[0] > sample_k:
-                    idx = torch.linspace(0, frames.shape[0] - 1, steps=sample_k).round().long()
-                    frames = frames[idx]
-
-                logits = classifier(frames.to(self.device, non_blocking=True))
-                mean_logits = logits.mean(dim=0)
-                probs = torch.softmax(mean_logits, dim=0)
+                logits = classifier(selected_frames.to(self.device, non_blocking=True))
+                logits_for_probs = logits[0] if mode == "first" else logits.mean(dim=0)
+                probs = torch.softmax(logits_for_probs, dim=0)
                 conf, cls_idx = torch.max(probs, dim=0)
                 label_idx = int(cls_idx)
                 label = view_classes[label_idx] if label_idx < len(view_classes) else "Unknown"

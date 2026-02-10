@@ -203,7 +203,7 @@ class AIModelSettings(BaseSettings):
         description="Enable Doppler measurements (Phase 2 feature)",
     )
     horalix_ai_view_aggregation: str = Field(
-        default="first",
+        default="sampled_mean",
         description="View classification aggregation mode: 'first' or 'sampled_mean'",
     )
     horalix_ai_view_aggregation_k: int = Field(

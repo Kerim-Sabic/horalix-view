@@ -8,18 +8,14 @@
 
 ---
 
-## Quick Start (Windows + Docker + 2× RTX 5080 GPUs)
+## Quick Start (Windows + Docker)
 
 ### Prerequisites
 
 1. **Windows 10/11** with WSL 2 enabled
-2. **Docker Desktop** ≥ 4.19 with WSL 2 backend
-3. **NVIDIA GPU Driver** ≥ 525.60 (for CUDA 12.x)
-4. **NVIDIA Container Toolkit** (installed in WSL 2)
-5. **Echocardiology_App weights** at:
-   ```
-   C:\Users\kerim\OneDrive\Desktop\Echocardiology_App\backend\app\AI_models\
-   ```
+2. **Docker Desktop** >= 4.19 with WSL 2 backend
+3. **NVIDIA GPU Driver** >= 525.60 (for CUDA 12.x)
+4. Model weights available under your repo, usually: `./models/horalix_ai`
 
 ### Verify GPU Access in Docker
 
@@ -28,7 +24,7 @@
 docker run --rm --gpus all nvidia/cuda:12.1.0-base-ubuntu22.04 nvidia-smi
 ```
 
-Expected: Should show both RTX 5080 GPUs
+Expected: GPUs should be listed in `nvidia-smi`.
 
 ### Installation
 
@@ -38,94 +34,75 @@ Expected: Should show both RTX 5080 GPUs
    cd horalix-view
    ```
 
-2. **Configure Environment**:
-   ```bash
-   cp backend/.env.example backend/.env
+2. **Create Docker startup env (`./.env`)**:
+   ```powershell
+   Copy-Item .env.example .env
    ```
 
-   Edit `backend/.env` and set:
+3. **Edit `./.env` and set required values**:
    ```env
-   # Horalix AI Configuration
-   AI_HORALIX_AI_ENABLED=true
-   AI_HORALIX_AI_MODELS_ROOT=/app/models/horalix_ai
-   AI_HORALIX_AI_NUM_WORKERS=2
+   SECRET_KEY=<generate-and-paste>
+   HORALIX_AI_MODELS_HOST_PATH=../models/horalix_ai
    AI_HORALIX_AI_PRELOAD=true
-   AI_HORALIX_AI_ENABLE_ECHONET_DYNAMIC=true
-   AI_HORALIX_AI_ENABLE_MEASUREMENTS_2D=true
-
-   # Batch Sizes (adjust based on GPU memory)
-   AI_HORALIX_AI_PANECHO_BATCH=8
-   AI_HORALIX_AI_MEASUREMENTS_BATCH=16
-   AI_HORALIX_AI_ECHONET_BATCH=16
-
-   # Optimization
-   AI_HORALIX_AI_CACHE_ENABLED=true
-   AI_HORALIX_AI_CACHE_MAX_SIZE_GB=10
-   AI_HORALIX_AI_MIXED_PRECISION=true
    ```
 
-3. **Update Docker Compose**:
-   Verify `docker/docker-compose.yml` has correct volume mount:
-   ```yaml
-   volumes:
-     - type: bind
-       source: C:/Users/kerim/OneDrive/Desktop/Echocardiology_App/backend/app/AI_models
-       target: /app/models/horalix_ai
-       read_only: true
+4. **Choose runtime mode in `./.env`**:
+   ```env
+   # CPU
+   AI_DEVICE=cpu
+   TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+   NVIDIA_VISIBLE_DEVICES=void
+   CUDA_VISIBLE_DEVICES=
+   WORKER_0_GPU_COUNT=0
+   AI_HORALIX_AI_NUM_WORKERS=1
    ```
 
-4. **Build and Start**:
+   ```env
+   # Single GPU
+   AI_DEVICE=cuda:0
+   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+   NVIDIA_VISIBLE_DEVICES=all
+   CUDA_VISIBLE_DEVICES=0
+   WORKER_0_GPU_COUNT=1
+   AI_HORALIX_AI_NUM_WORKERS=1
+   ```
+
+   ```env
+   # Dual GPU (2x GPU host)
+   AI_DEVICE=cuda:0
+   TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+   NVIDIA_VISIBLE_DEVICES=all
+   CUDA_VISIBLE_DEVICES=0,1
+   WORKER_0_GPU_COUNT=1
+   AI_HORALIX_AI_NUM_WORKERS=2
+   ```
+
+5. **Build and start (always from repo root)**:
+   ```powershell
+   # CPU or single GPU
+   docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build
+   ```
+
+   ```powershell
+   # Dual GPU (worker-0 + worker-1)
+   docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu up -d --build
+   ```
+
+6. **Watch logs**:
+   ```powershell
+   docker compose --env-file ./.env -f docker/docker-compose.yml logs -f horalix-ai-worker-0
+   docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu logs -f horalix-ai-worker-1
+   ```
+
+7. **Verify status**:
+   ```powershell
+   docker compose --env-file ./.env -f docker/docker-compose.yml ps
+   ```
+
+8. **Check model registry**:
    ```bash
-   docker compose up --build
+   curl http://localhost:8000/api/v1/ai/models
    ```
-
-   Watch logs for workers:
-   ```bash
-   docker compose logs -f horalix-ai-worker-0
-   docker compose logs -f horalix-ai-worker-1
-   ```
-
-   Expected output:
-   ```
-   Worker 0: GPU 0 (NVIDIA GeForce RTX 5080) detected, 16GB VRAM available
-   Worker 0: Loading PanEcho model...
-   Worker 0: Loading EchoPrime models...
-   Worker 0: Loading 9 measurement models...
-   Worker 0: Loading EchoNet-Dynamic model...
-   Worker 0: Models loaded successfully, ready for jobs
-   ```
-
-### Run Sample Inference
-
-**Via API (cURL)**:
-```bash
-curl -X POST http://localhost:8000/api/v1/ai/infer \
-  -H "Content-Type: application/json" \
-  -d '{
-    "study_uid": "1.2.840.113619.2.55.3.123456789",
-    "model_type": "horalix_ai",
-    "task_type": "CARDIAC"
-  }'
-```
-
-Response:
-```json
-{
-  "job_id": "abc123-def456",
-  "status": "QUEUED",
-  "created_at": "2026-02-02T14:32:10Z"
-}
-```
-
-**Check Job Status**:
-```bash
-curl http://localhost:8000/api/v1/ai/jobs/abc123-def456
-```
-
-**Get Results**:
-```bash
-curl http://localhost:8000/api/v1/ai/results/1.2.840.113619.2.55.3.123456789
-```
 
 ---
 
@@ -208,6 +185,13 @@ AI_HORALIX_AI_WORKER_POLL_INTERVAL=1.0      # Job polling interval (seconds)
 AI_HORALIX_AI_ENABLE_ECHONET_DYNAMIC=true   # Enable LV segmentation + EF curves
 AI_HORALIX_AI_ENABLE_MEASUREMENTS_2D=true   # Enable anatomical measurements
 AI_HORALIX_AI_ENABLE_MEASUREMENTS_DOPPLER=false  # Doppler measurements (Phase 2)
+```
+
+### View Classification
+
+```env
+AI_HORALIX_AI_VIEW_AGGREGATION=sampled_mean   # 'sampled_mean' (recommended) or 'first'
+AI_HORALIX_AI_VIEW_AGGREGATION_K=5            # Frames sampled per cine in sampled_mean mode
 ```
 
 ### Batch Sizes (adjust for GPU memory)
@@ -499,3 +483,5 @@ Log format:
 
 **Status**: Phase 1 - Foundation Complete, Pipeline Implementation In Progress
 **Last Updated**: 2026-02-02
+
+

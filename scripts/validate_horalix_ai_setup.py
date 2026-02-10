@@ -70,6 +70,26 @@ def check_directory_exists(dir_path: Path, description: str) -> bool:
         return False
 
 
+def resolve_weights_root(path_value: str) -> Path:
+    """
+    Resolve HORALIX_AI_MODELS_HOST_PATH from .env.
+
+    Docker compose resolves relative bind-mount sources from the compose file
+    location (`docker/`). Local scripts resolve from repo root, so support both.
+    """
+    raw = Path(path_value.strip())
+    candidates = [raw]
+
+    if not raw.is_absolute():
+        candidates.append((Path("docker") / raw).resolve())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
 def validate_weights_structure(weights_root: Path) -> Tuple[bool, List[str]]:
     """
     Validate the complete weights directory structure.
@@ -85,7 +105,7 @@ def validate_weights_structure(weights_root: Path) -> Tuple[bool, List[str]]:
     # Check root directory
     if not weights_root.exists():
         print_error(f"Weights root directory not found: {weights_root}")
-        print_info("Expected: C:\\Users\\kerim\\OneDrive\\Desktop\\Echocardiology_App\\backend\\app\\AI_models")
+        print_info("Expected a folder containing: PanEcho/, EchoPrime/, measurements/, EchonetDynamic/")
         return False, ["Weights root directory not found"]
 
     print_info(f"Weights root: {weights_root}")
@@ -203,23 +223,29 @@ def validate_docker_config() -> Tuple[bool, List[str]]:
             all_valid = False
 
         if "horalix-ai-worker-1:" in content:
-            print_success("Worker 1 service found in docker-compose.yml")
+            if 'profiles: ["gpu"]' in content or "profiles: ['gpu']" in content:
+                print_success("Worker 1 service found (GPU profile)")
+            else:
+                print_warning("Worker 1 service found but not gated behind a GPU profile")
         else:
-            print_error("Worker 1 service not found in docker-compose.yml")
-            errors.append("Worker 1 service missing")
+            print_warning("Worker 1 service not found (dual-GPU profile disabled)")
+
+        # Accept either a named job-queue volume or a bind mount path.
+        if (
+            "horalix-ai-job-queue:" in content
+            or "/app/job_queue" in content
+            or "AI_HORALIX_AI_JOB_QUEUE_DIR=/app/job_queue" in content
+        ):
+            print_success("Job queue configuration found in docker-compose.yml")
+        else:
+            print_error("Job queue configuration not found in docker-compose.yml")
+            errors.append("Job queue configuration missing")
             all_valid = False
 
-        if "horalix-ai-job-queue:" in content:
-            print_success("Job queue volume found in docker-compose.yml")
-        else:
-            print_error("Job queue volume not found in docker-compose.yml")
-            errors.append("Job queue volume missing")
-            all_valid = False
-
-    # Check .env file
+    # Check ./.env file
     env_file = Path(".env")
     if not env_file.exists():
-        print_warning(".env file not found - using .env.example as reference")
+        print_warning("./.env file not found - using ./.env.example as reference")
         env_file = Path(".env.example")
 
     if env_file.exists():
@@ -227,12 +253,17 @@ def validate_docker_config() -> Tuple[bool, List[str]]:
             env_content = f.read()
 
         if "HORALIX_AI_MODELS_HOST_PATH=" in env_content:
-            print_success(".env contains HORALIX_AI_MODELS_HOST_PATH")
+            print_success("./.env contains HORALIX_AI_MODELS_HOST_PATH")
         else:
-            print_warning(".env missing HORALIX_AI_MODELS_HOST_PATH")
+            print_warning("./.env missing HORALIX_AI_MODELS_HOST_PATH")
+
+        if "WORKER_0_GPU_COUNT=" in env_content:
+            print_success("./.env contains WORKER_0_GPU_COUNT")
+        else:
+            print_warning("./.env missing WORKER_0_GPU_COUNT (CPU/GPU mode switching may break)")
 
         if "AI_HORALIX_AI_PRELOAD=true" in env_content:
-            print_success(".env has preload enabled")
+            print_success("./.env has preload enabled")
         else:
             print_info("Note: AI_HORALIX_AI_PRELOAD not set to true (models will load on-demand)")
 
@@ -278,18 +309,57 @@ def generate_setup_commands(weights_root: Path):
     """Generate setup commands."""
     print_header("Setup Commands")
 
-    print_info("1. Copy .env.example to .env:")
+    print_info("1. Copy .env.example to ./.env:")
     print(f"   {YELLOW}copy .env.example .env{RESET}")
 
-    print_info("\n2. Edit .env and set HORALIX_AI_MODELS_HOST_PATH:")
+    print_info("\n2. Edit ./.env and set HORALIX_AI_MODELS_HOST_PATH:")
     print(f"   {YELLOW}HORALIX_AI_MODELS_HOST_PATH={weights_root}{RESET}")
+    print_info("   Then set runtime mode in ./.env:")
+    print(
+        f"   {YELLOW}CPU: AI_DEVICE=cpu, TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu, "
+        f"WORKER_0_GPU_COUNT=0, AI_HORALIX_AI_NUM_WORKERS=1{RESET}"
+    )
+    print(
+        f"   {YELLOW}Single GPU: AI_DEVICE=cuda:0, TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124, "
+        f"CUDA_VISIBLE_DEVICES=0, WORKER_0_GPU_COUNT=1, AI_HORALIX_AI_NUM_WORKERS=1{RESET}"
+    )
+    print(
+        f"   {YELLOW}Dual GPU: AI_DEVICE=cuda:0, TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124, "
+        f"CUDA_VISIBLE_DEVICES=0,1, WORKER_0_GPU_COUNT=1, AI_HORALIX_AI_NUM_WORKERS=2{RESET}"
+    )
 
-    print_info("\n3. Start Docker services:")
-    print(f"   {YELLOW}cd docker{RESET}")
-    print(f"   {YELLOW}docker-compose up -d{RESET}")
+    print_info("\n3. Start Docker services (from repo root):")
+    print("   CPU:")
+    print(
+        "   "
+        f"{YELLOW}docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build{RESET}"
+    )
+    print("   Single GPU:")
+    print(
+        "   "
+        f"{YELLOW}docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build{RESET}"
+    )
+    print("   Dual GPU:")
+    print(
+        "   "
+        f"{YELLOW}docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu up -d --build"
+        f"{RESET}"
+    )
 
     print_info("\n4. Watch worker logs:")
-    print(f"   {YELLOW}docker-compose logs -f horalix-ai-worker-0 horalix-ai-worker-1{RESET}")
+    print(
+        "   "
+        f"{YELLOW}docker compose --env-file ./.env -f docker/docker-compose.yml logs -f "
+        "horalix-ai-worker-0"
+        f"{RESET}"
+    )
+    print("   Dual-GPU logs:")
+    print(
+        "   "
+        f"{YELLOW}docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu logs -f "
+        "horalix-ai-worker-0 horalix-ai-worker-1"
+        f"{RESET}"
+    )
 
     print_info("\n5. Verify models loaded:")
     print(f"   {YELLOW}curl http://localhost:8000/api/v1/ai/models{RESET}")
@@ -300,7 +370,7 @@ def main():
     print_header("Horalix AI Setup Validation")
 
     # Determine weights root
-    default_weights_root = Path("C:/Users/kerim/OneDrive/Desktop/Echocardiology_App/backend/app/AI_models")
+    default_weights_root = Path("models/horalix_ai")
 
     # Check .env for custom path
     env_file = Path(".env")
@@ -309,7 +379,7 @@ def main():
             for line in f:
                 if line.startswith("HORALIX_AI_MODELS_HOST_PATH="):
                     custom_path = line.split("=", 1)[1].strip()
-                    default_weights_root = Path(custom_path)
+                    default_weights_root = resolve_weights_root(custom_path)
                     break
 
     print_info(f"Using weights root: {default_weights_root}")
@@ -336,8 +406,15 @@ def main():
         print_success("Ready to deploy with Docker")
         print_info("\nNext steps:")
         print_info("  1. Ensure Docker Desktop is running")
-        print_info("  2. Run: cd docker && docker-compose up -d")
-        print_info("  3. Wait ~35 seconds for models to load")
+        print_info(
+            "  2. CPU or single-GPU start: docker compose --env-file ./.env -f "
+            "docker/docker-compose.yml up -d --build"
+        )
+        print_info(
+            "     Dual-GPU start: docker compose --env-file ./.env -f "
+            "docker/docker-compose.yml --profile gpu up -d --build"
+        )
+        print_info("  3. Wait ~35 seconds for model loading on GPU (longer on CPU)")
         print_info("  4. Access frontend: http://localhost:3000")
         return 0
     else:
@@ -351,3 +428,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

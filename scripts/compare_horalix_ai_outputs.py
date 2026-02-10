@@ -34,6 +34,57 @@ def _median(values: list[float]) -> float:
     return (vals[mid - 1] + vals[mid]) / 2
 
 
+def _view_quality_summary(output: dict) -> dict:
+    views = output.get("view_predictions", {}) or {}
+    diagnostics = output.get("view_diagnostics", {}) or {}
+    if not isinstance(views, dict):
+        views = {}
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+
+    unknown = 0
+    for _, value in views.items():
+        if str(value).strip().lower() == "unknown":
+            unknown += 1
+
+    mapping_status_counts: dict[str, int] = defaultdict(int)
+    mapping_reason_counts: dict[str, int] = defaultdict(int)
+    for _, diag in diagnostics.items():
+        if not isinstance(diag, dict):
+            continue
+        status = str(diag.get("mapping_status", "unknown"))
+        reason = str(diag.get("mapping_reason") or "none")
+        mapping_status_counts[status] += 1
+        mapping_reason_counts[reason] += 1
+
+    total = len(views)
+    return {
+        "total": total,
+        "unknown": unknown,
+        "unknown_rate": (unknown / total) if total else 0.0,
+        "mapping_status_counts": dict(mapping_status_counts),
+        "mapping_reason_counts": dict(mapping_reason_counts),
+    }
+
+
+def _print_view_quality_summary(label: str, summary: dict) -> None:
+    print(
+        f"{label}_view_quality total={summary['total']} unknown={summary['unknown']} "
+        f"unknown_rate={summary['unknown_rate']:.3f}"
+    )
+
+    status_counts = summary.get("mapping_status_counts", {}) or {}
+    if status_counts:
+        status_parts = [f"{k}:{v}" for k, v in sorted(status_counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+        print(f"{label}_mapping_status {' '.join(status_parts)}")
+
+    reason_counts = summary.get("mapping_reason_counts", {}) or {}
+    if reason_counts:
+        top_reasons = sorted(reason_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:10]
+        reason_parts = [f"{k}:{v}" for k, v in top_reasons]
+        print(f"{label}_mapping_reasons {' '.join(reason_parts)}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Compare Horalix AI outputs for quality regression.")
     parser.add_argument("--baseline", required=True, help="Baseline JSON output file")
@@ -46,6 +97,18 @@ def main() -> int:
 
     base_meas = _group_measurements(baseline.get("measurements", []) or [])
     cand_meas = _group_measurements(candidate.get("measurements", []) or [])
+
+    base_view_quality = _view_quality_summary(baseline)
+    cand_view_quality = _view_quality_summary(candidate)
+    _print_view_quality_summary("baseline", base_view_quality)
+    _print_view_quality_summary("candidate", cand_view_quality)
+    if base_view_quality["total"] > 0 and cand_view_quality["total"] > 0:
+        print(
+            "view_unknown_rate_delta "
+            f"baseline={base_view_quality['unknown_rate']:.3f} "
+            f"candidate={cand_view_quality['unknown_rate']:.3f} "
+            f"delta={(cand_view_quality['unknown_rate'] - base_view_quality['unknown_rate']):+.3f}"
+        )
 
     failures = 0
     for mtype, base_vals in base_meas.items():

@@ -91,3 +91,7 @@ frontend/.vite/
 # /models/
 weights/
 checkpoints/
+
+# Job queues
+job_queue/**/*.json
+job_queue/status/worker_*_heartbeat

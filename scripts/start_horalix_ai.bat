@@ -23,14 +23,15 @@ echo.
 
 REM Step 2: Check if .env exists
 if not exist ".env" (
-    echo [2/4] Creating .env from .env.example...
+    echo [2/4] Creating ./.env from .env.example...
     copy .env.example .env
-    echo [!] Please edit .env and set HORALIX_AI_MODELS_HOST_PATH
-    echo [!] Then run this script again.
+    echo [!] Please edit ./.env for your runtime mode before starting:
+    echo [!] CPU: AI_DEVICE=cpu, WORKER_0_GPU_COUNT=0
+    echo [!] GPU: AI_DEVICE=cuda:0, WORKER_0_GPU_COUNT=1
     pause
     exit /b 0
 ) else (
-    echo [2/4] .env file found
+    echo [2/4] ./.env file found
 )
 
 REM Step 3: Check Docker Desktop
@@ -48,8 +49,23 @@ echo [OK] Docker Desktop is running
 REM Step 4: Start services
 echo.
 echo [4/4] Starting Horalix services...
-cd docker
-docker-compose up -d
+
+set GPU_COUNT=0
+set DUAL_GPU=0
+for /f %%C in ('nvidia-smi --query-gpu=name --format=csv,noheader ^| find /c /v "" 2^>nul') do set GPU_COUNT=%%C
+
+if "%GPU_COUNT%"=="" set GPU_COUNT=0
+if %GPU_COUNT% GEQ 2 (
+    set DUAL_GPU=1
+    echo [INFO] Detected %GPU_COUNT% GPU(s) - starting dual-GPU profile
+    docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu up -d --build
+) else if %GPU_COUNT% GEQ 1 (
+    echo [INFO] Detected %GPU_COUNT% GPU(s) - starting default stack (worker-0)
+    docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build
+) else (
+    echo [INFO] No NVIDIA GPUs detected - starting CPU mode
+    docker compose --env-file ./.env -f docker/docker-compose.yml up -d --build
+)
 
 if %errorlevel% neq 0 (
     echo [ERROR] Failed to start services!
@@ -65,12 +81,23 @@ echo.
 echo Services starting... This will take ~35 seconds for model loading.
 echo.
 echo Worker logs:
-echo   docker-compose logs -f horalix-ai-worker-0 horalix-ai-worker-1
+if "%DUAL_GPU%"=="1" (
+    echo   docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu logs -f horalix-ai-worker-0 horalix-ai-worker-1
+) else (
+    echo   docker compose --env-file ./.env -f docker/docker-compose.yml logs -f horalix-ai-worker-0
+)
 echo.
 echo Access points:
 echo   Frontend:  http://localhost:3000
 echo   Backend:   http://localhost:8000
 echo   API Docs:  http://localhost:8000/docs
+echo.
+echo Check services:
+if "%DUAL_GPU%"=="1" (
+    echo   docker compose --env-file ./.env -f docker/docker-compose.yml --profile gpu ps
+) else (
+    echo   docker compose --env-file ./.env -f docker/docker-compose.yml ps
+)
 echo.
 echo Check model status:
 echo   curl http://localhost:8000/api/v1/ai/models
