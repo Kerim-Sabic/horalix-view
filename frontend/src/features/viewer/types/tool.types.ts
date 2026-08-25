@@ -13,196 +13,33 @@ import type { WindowLevel, PanOffset } from './viewer.types';
 // ============================================================================
 
 /**
- * Navigation tools - modify viewport state
+ * Tools are defined once in domain/tools.ts. This module re-exports them so
+ * existing imports keep working, and adds the drag-state types that only the
+ * interaction layer needs.
  */
-export type NavigationTool = 'pan' | 'zoom' | 'wwwl' | 'rotate';
+export type {
+  ViewerToolId,
+  ViewerToolCategory,
+  ViewerToolMeta,
+} from '../domain/tools';
 
-/**
- * Measurement tools - create measurements
- */
-export type MeasurementTool =
-  | 'line'
-  | 'polyline'
-  | 'polygon'
-  | 'freehand'
-  | 'ellipse'
-  | 'rectangle';
+export {
+  VIEWER_TOOLS,
+  getToolMeta,
+  getToolsByCategory,
+  getDefaultTool,
+  isNavigationTool,
+  isMeasurementTool,
+  isSelectionTool,
+  isAreaTool,
+  toolForShortcut,
+  getToolCursor,
+} from '../domain/tools';
 
-/**
- * Selection tool - select and edit measurements
- */
-export type SelectionTool = 'pointer';
+import type { ViewerToolId } from '../domain/tools';
 
-/**
- * All viewer tools
- */
-export type ViewerTool = SelectionTool | NavigationTool | MeasurementTool;
-
-/**
- * Tool category for grouping in UI
- */
-export type ToolCategory = 'selection' | 'navigation' | 'measurement';
-
-// ============================================================================
-// Tool Configuration
-// ============================================================================
-
-/**
- * Tool configuration for UI display
- */
-export interface ToolConfig {
-  /** Tool identifier */
-  id: ViewerTool;
-  /** Display label */
-  label: string;
-  /** MUI icon name or custom icon identifier */
-  icon: string;
-  /** CSS cursor style */
-  cursor: string;
-  /** Tool category */
-  category: ToolCategory;
-  /** Keyboard shortcut (optional) */
-  shortcut?: string;
-  /** Tooltip description */
-  tooltip?: string;
-}
-
-/**
- * All tool configurations
- */
-export const TOOL_CONFIGS: Record<ViewerTool, ToolConfig> = {
-  // Selection tool
-  pointer: {
-    id: 'pointer',
-    label: 'Select',
-    icon: 'NearMe',
-    cursor: 'default',
-    category: 'selection',
-    shortcut: 'V',
-    tooltip: 'Select and edit measurements',
-  },
-
-  // Navigation tools
-  pan: {
-    id: 'pan',
-    label: 'Pan',
-    icon: 'PanTool',
-    cursor: 'grab',
-    category: 'navigation',
-    shortcut: 'H',
-    tooltip: 'Pan the image',
-  },
-  zoom: {
-    id: 'zoom',
-    label: 'Zoom',
-    icon: 'ZoomIn',
-    cursor: 'zoom-in',
-    category: 'navigation',
-    shortcut: 'Z',
-    tooltip: 'Zoom in/out',
-  },
-  wwwl: {
-    id: 'wwwl',
-    label: 'Window/Level',
-    icon: 'Contrast',
-    cursor: 'crosshair',
-    category: 'navigation',
-    shortcut: 'W',
-    tooltip: 'Adjust window/level',
-  },
-  rotate: {
-    id: 'rotate',
-    label: 'Rotate',
-    icon: 'RotateRight',
-    cursor: 'crosshair',
-    category: 'navigation',
-    shortcut: 'R',
-    tooltip: 'Rotate the image',
-  },
-
-  // Measurement tools
-  line: {
-    id: 'line',
-    label: 'Line',
-    icon: 'Straighten',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'L',
-    tooltip: 'Measure distance',
-  },
-  polyline: {
-    id: 'polyline',
-    label: 'Polyline',
-    icon: 'Timeline',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'P',
-    tooltip: 'Measure path length',
-  },
-  polygon: {
-    id: 'polygon',
-    label: 'Polygon',
-    icon: 'Pentagon',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'G',
-    tooltip: 'Measure area',
-  },
-  freehand: {
-    id: 'freehand',
-    label: 'Freehand',
-    icon: 'Gesture',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'F',
-    tooltip: 'Draw freehand region',
-  },
-  ellipse: {
-    id: 'ellipse',
-    label: 'Ellipse',
-    icon: 'CircleOutlined',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'E',
-    tooltip: 'Measure elliptical area',
-  },
-  rectangle: {
-    id: 'rectangle',
-    label: 'Rectangle',
-    icon: 'CropSquare',
-    cursor: 'crosshair',
-    category: 'measurement',
-    shortcut: 'B',
-    tooltip: 'Measure rectangular area',
-  },
-};
-
-// ============================================================================
-// Type Guards
-// ============================================================================
-
-/**
- * Check if tool is a navigation tool
- */
-export function isNavigationTool(tool: ViewerTool): tool is NavigationTool {
-  return ['pan', 'zoom', 'wwwl', 'rotate'].includes(tool);
-}
-
-/**
- * Check if tool is a measurement tool
- */
-export function isMeasurementTool(tool: ViewerTool): tool is MeasurementTool {
-  return ['line', 'polyline', 'polygon', 'freehand', 'ellipse', 'rectangle'].includes(
-    tool
-  );
-}
-
-/**
- * Check if tool is the selection tool
- */
-export function isSelectionTool(tool: ViewerTool): tool is SelectionTool {
-  return tool === 'pointer';
-}
+/** Canonical viewer tool union. Alias kept for existing call sites. */
+export type ViewerTool = ViewerToolId;
 
 // ============================================================================
 // Pointer Tool Modes
@@ -273,43 +110,4 @@ export function createDragState(
     startY,
     startImagePoint: null,
   };
-}
-
-// ============================================================================
-// Tool Helper Functions
-// ============================================================================
-
-/**
- * Get cursor style for tool and state
- */
-export function getToolCursor(
-  tool: ViewerTool,
-  isDragging: boolean,
-  canInteract: boolean = true
-): string {
-  if (!canInteract) return 'not-allowed';
-
-  if (isDragging) {
-    if (tool === 'pan') return 'grabbing';
-    if (tool === 'zoom') return 'zoom-in';
-    return 'crosshair';
-  }
-
-  return TOOL_CONFIGS[tool].cursor;
-}
-
-/**
- * Get tools by category
- */
-export function getToolsByCategory(category: ToolCategory): ViewerTool[] {
-  return (Object.values(TOOL_CONFIGS) as ToolConfig[])
-    .filter((config) => config.category === category)
-    .map((config) => config.id);
-}
-
-/**
- * Get default tool
- */
-export function getDefaultTool(): ViewerTool {
-  return 'pointer';
 }

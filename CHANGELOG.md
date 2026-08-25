@@ -5,6 +5,194 @@ All notable changes to the Horalix View project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed - measurement correctness
+
+These change numbers a clinician would act on.
+
+- **Ultrasound images are now spatially calibrated.** The DICOM parser read only
+  `PixelSpacing` (0028,0030), which echo studies usually do not carry - their
+  calibration lives in `SequenceOfUltrasoundRegions`. `instance.pixel_spacing`
+  came back null and the viewer fell back to `[1, 1]` in four places, so every
+  manual length and area on those studies was a pixel count labelled **mm** or
+  **mm2**. Added `services/dicom/calibration.py` as the single resolver: it
+  prefers a 2D tissue region whose axes are both in centimetres, rejects M-mode
+  and spectral Doppler regions (whose X axis is *time*), and prefers the region
+  containing the image centre. An image with no usable calibration resolves to
+  `source="none"`, and the viewer reports **px** behind a visible "Uncalibrated
+  image" banner rather than silently pretending 1 px is 1 mm.
+- **LV volumes use Simpson's method of disks.** The EF calculator read polygon
+  *areas*, labelled them EDV and ESV, and reported their ratio as ejection
+  fraction. That quantity is fractional area change; because volume scales with
+  roughly area^1.5 it reads systematically low - a true EF near 60% displayed as
+  about 45%, across the normal/reduced boundary. Replaced with a real disk
+  summation offering single-plane and biplane (A4C x A2C), gated on the
+  EchoPrime view classifier, with BSA indexing, a foreshortening check, and
+  provenance on every reported value.
+- **The AI pipeline's long axis is measured, not assumed.** LV volume used
+  `L = sqrt(A) * 1.5` - a fixed shape constant - inside the area-length formula.
+  EF partly survived because the constant cancels between ED and ES; the
+  millilitre volumes did not. It now fits a disk stack to the mask, with the
+  long axis derived from the mask's principal axis.
+- **`compute_volume_from_area` no longer calls itself Simpson's.** It implements
+  the area-length (Dodge) formula; the parameter is now `area_length`, and a
+  zero or negative length is rejected rather than divided by.
+- **Removed the guessed ultrasound spacing.** The worker defaulted
+  `PhysicalDeltaX` to `0.015` cm/px and fell back to `(0.15, 0.15)`. A cine with
+  no usable calibration is now skipped and logged.
+- **ED/ES come from a single beat.** Phase detection took the global maximum and
+  minimum of the tracked curve, so a multi-beat clip could pair the end-diastole
+  of one beat with the end-systole of another, and one ectopic or badly-tracked
+  beat captured both. The curve is now segmented into beats by autocorrelation
+  and the best-tracked beat is reported, with the beat count shown in the UI.
+- **Tracked measurements report null instead of false millimetres.** The
+  tracking endpoint fell back to 1 mm/px; it now returns `calibrated: false`
+  with null length and area on an uncalibrated series.
+
+### Performance
+
+- **Broke a transitive eager-load cascade.** `Patient.studies`,
+  `Study.series_list`/`ai_jobs` and `Series.instances` were all
+  `lazy="selectin"` and chained: listing 20 patients pulled every study, every
+  series, and **every instance row** beneath them. All four are now
+  `lazy="raise"` with `passive_deletes=True` where the database already
+  cascades; every endpoint needing children already used explicit
+  `selectinload`.
+- **Auth tokens are out of image URLs.** `getPixelDataUrl` appended the JWT as a
+  query parameter, making the token part of the browser's cache key - so a token
+  refresh invalidated every cached frame in the study at once, and wrote the
+  token into access logs and browser history. Image routes now authenticate via
+  an HttpOnly `SameSite=Strict` cookie scoped to `/api/v1`, so image URLs are
+  stable across sessions. The query parameter is still accepted for previously
+  issued links.
+- **Window/level no longer re-renders the clip server-side per mouse-move.**
+  Each distinct window/level pair is a separate render cache key, so a drag
+  queued a fresh PNG encode for every prefetched frame on every tick. The drag
+  now previews through a CSS filter and commits one server render on release.
+- **Concurrent requests for the same clip decode it once.** The prefetcher fires
+  several frame requests in parallel and all land on the same file; each was
+  decoding the entire multi-frame array independently. Added single-flight
+  locking around the decode.
+- **Raised the decoded-pixel cache from 16 entries to 256.** With 16, a session
+  with more open cines than that evicted the earliest, and scrubbing back
+  re-decoded the whole clip. The byte ceiling is the real constraint.
+- **Removed six unused imaging libraries** (`cornerstone-core`,
+  `cornerstone-math`, `cornerstone-tools`, `cornerstone-wado-image-loader`,
+  `dicom-parser`, `vtk.js`) and their `optimizeDeps`/`manualChunks` entries -
+  200 packages. Rollup was already tree-shaking them out of the bundle, so this
+  is an install, CI and dev-server win rather than a shipped-bytes one.
+
+### Performance - whole-cine delivery
+
+- **A cine is now one request and one decode.** Added
+  `GET /instances/{uid}/clip`, which returns every frame of a multi-frame
+  instance tiled into a single image, with the grid geometry in response headers
+  so the body stays a plain image the browser decodes natively. The viewer draws
+  frames from the sheet onto a canvas, so scrubbing and playback cost no network
+  at all, and the per-frame prefetch is skipped entirely once a sheet is loaded.
+  Falls back to the per-frame path for single-frame instances, clips past the
+  size cap, and any fetch failure; there is a settings toggle to force the old
+  path. JPEG chroma subsampling is disabled for sheets, since the tile grid has
+  hard edges that 4:2:0 would bleed between neighbouring frames.
+- **AI results and the model roster moved to React Query.** Both were read from
+  several places and re-fetched with no caching. Loading a model now invalidates
+  the roster rather than refetching it by hand, and the bootstrap fetches seed
+  the query cache so the queries resolve without a second round trip. Study and
+  series loading deliberately stay imperative: they are entangled with
+  `selectSeries`'s side effects, and splitting that is a separate change.
+
+### Changed - structure
+
+- **Viewer preferences are declared once.** Sixteen `useState` calls, a
+  load-from-localStorage effect and a save-to-localStorage effect each carried
+  their own hand-maintained list, so adding a preference meant editing three
+  places and missing one produced a setting that silently forgot itself.
+  `useViewerPreferences` now derives reading, writing, parsing and clamping from
+  a single schema, with a compile-time check that the schema stays exhaustive.
+  Corrupt values fall back per key rather than discarding the whole set, and
+  blocked site data yields defaults instead of throwing. `ViewerPage` is down
+  from 114 `useState` hooks to 99.
+- **Fixed a crash on single-valued WindowCenter.** WindowCenter and WindowWidth
+  are VM 1-n: pydicom returns a bare `DSfloat` for one value and a `MultiValue`
+  for several. The upload path indexed `[0]` unconditionally, so any DICOM
+  carrying a single window value failed the whole upload with
+  "'DSfloat' object is not subscriptable".
+
+### Added - validation
+
+- **A harness for comparing measurements against a reference method.** Testing
+  the volume code against analytic geometry proves the arithmetic; it says
+  nothing about agreement with cardiac MR, or with the package a reading room
+  already trusts, on real ventricles. `services/validation/agreement.py` reports
+  Bland-Altman bias and limits of agreement, Lin's concordance, ICC(2,1) and an
+  OLS fit, and `scripts/validate_measurements.py` runs it over a CSV of paired
+  measurements. Correlation is reported only alongside concordance, never
+  instead of it: two methods can correlate almost perfectly while one reads 20
+  mL high, and a gap between the two figures is exactly that offset. Tolerances
+  are supplied by the reviewer rather than assumed, and the script exits
+  non-zero only against a stated tolerance -- without one it reports rather than
+  pretending to a verdict. This does not answer the validation question; it
+  makes answering it a matter of supplying data.
+
+### Changed - structure
+
+- **AI job polling is a tested service, and can now be cancelled.** The loop in
+  the page had no cancellation at all: navigating away from a study left it
+  polling until the job finished or the timeout elapsed. `aiJobService` handles
+  the terminal-state set, progress reporting and a bounded deadline, aborts on
+  study change and unmount, and distinguishes a cancelled wait (say nothing --
+  the user left deliberately, and the job continues server-side) from a timeout
+  (say the job is still running) from a real failure. It also no longer spends
+  an extra poll interval past the deadline on its way out.
+
+### Added - cross-checking
+
+- **Manual and model volumes are shown side by side.** When both a hand trace
+  and a model contour exist for the same phase and view, the panel reports both
+  and their EF difference, flagging a gap beyond 10 points. Divergence between
+  the two is the most useful quality signal either produces, and the one thing a
+  fully automated pipeline cannot give you.
+- **Startup warns about uncalibrated instances.** Studies ingested before
+  migration 003 never had their ultrasound calibration captured, so the
+  migration alone cannot fix them -- they need re-ingesting. The server now
+  counts them at startup and says so, rather than leaving it to be discovered
+  when a measurement reads in pixels.
+
+### Added - tracing
+
+- **Freehand is a real tool.** It was fully declared in `tool.types.ts` (icon,
+  cursor, shortcut `F`) but absent from the toolbar, reachable only by holding
+  the *right* mouse button while the polygon tool was active.
+- **Strokes are drawn off the React tree.** Each sampled point called
+  `setActivePolygon`, re-rendering an 8,000-line component with 105 `useState`
+  hooks dozens of times per second. The live stroke now lives in a ref and is
+  painted by mutating SVG path attributes inside a `requestAnimationFrame` loop.
+- **Sampling is screen-space**, so stroke density no longer changes with zoom.
+- **Simplify and smooth on commit** (Ramer-Douglas-Peucker, then Chaikin), never
+  mid-stroke, which would fight the operator's hand.
+- **Segment redraw**: a stroke that starts and ends on an existing contour
+  splices into it, replacing the shorter arc - so a border the tracker got
+  slightly wrong is fixable without retracing the whole thing.
+- **Live area readout** while tracing, in the units the calibration allows.
+- **Optional magnetic snap** onto the nearest intensity edge along the contour
+  normal. Points with no gradient in range stay exactly where they were drawn.
+
+### Changed
+
+- **One tool vocabulary.** `ViewerTool` and `ViewerToolId` disagreed, and a
+  third shortcut table lived in `editingTransitions.ts`. `polyline`, `ellipse`
+  and `rectangle` were typed, configured, tested and unreachable. Tools are now
+  declared once in `domain/tools.ts`; the toolbar derives from that list.
+- **A failed series load no longer retries forever.** The smart-hang effect
+  depended on the state it wrote, and a series that threw was only logged - so
+  it stayed in the target list and re-fired on every re-run.
+- **Fixed `shlex.split` destroying Windows paths** in the external model runner:
+  POSIX mode treats a backslash as an escape, so a Windows path lost its
+  separators and the process failed to launch.
+- Suites: backend 170 passing, frontend 313 passing, lint and typecheck clean,
+  production build succeeds.
+
 ## [1.0.0] - 2026-01-19
 
 ### 🎉 Production Release

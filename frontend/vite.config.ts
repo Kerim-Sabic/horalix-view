@@ -33,12 +33,8 @@ export default defineConfig({
         manualChunks: {
           vendor: ['react', 'react-dom', 'react-router-dom'],
           mui: ['@mui/material', '@mui/icons-material'],
-          cornerstone: ['cornerstone-core', 'cornerstone-tools', 'dicom-parser'],
         },
       },
     },
-  },
-  optimizeDeps: {
-    include: ['cornerstone-core', 'cornerstone-tools', 'dicom-parser'],
   },
 });

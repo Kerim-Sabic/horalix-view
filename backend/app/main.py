@@ -79,6 +79,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     else:
         logger.info("Skipping default user initialization in production")
 
+    # Warn about studies ingested before spatial calibration was resolved.
+    #
+    # Ultrasound calibration lives in SequenceOfUltrasoundRegions, which the
+    # parser did not read until migration 003. Rows ingested before that carry
+    # no usable spacing, so the viewer will report them in pixels and refuse to
+    # compute volumes from them. Re-ingesting is what fixes it; the migration
+    # alone cannot, because the calibration was never captured.
+    try:
+        from sqlalchemy import func, select
+
+        from app.models.instance import Instance
+
+        async with async_session_maker() as session:
+            uncalibrated = await session.scalar(
+                select(func.count())
+                .select_from(Instance)
+                .where(Instance.pixel_spacing_source == "none")
+            )
+            if uncalibrated:
+                logger.warning(
+                    "Instances without spatial calibration found. Measurements on "
+                    "these will be reported in pixels and volume tools disabled. "
+                    "Re-ingest the affected studies to capture their calibration.",
+                    uncalibrated_instances=int(uncalibrated),
+                )
+    except Exception as exc:
+        # A fresh database has no instances table yet; never block startup.
+        logger.debug(f"Calibration audit skipped: {exc}")
+
     # Optional demo data seeding (development only)
     if settings.enable_demo_data:
         try:

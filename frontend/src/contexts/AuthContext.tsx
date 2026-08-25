@@ -8,6 +8,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { useNavigate, useLocation } from 'react-router-dom';
 import { authService, User, LoginCredentials } from '@/services/authService';
 import { AUTH_EVENTS } from '@/services/apiClient';
+import { ensureMediaSession, clearMediaSession } from '@/services/api';
 
 interface AuthContextType {
   user: User | null;
@@ -71,6 +72,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         if (token) {
           const userData = await authService.getCurrentUser();
           setUser(userData);
+          // Image routes authenticate by cookie so their URLs stay cacheable.
+          await ensureMediaSession(true).catch(() => undefined);
         }
       } catch (err) {
         // Token invalid or expired - clear state but don't show error
@@ -98,6 +101,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Step 2: Fetch user info with the new token
       const userData = await authService.getCurrentUser();
       setUser(userData);
+
+      // Step 3: Open a media session so image URLs need no token of their own.
+      await ensureMediaSession(true).catch(() => undefined);
     } catch (err: unknown) {
       // Clean up token on any error
       localStorage.removeItem('access_token');
@@ -117,6 +123,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       // Ignore logout errors
     } finally {
       localStorage.removeItem('access_token');
+      clearMediaSession();
       setUser(null);
     }
   }, []);

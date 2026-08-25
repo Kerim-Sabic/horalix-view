@@ -91,11 +91,15 @@ class Series(Base):
     study: Mapped["Study"] = relationship("Study", back_populates="series_list")
 
     # Instance relationship
+    # lazy="raise": every endpoint that needs instances loads them explicitly
+    # with selectinload. Implicit loading here fanned out to the whole instance
+    # table whenever a Series was touched, including from a patient listing.
     instances: Mapped[list["Instance"]] = relationship(
         "Instance",
         back_populates="series",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise",
         order_by="Instance.instance_number",
     )
 

@@ -66,23 +66,24 @@ export {
   createDefaultPanelVisibility,
 } from './viewer.types';
 
-// Tool types
+// Tool types -- defined once in domain/tools.ts
 export type {
-  NavigationTool,
-  MeasurementTool,
-  SelectionTool,
   ViewerTool,
-  ToolCategory,
-  ToolConfig,
+  ViewerToolId,
+  ViewerToolCategory,
+  ViewerToolMeta,
   PointerMode,
   DragState,
 } from './tool.types';
 
 export {
-  TOOL_CONFIGS,
+  VIEWER_TOOLS,
+  getToolMeta,
   isNavigationTool,
   isMeasurementTool,
   isSelectionTool,
+  isAreaTool,
+  toolForShortcut,
   createDragState,
   getToolCursor,
   getToolsByCategory,

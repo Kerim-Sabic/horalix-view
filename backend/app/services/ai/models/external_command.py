@@ -25,6 +25,30 @@ from app.services.ai.base import BaseAIModel, InferenceResult, ModelMetadata
 logger = get_logger(__name__)
 
 
+
+def _split_command(rendered: str) -> list[str]:
+    r"""Split a rendered command line into argv.
+
+    ``shlex.split`` defaults to POSIX rules, where a backslash escapes the next
+    character. On Windows that silently destroys every path it is given --
+    ``C:\Users\me`` comes back as ``C:Usersme`` and the process fails to
+    launch with a confusing "file not found".
+
+    On Windows the split runs in non-POSIX mode, which preserves backslashes,
+    and the quote characters it leaves attached are stripped afterwards.
+    """
+    if os.name != "nt":
+        return shlex.split(rendered)
+
+    parts = shlex.split(rendered, posix=False)
+    cleaned: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in ("'", '"'):
+            part = part[1:-1]
+        cleaned.append(part)
+    return cleaned
+
+
 class ExternalCommandModel(BaseAIModel):
     """Execute an external command for inference and parse JSON output."""
 
@@ -228,7 +252,7 @@ class ExternalCommandModel(BaseAIModel):
             raise RuntimeError("External command not configured")
         template = Template(self.command_template)
         rendered = template.safe_substitute(tokens)
-        return shlex.split(rendered)
+        return _split_command(rendered)
 
     async def _run_command(self, command: list[str], env: dict[str, str]) -> tuple[str, str]:
         process = await asyncio.create_subprocess_exec(

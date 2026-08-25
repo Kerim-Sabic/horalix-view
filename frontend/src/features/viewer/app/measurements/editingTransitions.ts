@@ -1,4 +1,4 @@
-import type { ViewerToolId } from '../../domain/tools';
+import { toolForShortcut, type ViewerToolId } from '../../domain/tools';
 import type { MeasurementEditState } from './interaction';
 
 type SelectionActions = {
@@ -11,24 +11,6 @@ type EditActions = SelectionActions & {
   setIsDragging: (isDragging: boolean) => void;
 };
 
-const TOOL_SHORTCUTS: Record<string, ViewerToolId> = {
-  v: 'pointer',
-  '1': 'pointer',
-  h: 'pan',
-  '2': 'pan',
-  z: 'zoom',
-  '3': 'zoom',
-  w: 'wwwl',
-  '4': 'wwwl',
-  m: 'measure',
-  '5': 'measure',
-  a: 'polygon',
-  '6': 'polygon',
-  s: 'segment',
-  '8': 'segment',
-  r: 'rotate',
-  '7': 'rotate',
-};
 
 export const applyMeasurementSelection = (actions: SelectionActions, id: string | null) => {
   actions.setSelectedMeasurementId(id);
@@ -51,7 +33,9 @@ export const cancelMeasurementEdit = (
   setEditingMeasurement(null);
 };
 
-export const resolveToolShortcut = (key: string): ViewerToolId | null => {
-  const normalized = key.toLowerCase();
-  return TOOL_SHORTCUTS[normalized] ?? null;
-};
+/**
+ * Tool shortcuts are declared once, on the tools themselves.
+ * Re-exported here so existing call sites keep working.
+ */
+export const resolveToolShortcut = (key: string): ViewerToolId | null =>
+  toolForShortcut(key);

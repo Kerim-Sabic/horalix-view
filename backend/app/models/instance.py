@@ -69,8 +69,20 @@ class Instance(Base):
     # Image Orientation Patient (0020,0037) - stored as "r1\r2\r3\c1\c2\c3"
     image_orientation_patient: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
 
-    # Pixel Spacing (0028,0030) - stored as "row\col"
+    # Pixel Spacing - stored as "row\col", in mm. For ultrasound this is
+    # resolved from SequenceOfUltrasoundRegions, not (0028,0030).
     pixel_spacing: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+    # How pixel_spacing was resolved: "pixel_spacing", "ultrasound_region",
+    # "imager_pixel_spacing", or "none". "none" means the image is NOT
+    # spatially calibrated and must not be measured in millimetres.
+    pixel_spacing_source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="none", server_default="none"
+    )
+
+    # Pixel bounds of the ultrasound region the calibration applies to,
+    # stored as "minX\minY\maxX\maxY". Measurements outside it are unreliable.
+    ultrasound_region: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     # Number of frames (for multiframe instances)
     number_of_frames: Mapped[int] = mapped_column(Integer, default=1)
@@ -156,6 +168,31 @@ class Instance(Base):
             self.pixel_spacing = f"{value[0]}\\{value[1]}"
         else:
             self.pixel_spacing = None
+
+    @property
+    def is_spatially_calibrated(self) -> bool:
+        """True when lengths and areas on this image can be reported in mm."""
+        return self.pixel_spacing_source != "none" and self.pixel_spacing_tuple is not None
+
+    @property
+    def ultrasound_region_tuple(self) -> tuple[int, int, int, int] | None:
+        """Region bounds as (min_x, min_y, max_x, max_y) in pixels."""
+        if not self.ultrasound_region:
+            return None
+        parts = self.ultrasound_region.split("\\")
+        if len(parts) != 4:
+            return None
+        try:
+            return (int(parts[0]), int(parts[1]), int(parts[2]), int(parts[3]))
+        except ValueError:
+            return None
+
+    @ultrasound_region_tuple.setter
+    def ultrasound_region_tuple(self, value: tuple[int, int, int, int] | None) -> None:
+        if value:
+            self.ultrasound_region = "\\".join(str(int(v)) for v in value)
+        else:
+            self.ultrasound_region = None
 
     def __repr__(self) -> str:
         return f"<Instance(id={self.id}, uid='{self.sop_instance_uid}', number={self.instance_number})>"

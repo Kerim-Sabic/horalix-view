@@ -91,17 +91,21 @@ class Study(Base):
     patient: Mapped[Optional["Patient"]] = relationship("Patient", back_populates="studies")
 
     # Relationships
+    # lazy="raise" -- see the note on Series.instances. Loading a Study used to
+    # pull every Series and, through them, every Instance.
     series_list: Mapped[list["Series"]] = relationship(
         "Series",
         back_populates="study",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise",
     )
     ai_jobs: Mapped[list["AIJob"]] = relationship(
         "AIJob",
         back_populates="study",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        passive_deletes=True,
+        lazy="raise",
     )
 
     # Indexes for common queries

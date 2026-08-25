@@ -188,6 +188,19 @@ export const MIN_VERTEX_DISTANCE = 3;
 /** Freehand sampling interval in pixels */
 export const FREEHAND_SAMPLE_INTERVAL = 2;
 
+/**
+ * Ramer-Douglas-Peucker tolerance applied when a freehand stroke is committed,
+ * in image pixels. Large enough to drop mouse jitter, small enough to keep the
+ * shape of a traced endocardial border.
+ */
+export const FREEHAND_SIMPLIFY_TOLERANCE = 1.2;
+
+/**
+ * How close (in image pixels) a stroke must start to an existing contour for it
+ * to be treated as a correction to that contour rather than a new one.
+ */
+export const FREEHAND_SPLICE_DISTANCE = 8;
+
 /** Maximum undo history size */
 export const MAX_UNDO_HISTORY = 50;
 

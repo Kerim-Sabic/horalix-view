@@ -138,7 +138,7 @@ const NAVIGATION_TOOLS: ToolConfig[] = [
 ];
 
 const MEASUREMENT_TOOLS: ToolConfig[] = [
-  { id: 'line', label: 'Line Measurement', icon: <MeasureIcon />, isMeasurement: true },
+  { id: 'measure', label: 'Line Measurement', icon: <MeasureIcon />, isMeasurement: true },
   { id: 'polygon', label: 'Polygon/Area', icon: <PolygonIcon />, isMeasurement: true },
 ];
 
@@ -190,7 +190,7 @@ export const ViewerToolbar: React.FC<ViewerToolbarProps> = ({
   const [wlMenuAnchor, setWlMenuAnchor] = useState<HTMLElement | null>(null);
   const [aiMenuAnchor, setAiMenuAnchor] = useState<HTMLElement | null>(null);
 
-  const isMeasurementTool = activeTool === 'line' || activeTool === 'polygon';
+  const isMeasurementTool = activeTool === 'measure' || activeTool === 'polygon';
 
   const handleToolClick = useCallback((tool: ViewerTool) => {
     if (tool === 'rotate') {

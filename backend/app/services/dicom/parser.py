@@ -4,7 +4,7 @@ Provides utilities for parsing DICOM files, extracting metadata,
 and handling pixel data across different modalities.
 """
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, time
 from io import BytesIO
 from pathlib import Path
@@ -13,6 +13,7 @@ from typing import Any
 import numpy as np
 
 from app.core.logging import get_logger
+from app.services.dicom.calibration import get_calibration
 
 logger = get_logger(__name__)
 
@@ -65,6 +66,12 @@ class DicomMetadata:
 
     # Spatial attributes
     pixel_spacing: tuple[float, float] | None = None
+    # How pixel_spacing was resolved. See services.dicom.calibration.
+    # "none" means the image is not spatially calibrated and must not be
+    # measured in millimetres.
+    pixel_spacing_source: str = "none"
+    # Pixel bounds of the ultrasound region the calibration applies to, if any.
+    ultrasound_region: dict[str, int] | None = None
     slice_thickness: float | None = None
     slice_location: float | None = None
     image_position_patient: tuple[float, float, float] | None = None
@@ -219,10 +226,15 @@ class DicomParser:
         metadata.photometric_interpretation = get_value("PhotometricInterpretation")
         metadata.planar_configuration = get_value("PlanarConfiguration")
 
-        # Spatial attributes
-        if hasattr(ds, "PixelSpacing") and ds.PixelSpacing:
-            ps = ds.PixelSpacing
-            metadata.pixel_spacing = (float(ps[0]), float(ps[1]))
+        # Spatial attributes. Ultrasound carries its calibration in the
+        # ultrasound region sequence rather than PixelSpacing, so this goes
+        # through the shared resolver instead of reading the tag directly.
+        calibration = get_calibration(ds)
+        metadata.pixel_spacing = calibration.as_tuple
+        metadata.pixel_spacing_source = calibration.source
+        metadata.ultrasound_region = (
+            asdict(calibration.region) if calibration.region is not None else None
+        )
 
         metadata.slice_thickness = get_value("SliceThickness")
         if metadata.slice_thickness:

@@ -1238,12 +1238,18 @@ export const AIResultsPanel: React.FC<AIResultsPanelProps> = React.memo(
       return weightKg / (heightM * heightM);
     }, [effectivePatientContext]);
 
-    const displayPatientContext: PatientContext | null = effectivePatientContext
-      ? {
-          ...effectivePatientContext,
-          bmi: effectivePatientContext.bmi ?? computedBmi,
-        }
-      : null;
+    // Memoised because an effect depends on it; rebuilding the object every
+    // render would re-run that effect on every render.
+    const displayPatientContext: PatientContext | null = useMemo(
+      () =>
+        effectivePatientContext
+          ? {
+              ...effectivePatientContext,
+              bmi: effectivePatientContext.bmi ?? computedBmi,
+            }
+          : null,
+      [effectivePatientContext, computedBmi]
+    );
 
     const integratedView = useMemo(
       () => buildIntegratedMeasurements(integratedTasks, patientSex),

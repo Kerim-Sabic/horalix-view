@@ -9,7 +9,10 @@ from httpx import ASGITransport, AsyncClient
 
 from app.api.v1.endpoints import ai as ai_endpoints
 from app.api.v1.endpoints.ai import router as ai_router
-from app.api.v1.endpoints.auth import get_current_active_user
+from app.api.v1.endpoints.auth import (
+    get_current_active_user,
+    get_current_active_user_from_token,
+)
 from app.core.security import TokenData
 
 
@@ -22,6 +25,8 @@ def test_app() -> FastAPI:
         return TokenData(user_id="test-user", username="tester", roles=["admin"], permissions=["ai:*"])
 
     app.dependency_overrides[get_current_active_user] = override_user
+    # Image routes accept a cookie or query token as well as a header.
+    app.dependency_overrides[get_current_active_user_from_token] = override_user
     app.state.model_registry = MagicMock()
     return app
 

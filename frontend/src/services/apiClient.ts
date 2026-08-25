@@ -30,6 +30,9 @@ export const apiClient: AxiosInstance = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  // The media session cookie authenticates <img> requests, which cannot carry
+  // an Authorization header. Without this, the Set-Cookie response is dropped.
+  withCredentials: true,
 });
 
 // Track if we're already handling a 401 to prevent loops

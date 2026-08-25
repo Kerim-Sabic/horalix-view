@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Alert,
+  AlertTitle,
   Box,
   Button,
   Chip,
@@ -94,7 +95,6 @@ import type {
 } from './viewerPage.types';
 import {
   MAX_IMAGE_CACHE,
-  DEFAULT_CINE_FPS,
   MIN_ZOOM,
   MAX_ZOOM,
   ZOOM_STEP,
@@ -187,12 +187,62 @@ import type {
 } from '../features/viewer/types';
 import { isLineMeasurement, isPolygonMeasurement, smoothPolygon } from '../features/viewer/types';
 import { calculatePolygonAreaMm2, calculatePerimeterMm } from '../features/viewer/services/geometryService';
-import { MEASUREMENT_COLORS } from '../features/viewer/constants';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  waitForJob,
+  JobCancelledError,
+  JobTimeoutError,
+} from '../features/viewer/services/aiJobService';
+import { useClipSheet } from '../features/viewer/hooks/useClipSheet';
+import { useViewerPreferences } from '../features/viewer/hooks/useViewerPreferences';
+import type {
+  MeasurementScope,
+  PolygonSamplingPreset,
+} from '../features/viewer/hooks/useViewerPreferences';
+import { drawClipFrame } from '../features/viewer/infra/dicom/clipSheet';
+import { LvVolumePanel } from '../features/viewer/components/VolumePanel';
+import type { ContourOption } from '../features/viewer/components/VolumePanel';
+import { gateVolumeTools, findBiplanePartner } from '../features/viewer/services/viewGatingService';
+import { analyseCardiacPhases } from '../features/viewer/services/cardiacPhaseService';
+import type { VolumeMethod } from '../features/viewer/services/ventricleVolumeService';
+import { FreehandStrokeLayer } from '../features/viewer/components/Viewport/FreehandStrokeLayer';
+import {
+  createStrokeState,
+  type FreehandStrokeState,
+} from '../features/viewer/components/Viewport/freehandStrokeState';
+import {
+  finishFreehandStroke,
+  spliceStroke,
+  isNearContour,
+} from '../features/viewer/services/contourService';
+import {
+  createLuminanceSampler,
+  snapContourToEdges,
+  snapCoverage,
+} from '../features/viewer/services/edgeSnapService';
+import {
+  getCalibration,
+  spacingForGeometry,
+  formatLength,
+  formatArea,
+  uncalibratedReason,
+} from '../features/viewer/services/calibrationService';
+import {
+  MEASUREMENT_COLORS,
+  FREEHAND_SIMPLIFY_TOLERANCE,
+  FREEHAND_SPLICE_DISTANCE,
+} from '../features/viewer/constants';
 import {
   downloadFile,
   generateCSVExport,
   type ExportFormat,
 } from '../features/viewer/services/exportService';
+
+/** Query keys, shared between the queries, the bootstrap seeding, and the
+ * invalidations that follow a job or a model load. */
+const AI_MODELS_KEY = ['ai', 'models'] as const;
+const AI_RESULTS_KEY = (studyUid: string | null | undefined) =>
+  ['ai', 'results', studyUid] as const;
 
 const ViewerPage: React.FC = () => {
   const theme = useTheme();
@@ -237,26 +287,126 @@ const ViewerPage: React.FC = () => {
   const [patientDetails, setPatientDetails] = useState<Patient | null>(null);
   const [seriesList, setSeriesList] = useState<Series[]>([]);
   const [selectedSeries, setSelectedSeries] = useState<SeriesDetailResponse | null>(null);
-  const [aiModels, setAIModels] = useState<AIModel[]>([]);
   const [patientContextOverride, setPatientContextOverride] = useState<PatientContext | null>(null);
-  const [aiResults, setAiResults] = useState<null | {
-    study_uid: string;
-    total_jobs: number;
-    segmentations: Record<string, unknown>[];
-    detections: Record<string, unknown>[];
-    classifications: Record<string, unknown>[];
-    pathology: Record<string, unknown>[];
-    cardiac: Record<string, unknown>[];
-    jobs: Array<{
-      job_id: string;
-      model_type: string;
-      task_type: string;
-      completed_at: string | null;
-      inference_time_ms: number | null;
-      results: Record<string, unknown> | null;
-      result_files: Record<string, string> | null;
-    }>;
-  }>(null);
+  // AI results and the model roster go through React Query rather than a
+  // hand-rolled effect: both are read from several places and were re-fetched
+  // with no caching, and both need invalidation after a job or a model load
+  // rather than a manual refetch call threaded through the component.
+  const {
+    data: aiResults = null,
+    refetch: refetchAiResults,
+  } = useQuery({
+    queryKey: AI_RESULTS_KEY(studyUid),
+    queryFn: () => api.ai.getStudyResults(studyUid as string),
+    enabled: Boolean(studyUid),
+    staleTime: 30_000,
+  });
+
+  const { data: aiModelsQuery } = useQuery({
+    queryKey: AI_MODELS_KEY,
+    queryFn: () => api.ai.getModels(),
+    staleTime: 5 * 60_000,
+  });
+
+  // A malformed response disables the AI tools rather than rendering a
+  // half-populated roster.
+  const aiModels = useMemo<AIModel[]>(
+    () => (aiModelsQuery && !aiModelsQuery.shape_error ? aiModelsQuery.models : []),
+    [aiModelsQuery]
+  );
+
+  const queryClient = useQueryClient();
+
+  // Persisted viewer settings. Declared once in useViewerPreferences, which owns
+  // reading, writing, parsing and clamping -- previously these were sixteen
+  // useState calls plus two hand-maintained localStorage lists, so adding a
+  // setting meant editing three places and forgetting one made it silently
+  // fail to persist.
+  const { preferences, setPreference } = useViewerPreferences();
+  const {
+    autoTrackCine,
+    preferJpegForCine,
+    clipSheetEnabled,
+    smoothContoursEnabled,
+    smoothContoursIterations,
+    edgeSnapEnabled,
+    smoothTrackingEnabled,
+    smoothTrackingWindow,
+    showTrackingTrails,
+    trackingTrailLength,
+    autoFitOnRotate,
+    autoPromoteTracking,
+    guidelineCopilotEnabled,
+    polygonSamplingPreset,
+    cineFps,
+    measurementScope,
+  } = preferences;
+
+  const setAutoTrackCine = useCallback(
+    (value: boolean) => setPreference('autoTrackCine', value),
+    [setPreference]
+  );
+  const setPreferJpegForCine = useCallback(
+    (value: boolean) => setPreference('preferJpegForCine', value),
+    [setPreference]
+  );
+  const setClipSheetEnabled = useCallback(
+    (value: boolean) => setPreference('clipSheetEnabled', value),
+    [setPreference]
+  );
+  const setSmoothContoursEnabled = useCallback(
+    (value: boolean) => setPreference('smoothContoursEnabled', value),
+    [setPreference]
+  );
+  const setSmoothContoursIterations = useCallback(
+    (value: number) => setPreference('smoothContoursIterations', value),
+    [setPreference]
+  );
+  const setEdgeSnapEnabled = useCallback(
+    (value: boolean) => setPreference('edgeSnapEnabled', value),
+    [setPreference]
+  );
+  const setSmoothTrackingEnabled = useCallback(
+    (value: boolean) => setPreference('smoothTrackingEnabled', value),
+    [setPreference]
+  );
+  const setSmoothTrackingWindow = useCallback(
+    (value: number) => setPreference('smoothTrackingWindow', value),
+    [setPreference]
+  );
+  const setShowTrackingTrails = useCallback(
+    (value: boolean) => setPreference('showTrackingTrails', value),
+    [setPreference]
+  );
+  const setTrackingTrailLength = useCallback(
+    (value: number) => setPreference('trackingTrailLength', value),
+    [setPreference]
+  );
+  const setAutoFitOnRotate = useCallback(
+    (value: boolean) => setPreference('autoFitOnRotate', value),
+    [setPreference]
+  );
+  const setAutoPromoteTracking = useCallback(
+    (value: boolean) => setPreference('autoPromoteTracking', value),
+    [setPreference]
+  );
+  const setGuidelineCopilotEnabled = useCallback(
+    (value: boolean) => setPreference('guidelineCopilotEnabled', value),
+    [setPreference]
+  );
+  const setPolygonSamplingPreset = useCallback(
+    (value: PolygonSamplingPreset) => setPreference('polygonSamplingPreset', value),
+    [setPreference]
+  );
+  const setCineFps = useCallback(
+    (value: number) => setPreference('cineFps', value),
+    [setPreference]
+  );
+  const setMeasurementScope = useCallback(
+    (value: MeasurementScope) => setPreference('measurementScope', value),
+    [setPreference]
+  );
+
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -265,6 +415,11 @@ const ViewerPage: React.FC = () => {
   const [currentSlice, setCurrentSlice] = useState(0);
   const [totalSlices, setTotalSlices] = useState(1);
   const [windowLevel, setWindowLevel] = useState(defaultWindowLevel);
+  // The window/level the server has actually rendered. Dragging updates
+  // `windowLevel` for a local CSS preview and commits here on release, so a
+  // drag no longer re-renders every prefetched frame on the backend once per
+  // mouse-move -- each distinct value is a fresh cache key there.
+  const [committedWindowLevel, setCommittedWindowLevel] = useState(defaultWindowLevel);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [rotation, setRotation] = useState(0);
@@ -309,21 +464,26 @@ const ViewerPage: React.FC = () => {
   const [wlMenuAnchor, setWlMenuAnchor] = useState<null | HTMLElement>(null);
   const [seriesThumbnails, setSeriesThumbnails] = useState<Record<string, string>>({});
   const [smartHangDetails, setSmartHangDetails] = useState<Record<string, SeriesDetailResponse>>({});
+  // Series whose smart-hang detail fetch has been attempted, successful or not.
+  const smartHangAttemptedRef = useRef<Set<string>>(new Set());
   const [currentInstanceMeta, setCurrentInstanceMeta] = useState<Instance | null>(null);
+
+  // Spatial calibration for the frame on screen. Uncalibrated images report
+  // pixels rather than silently pretending 1 px is 1 mm.
+  const calibration = useMemo(
+    () => getCalibration(currentInstanceMeta),
+    [currentInstanceMeta]
+  );
+  const calibrationWarning = useMemo(
+    () => uncalibratedReason(currentInstanceMeta),
+    [currentInstanceMeta]
+  );
+
   const [activeInstanceUid, setActiveInstanceUid] = useState<string | null>(null);
   const [instanceMenuAnchor, setInstanceMenuAnchor] = useState<null | HTMLElement>(null);
   const [activeMeasurement, setActiveMeasurement] = useState<LegacyLineMeasurement | null>(null);
   const [layoutMode, setLayoutMode] = useState<'single' | 'mpr' | 'smart'>('single');
   const [polygonPreviewPoint, setPolygonPreviewPoint] = useState<Point2D | null>(null);
-  const [smoothContoursEnabled, setSmoothContoursEnabled] = useState(true);
-  const [smoothContoursIterations, setSmoothContoursIterations] = useState(1);
-  const [smoothTrackingEnabled, setSmoothTrackingEnabled] = useState(true);
-  const [smoothTrackingWindow, setSmoothTrackingWindow] = useState(2);
-  const [showTrackingTrails, setShowTrackingTrails] = useState(true);
-  const [trackingTrailLength, setTrackingTrailLength] = useState(3);
-  const [autoFitOnRotate, setAutoFitOnRotate] = useState(true);
-  const [autoPromoteTracking, setAutoPromoteTracking] = useState(true);
-  const [guidelineCopilotEnabled, setGuidelineCopilotEnabled] = useState(true);
   const [copilotShowPhases, setCopilotShowPhases] = useState(false);
   const [segmentPromptPoints, setSegmentPromptPoints] = useState<SegmentPromptPoint[]>([]);
   const [segmentContourPoints, setSegmentContourPoints] = useState(64);
@@ -338,7 +498,6 @@ const ViewerPage: React.FC = () => {
   const [segmentRunning, setSegmentRunning] = useState(false);
   const [lastSegmentContour, setLastSegmentContour] = useState<Point2D[] | null>(null);
   const [lastSegmentMeasurementId, setLastSegmentMeasurementId] = useState<string | null>(null);
-  const [polygonSamplingPreset, setPolygonSamplingPreset] = useState<'sparse' | 'balanced' | 'dense'>('balanced');
   const [medsamPreloading, setMedsamPreloading] = useState(false);
   const [interactiveSegmentations, setInteractiveSegmentations] = useState<InteractiveSegmentationResult[]>([]);
   const [measurementsModelDialogOpen, setMeasurementsModelDialogOpen] = useState(false);
@@ -351,6 +510,18 @@ const ViewerPage: React.FC = () => {
     active: false,
     lastPoint: null,
   });
+  // Live freehand stroke. Kept out of React state so sampling a point does not
+  // re-render the viewer; FreehandStrokeLayer paints it from a rAF loop.
+  const frameImageRef = useRef<HTMLImageElement | null>(null);
+  // Offscreen canvas used to read frame pixels for edge snapping.
+  const snapCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const freehandStrokeRef = useRef<FreehandStrokeState>(createStrokeState());
+  // Screen-space position of the last sampled point, so stroke density is
+  // independent of zoom.
+  const freehandLastScreenRef = useRef<{ x: number; y: number } | null>(null);
+  // Contour being corrected when a stroke starts and ends on an existing one.
+  const freehandSpliceTargetRef = useRef<LegacyPolygonMeasurement | null>(null);
+  const [freehandLiveArea, setFreehandLiveArea] = useState<number | null>(null);
   const [polygonsByFrame, setPolygonsByFrame] = useState<Record<string, LegacyPolygonMeasurement[]>>({});
   const [polygonsBySeries, setPolygonsBySeries] = useState<Record<string, LegacyPolygonMeasurement[]>>({});
   const [selectedMeasurementIdLocal, setSelectedMeasurementIdLocal] = useState<string | null>(null);
@@ -362,11 +533,6 @@ const ViewerPage: React.FC = () => {
   const [measurementsBySeries, setMeasurementsBySeries] = useState<Record<string, LegacyLineMeasurement[]>>(
     {}
   );
-  const [measurementScope, setMeasurementScope] = useState<'frame' | 'cine'>(() => {
-    if (typeof localStorage === 'undefined') return 'cine';
-    const storedScope = localStorage.getItem('viewer_measurement_scope');
-    return storedScope === 'frame' ? 'frame' : 'cine';
-  });
   const [measurementTracks, setMeasurementTracks] = useState<Record<string, LineTrackResponse>>({});
   const [polygonTracks, setPolygonTracks] = useState<Record<string, PolygonTrackResponse>>({});
   const [trackingMeasurementId, setTrackingMeasurementId] = useState<string | null>(null);
@@ -379,7 +545,6 @@ const ViewerPage: React.FC = () => {
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
   const [displayedImageUrl, setDisplayedImageUrl] = useState<string | null>(null);
-  const [cineFps, setCineFps] = useState(DEFAULT_CINE_FPS);
   const [cineBookmarks, setCineBookmarks] = useState<CineBookmark[]>([]);
   const [patientStudies, setPatientStudies] = useState<Study[]>([]);
   const [patientStudiesLoading, setPatientStudiesLoading] = useState(false);
@@ -393,8 +558,6 @@ const ViewerPage: React.FC = () => {
     sagittal: 0,
   });
   const [viewerSettingsOpen, setViewerSettingsOpen] = useState(false);
-  const [autoTrackCine, setAutoTrackCine] = useState(true);
-  const [preferJpegForCine, setPreferJpegForCine] = useState(true);
   const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
   const [metadataDraft, setMetadataDraft] = useState<MetadataDraft | null>(null);
   const [metadataSaving, setMetadataSaving] = useState(false);
@@ -418,12 +581,21 @@ const ViewerPage: React.FC = () => {
     }
   }, [activeTool]);
 
-  const freehandPointSpacing = useMemo(() => {
-    if (polygonSamplingPreset === 'dense') return 3;
-    if (polygonSamplingPreset === 'sparse') return 10;
-    return 6;
+  // Freehand samples on screen-space travel so density does not change with
+  // zoom. Values are CSS pixels between successive samples.
+  const freehandScreenSpacing = useMemo(() => {
+    if (polygonSamplingPreset === 'dense') return 2;
+    if (polygonSamplingPreset === 'sparse') return 8;
+    return 4;
   }, [polygonSamplingPreset]);
   const [efEdvMeasurementId, setEfEdvMeasurementId] = useState<string | null>(null);
+  const [volumeMethod, setVolumeMethod] = useState<VolumeMethod>('biplane');
+  const [volumeEdId, setVolumeEdId] = useState<string | null>(null);
+  const [volumeEsId, setVolumeEsId] = useState<string | null>(null);
+  const [volumeEdIdB, setVolumeEdIdB] = useState<string | null>(null);
+  const [volumeEsIdB, setVolumeEsIdB] = useState<string | null>(null);
+  const [patientHeightCm, setPatientHeightCm] = useState<number | null>(null);
+  const [patientWeightKg, setPatientWeightKg] = useState<number | null>(null);
   const [efEsvMeasurementId, setEfEsvMeasurementId] = useState<string | null>(null);
 
   // New measurement store integration
@@ -1192,10 +1364,10 @@ const ViewerPage: React.FC = () => {
     lines.push(`Study: ${studyLabelText} (${modalityLabel}).`);
 
     if (derivedMetrics.lvedd && isLineMeasurement(derivedMetrics.lvedd) && derivedMetrics.lvedd.lengthMm) {
-      lines.push(`LVEDD ${derivedMetrics.lvedd.lengthMm.toFixed(1)} mm.`);
+      lines.push(`LVEDD ${formatLength(derivedMetrics.lvedd.lengthMm, calibration)}.`);
     }
     if (derivedMetrics.lvesd && isLineMeasurement(derivedMetrics.lvesd) && derivedMetrics.lvesd.lengthMm) {
-      lines.push(`LVESD ${derivedMetrics.lvesd.lengthMm.toFixed(1)} mm.`);
+      lines.push(`LVESD ${formatLength(derivedMetrics.lvesd.lengthMm, calibration)}.`);
     }
     if (derivedMetrics.efPercent !== null) {
       lines.push(`Estimated EF ${derivedMetrics.efPercent.toFixed(1)}%.`);
@@ -1212,7 +1384,13 @@ const ViewerPage: React.FC = () => {
     }
 
     return lines.join('\n');
-  }, [copilotMissing, derivedMetrics, selectedSeries?.series.modality, study?.study_description]);
+  }, [
+    copilotMissing,
+    derivedMetrics,
+    selectedSeries?.series.modality,
+    study?.study_description,
+    calibration,
+  ]);
 
   const copilotIntegrityAlerts = useMemo(() => {
     const alerts: string[] = [];
@@ -1249,25 +1427,30 @@ const ViewerPage: React.FC = () => {
     if (!candidateId) return null;
     const data = trackingDataMap.get(candidateId);
     if (!data || data.frames.length === 0) return null;
-    const values = data.frames
-      .map((frame) => ({
+
+    // ED and ES are taken from within a single beat. A global max/min over the
+    // whole clip could pair the end-diastole of one beat with the end-systole
+    // of another, and one badly tracked or ectopic beat captured both.
+    const analysis = analyseCardiacPhases(
+      data.frames.map((frame) => ({
         frameIndex: frame.frameIndex,
-        value: frame.lengthMm ?? frame.areaMm2 ?? null,
+        value: frame.lengthMm ?? frame.areaMm2 ?? NaN,
+        valid: frame.valid,
       }))
-      .filter((item): item is { frameIndex: number; value: number } => typeof item.value === 'number');
-    if (!values.length) return null;
-    let max = values[0];
-    let min = values[0];
-    for (const item of values) {
-      if (item.value > max.value) max = item;
-      if (item.value < min.value) min = item;
-    }
+    );
+
+    const beat = analysis.selectedBeat;
+    if (!beat) return null;
+
     const measurement = contextMeasurements.find((m) => m.id === candidateId);
     return {
       measurementId: candidateId,
       label: measurement?.label || measurement?.type || 'Measurement',
-      edFrame: max.frameIndex,
-      esFrame: min.frameIndex,
+      edFrame: beat.edFrame,
+      esFrame: beat.esFrame,
+      beatCount: analysis.beats.length,
+      multipleBeats: analysis.multipleBeats,
+      beatQuality: beat.quality,
     };
   }, [trackingDataMap, selectedMeasurementIdLocal, contextMeasurements]);
 
@@ -1537,6 +1720,7 @@ const ViewerPage: React.FC = () => {
       const saved = viewportStateRef.current.get(seriesUid);
       const defaultWl = getWindowDefaults(detail);
       setWindowLevel(saved?.windowLevel ?? defaultWl);
+      setCommittedWindowLevel(saved?.windowLevel ?? defaultWl);
       setZoom(saved?.zoom ?? 1);
       setPan(saved?.pan ?? { x: 0, y: 0 });
       setRotation(saved?.rotation ?? 0);
@@ -1549,12 +1733,11 @@ const ViewerPage: React.FC = () => {
   const refreshAiResults = useCallback(async () => {
     if (!studyUid) return;
     try {
-      const result = await api.ai.getStudyResults(studyUid);
-      setAiResults(result);
+      await refetchAiResults();
     } catch (err) {
       console.error('Failed to load AI results:', err);
     }
-  }, [studyUid]);
+  }, [studyUid, refetchAiResults]);
 
   const selectSeries = useCallback(
     async (seriesUid: string) => {
@@ -1738,18 +1921,18 @@ const ViewerPage: React.FC = () => {
           }
         }
 
-        if (modelsResult.status === 'fulfilled') {
-          if (modelsResult.value.shape_error) {
-            setAIModels([]);
-            setSnackbarMessage('AI models response invalid. AI tools disabled.');
-          } else {
-            setAIModels(modelsResult.value.models);
-          }
+        if (modelsResult.status === 'fulfilled' && modelsResult.value.shape_error) {
+          setSnackbarMessage('AI models response invalid. AI tools disabled.');
         }
 
+        // Seed the query caches from the bootstrap fetches, so the queries above
+        // resolve without a second round trip.
+        if (modelsResult.status === 'fulfilled') {
+          queryClient.setQueryData(AI_MODELS_KEY, modelsResult.value);
+        }
         if (aiResult.status === 'fulfilled') {
-          setAiResults(aiResult.value);
-          // Auto-open AI results panel if cardiac results exist from previous run
+          queryClient.setQueryData(AI_RESULTS_KEY(studyUid), aiResult.value);
+          // Reopen the results panel when a previous run left cardiac output.
           if (aiResult.value.cardiac && aiResult.value.cardiac.length > 0) {
             setShowAiResultsPanel(true);
           }
@@ -1763,7 +1946,7 @@ const ViewerPage: React.FC = () => {
     };
 
     fetchData();
-  }, [studyUid, selectSeries]);
+  }, [studyUid, selectSeries, queryClient]);
 
   useEffect(() => {
     if (!selectedSeries) {
@@ -1854,110 +2037,7 @@ const ViewerPage: React.FC = () => {
     setSegmentPromptPoints([]);
   }, [seriesKey]);
 
-  useEffect(() => {
-    if (typeof localStorage === 'undefined') return;
-    const storedAutoTrack = localStorage.getItem('viewer_auto_track_cine');
-    if (storedAutoTrack !== null) {
-      setAutoTrackCine(storedAutoTrack === 'true');
-    }
-    const storedPreferJpeg = localStorage.getItem('viewer_prefer_jpeg_cine');
-    if (storedPreferJpeg !== null) {
-      setPreferJpegForCine(storedPreferJpeg === 'true');
-    }
-    const storedSmoothContours = localStorage.getItem('viewer_smooth_contours');
-    if (storedSmoothContours !== null) {
-      setSmoothContoursEnabled(storedSmoothContours === 'true');
-    }
-    const storedSmoothIterations = localStorage.getItem('viewer_smooth_contours_iterations');
-    if (storedSmoothIterations !== null) {
-      const parsed = Number(storedSmoothIterations);
-      if (Number.isFinite(parsed)) {
-        setSmoothContoursIterations(parsed);
-      }
-    }
-    const storedSmoothTracking = localStorage.getItem('viewer_smooth_tracking');
-    if (storedSmoothTracking !== null) {
-      setSmoothTrackingEnabled(storedSmoothTracking === 'true');
-    }
-    const storedSmoothWindow = localStorage.getItem('viewer_smooth_tracking_window');
-    if (storedSmoothWindow !== null) {
-      const parsed = Number(storedSmoothWindow);
-      if (Number.isFinite(parsed)) {
-        setSmoothTrackingWindow(parsed);
-      }
-    }
-    const storedTrails = localStorage.getItem('viewer_show_tracking_trails');
-    if (storedTrails !== null) {
-      setShowTrackingTrails(storedTrails === 'true');
-    }
-    const storedTrailLength = localStorage.getItem('viewer_tracking_trail_length');
-    if (storedTrailLength !== null) {
-      const parsed = Number(storedTrailLength);
-      if (Number.isFinite(parsed)) {
-        setTrackingTrailLength(parsed);
-      }
-    }
-    const storedFitRotate = localStorage.getItem('viewer_auto_fit_rotate');
-    if (storedFitRotate !== null) {
-      setAutoFitOnRotate(storedFitRotate === 'true');
-    }
-    const storedPromoteTracking = localStorage.getItem('viewer_auto_promote_tracking');
-    if (storedPromoteTracking !== null) {
-      setAutoPromoteTracking(storedPromoteTracking === 'true');
-    }
-    const storedCopilot = localStorage.getItem('viewer_guideline_copilot');
-    if (storedCopilot !== null) {
-      setGuidelineCopilotEnabled(storedCopilot === 'true');
-    }
-    const storedPolygonSampling = localStorage.getItem('viewer_polygon_sampling');
-    if (storedPolygonSampling === 'sparse' || storedPolygonSampling === 'balanced' || storedPolygonSampling === 'dense') {
-      setPolygonSamplingPreset(storedPolygonSampling);
-    }
-    const storedCineFps = localStorage.getItem('viewer_cine_fps');
-    if (storedCineFps !== null) {
-      const parsed = Number(storedCineFps);
-      if (Number.isFinite(parsed)) {
-        setCineFps(clamp(parsed, 5, 30));
-      }
-    }
-    const storedScope = localStorage.getItem('viewer_measurement_scope');
-    if (storedScope === 'frame' || storedScope === 'cine') {
-      setMeasurementScope(storedScope);
-    }
-  }, []);
 
-  useEffect(() => {
-    if (typeof localStorage === 'undefined') return;
-    localStorage.setItem('viewer_auto_track_cine', String(autoTrackCine));
-    localStorage.setItem('viewer_prefer_jpeg_cine', String(preferJpegForCine));
-    localStorage.setItem('viewer_smooth_contours', String(smoothContoursEnabled));
-    localStorage.setItem('viewer_smooth_contours_iterations', String(smoothContoursIterations));
-    localStorage.setItem('viewer_smooth_tracking', String(smoothTrackingEnabled));
-    localStorage.setItem('viewer_smooth_tracking_window', String(smoothTrackingWindow));
-    localStorage.setItem('viewer_show_tracking_trails', String(showTrackingTrails));
-    localStorage.setItem('viewer_tracking_trail_length', String(trackingTrailLength));
-    localStorage.setItem('viewer_auto_fit_rotate', String(autoFitOnRotate));
-    localStorage.setItem('viewer_auto_promote_tracking', String(autoPromoteTracking));
-    localStorage.setItem('viewer_guideline_copilot', String(guidelineCopilotEnabled));
-    localStorage.setItem('viewer_polygon_sampling', polygonSamplingPreset);
-    localStorage.setItem('viewer_cine_fps', String(Math.round(cineFps)));
-    localStorage.setItem('viewer_measurement_scope', measurementScope);
-  }, [
-    autoTrackCine,
-    preferJpegForCine,
-    smoothContoursEnabled,
-    smoothContoursIterations,
-    smoothTrackingEnabled,
-    smoothTrackingWindow,
-    showTrackingTrails,
-    trackingTrailLength,
-    autoFitOnRotate,
-    autoPromoteTracking,
-    guidelineCopilotEnabled,
-    polygonSamplingPreset,
-    cineFps,
-    measurementScope,
-  ]);
 
   const bookmarkKey = useMemo(() => {
     if (!seriesKey) return null;
@@ -2204,13 +2284,48 @@ const ViewerPage: React.FC = () => {
   }, [isPlaying, isUltrasound]);
   const renderOptions = useMemo<RenderOptions>(
     () => ({
-      windowCenter: isColorImage ? undefined : windowLevel.center,
-      windowWidth: isColorImage ? undefined : windowLevel.width,
+      windowCenter: isColorImage ? undefined : committedWindowLevel.center,
+      windowWidth: isColorImage ? undefined : committedWindowLevel.width,
       format: renderFormat,
       quality: renderFormat === 'jpeg' ? renderQuality : undefined,
     }),
-    [isColorImage, windowLevel.center, windowLevel.width, renderFormat, renderQuality]
+    [isColorImage, committedWindowLevel.center, committedWindowLevel.width, renderFormat, renderQuality]
   );
+
+  // Whole-cine delivery. One request and one decode replace one round trip per
+  // displayed frame; scrubbing and playback then cost no network at all. Falls
+  // back to the per-frame path whenever the sheet is unavailable.
+  const clipFrameCount = useMemo(() => {
+    if (cineGrouping !== 'instance') return 0;
+    return activeInstance?.number_of_frames ?? currentInstanceMeta?.number_of_frames ?? 0;
+  }, [cineGrouping, activeInstance, currentInstanceMeta]);
+
+  const {
+    sheet: clipSheet,
+    loading: clipLoading,
+    unavailable: clipUnavailable,
+  } = useClipSheet({
+    instanceUid: currentInstanceUid,
+    frameCount: clipFrameCount,
+    windowCenter: isColorImage ? undefined : committedWindowLevel.center,
+    windowWidth: isColorImage ? undefined : committedWindowLevel.width,
+    format: renderFormat,
+    quality: renderQuality,
+    enabled: clipSheetEnabled,
+  });
+
+  const clipCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // The frame within the clip, which is the slice index when a single instance
+  // supplies the whole cine.
+  const clipFrameIndex = currentFrameIndex;
+  const usingClipSheet = clipSheet !== null && clipFrameIndex < clipSheet.frameCount;
+
+  useEffect(() => {
+    const canvas = clipCanvasRef.current;
+    if (!canvas || !clipSheet) return;
+    drawClipFrame(canvas, clipSheet, clipFrameIndex);
+  }, [clipSheet, clipFrameIndex]);
 
   const touchImageCache = useCallback((url: string, image: HTMLImageElement) => {
     touchCachedImage(imageCacheRef.current, url, image, MAX_IMAGE_CACHE);
@@ -2274,15 +2389,32 @@ const ViewerPage: React.FC = () => {
   }, [currentInstanceUid, currentFrameIndex, renderOptions]);
 
   const colorFilter = useMemo(() => {
-    if (!isColorImage) return undefined;
-    const base = selectedSeries ? getWindowDefaults(selectedSeries) : defaultWindowLevel;
+    // Colour images are never window-levelled server-side, so the filter is
+    // measured against the series default. Grayscale images are, so the filter
+    // only has to express the difference from what the server already rendered
+    // -- which is nothing at all once the drag is committed.
+    const base = isColorImage
+      ? (selectedSeries ? getWindowDefaults(selectedSeries) : defaultWindowLevel)
+      : committedWindowLevel;
+
     const baseWidth = Math.max(1, base.width);
     const widthRatio = baseWidth / Math.max(1, windowLevel.width);
     const contrast = clamp(widthRatio, 0.5, 3);
     const centerDelta = windowLevel.center - base.center;
     const brightness = clamp(1 + (centerDelta / baseWidth) * 0.5, 0.5, 2);
+
+    if (Math.abs(contrast - 1) < 1e-3 && Math.abs(brightness - 1) < 1e-3) {
+      return undefined;
+    }
     return `brightness(${brightness}) contrast(${contrast})`;
-  }, [isColorImage, selectedSeries, windowLevel.center, windowLevel.width, getWindowDefaults]);
+  }, [
+    isColorImage,
+    selectedSeries,
+    committedWindowLevel,
+    windowLevel.center,
+    windowLevel.width,
+    getWindowDefaults,
+  ]);
 
   useEffect(() => {
     if (!imageUrl) {
@@ -2371,7 +2503,12 @@ const ViewerPage: React.FC = () => {
 
   useEffect(() => {
     if (!seriesKey || frameIndex.length === 0) return;
-    const cacheKey = `${seriesKey}:${renderFormat}:${renderQuality}:${windowLevel.center}:${windowLevel.width}`;
+    // The clip sheet already holds every frame; prefetching them one by one
+    // would re-fetch the same pixels through the slower path.
+    if (clipSheet) return;
+    // Keyed on the committed window/level, so dragging does not restart the
+    // whole-series prefetch on every mouse-move.
+    const cacheKey = `${seriesKey}:${renderFormat}:${renderQuality}:${committedWindowLevel.center}:${committedWindowLevel.width}`;
     if (prefetchedFullSeriesRef.current.has(cacheKey)) return;
 
     const token = fullPrefetchTokenRef.current + 1;
@@ -2403,9 +2540,10 @@ const ViewerPage: React.FC = () => {
     isUltrasound,
     renderFormat,
     renderQuality,
-    windowLevel.center,
-    windowLevel.width,
+    committedWindowLevel.center,
+    committedWindowLevel.width,
     renderOptions,
+    clipSheet,
   ]);
 
   const screenToImage = useCallback(
@@ -2564,7 +2702,7 @@ const ViewerPage: React.FC = () => {
         });
         if (response.summary.mean_mm != null) {
           setSnackbarMessage(
-            `Cine measurement recorded. Mean ${response.summary.mean_mm.toFixed(1)} mm`
+            `Cine measurement recorded. Mean ${formatLength(response.summary.mean_mm, calibration)}`
           );
         } else {
           setSnackbarMessage('Cine measurement recorded.');
@@ -2585,6 +2723,7 @@ const ViewerPage: React.FC = () => {
       activeInstanceUid,
       cineGrouping,
       resolveMeasurementInstanceUid,
+      calibration,
     ]
   );
 
@@ -2851,8 +2990,8 @@ const ViewerPage: React.FC = () => {
               : '0';
             setSnackbarMessage(
               useMedsamHybrid
-                ? `Polygon tracked with MedSAM hybrid. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
-                : `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
+                ? `Polygon tracked with MedSAM hybrid. Area: ${summary.min_area_mm2.toFixed(1)} - ${formatArea(summary.max_area_mm2, calibration)} (Delta ${change}%)`
+                : `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${formatArea(summary.max_area_mm2, calibration)} (Delta ${change}%)`
             );
           } else {
             setSnackbarMessage(
@@ -3029,7 +3168,7 @@ const ViewerPage: React.FC = () => {
               ? ((summary.max_area_mm2 - summary.min_area_mm2) / summary.max_area_mm2 * 100).toFixed(1)
               : '0';
             setSnackbarMessage(
-              `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${summary.max_area_mm2.toFixed(1)} mm^2 (Delta ${change}%)`
+              `Polygon tracked with optical flow. Area: ${summary.min_area_mm2.toFixed(1)} - ${formatArea(summary.max_area_mm2, calibration)} (Delta ${change}%)`
             );
           } else {
             setSnackbarMessage('Polygon tracked across cine loop with optical flow.');
@@ -3078,6 +3217,8 @@ const ViewerPage: React.FC = () => {
       setSnackbarMessage('Measurement not found');
     },
     [
+      calibration,
+      setMeasurementScope,
       seriesKey,
       trackingMeasurementId,
       measurementTracks,
@@ -3215,8 +3356,7 @@ const ViewerPage: React.FC = () => {
     if (!measurement || measurementStore.trackingData.has(lastSegmentMeasurementId)) return;
 
     const polygonPoints = buildSegmentPolygon(lastSegmentContour);
-    const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
-    const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
+    const pixelSpacing = spacingForGeometry(calibration);
     const areaMm2 = calculatePolygonAreaMm2(polygonPoints, pixelSpacing);
     const perimeterMm = calculatePerimeterMm(polygonPoints, pixelSpacing, true);
 
@@ -3226,7 +3366,7 @@ const ViewerPage: React.FC = () => {
     lastSegmentMeasurementId,
     measurementStore,
     buildSegmentPolygon,
-    currentInstanceMeta,
+    calibration,
     updatePolygonMeasurementLocal,
   ]);
 
@@ -3283,8 +3423,7 @@ const ViewerPage: React.FC = () => {
         if (contour.length >= 3) {
           setLastSegmentContour(contour);
           const polygonPoints = buildSegmentPolygon(contour);
-          const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
-          const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
+          const pixelSpacing = spacingForGeometry(calibration);
           const areaMm2 = calculatePolygonAreaMm2(polygonPoints, pixelSpacing);
           const perimeterMm = calculatePerimeterMm(polygonPoints, pixelSpacing, true);
           const scope = autoTrackCine ? 'series' : effectiveMeasurementScope === 'cine' ? 'series' : 'frame';
@@ -3364,7 +3503,7 @@ const ViewerPage: React.FC = () => {
       buildAutoSegmentBox,
       currentFrameIndex,
       buildSegmentPolygon,
-      currentInstanceMeta,
+      calibration,
       effectiveMeasurementScope,
       autoTrackCine,
       frameKey,
@@ -3436,13 +3575,8 @@ const ViewerPage: React.FC = () => {
     setMedsamPreloading(true);
     try {
       await api.ai.loadModel('medsam');
-      const modelsResult = await api.ai.getModels();
-      if (modelsResult.shape_error) {
-        setAIModels([]);
-        setSnackbarMessage('AI models response invalid. AI tools disabled.');
-      } else {
-        setAIModels(modelsResult.models);
-      }
+      // Loading a model changes its status, so the roster is now stale.
+      await queryClient.invalidateQueries({ queryKey: AI_MODELS_KEY });
       setSnackbarMessage('MedSAM preloaded. Smart Segment is ready.');
     } catch (err) {
       const detail = getApiErrorDetail(err);
@@ -3451,75 +3585,29 @@ const ViewerPage: React.FC = () => {
     } finally {
       setMedsamPreloading(false);
     }
-  }, [medsamPreloading, medsamModel, medsamStatus]);
-
-  const handlePolygonFreehandStart = useCallback(
-    (event: React.MouseEvent) => {
-      if (!currentInstanceUid || activeTool !== 'polygon') return;
-      if (!isPointInImage(event.clientX, event.clientY)) return;
-      if (effectiveMeasurementScope === 'frame' && !frameKey) return;
-      if (effectiveMeasurementScope === 'cine' && !seriesKey) return;
-
-      event.preventDefault();
-      event.stopPropagation();
-      lastPointerRef.current = { x: event.clientX, y: event.clientY };
-      if (isPlaying) {
-        setIsPlaying(false);
-      }
-
-      const point = screenToImage(event.clientX, event.clientY);
-      if (!point) return;
-      const clampedPoint = {
-        x: clamp(point.x, 0, imageDimensions.columns),
-        y: clamp(point.y, 0, imageDimensions.rows),
-      };
-
-      if (!activePolygonRef.current) {
-        const id =
-          typeof crypto !== 'undefined' && crypto.randomUUID
-            ? crypto.randomUUID()
-            : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        setActivePolygon({
-          id,
-          points: [clampedPoint],
-          areaMm2: null,
-          perimeterMm: null,
-          instanceUid: currentInstanceUid ?? null,
-        });
-      } else {
-        setActivePolygon((prev) =>
-          prev
-            ? {
-                ...prev,
-                points: [...prev.points, clampedPoint],
-              }
-            : prev
-        );
-      }
-
-      freehandPolygonRef.current.active = true;
-      freehandPolygonRef.current.lastPoint = clampedPoint;
-    },
-    [
-      currentInstanceUid,
-      activeTool,
-      isPointInImage,
-      effectiveMeasurementScope,
-      frameKey,
-      seriesKey,
-      screenToImage,
-      imageDimensions,
-      isPlaying,
-    ]
-  );
+  }, [medsamPreloading, medsamModel, medsamStatus, queryClient]);
 
   const handleMouseDown = (event: React.MouseEvent) => {
     if (!currentInstanceUid) return;
-    if (event.button === 2 && activeTool === 'polygon') {
-      handlePolygonFreehandStart(event);
+
+    // Right-drag on the polygon tool remains a power-user shortcut for
+    // freehand, but freehand is now a tool of its own on the left button.
+    if (event.button === 2 && (activeTool === 'polygon' || activeTool === 'freehand')) {
+      event.preventDefault();
+      event.stopPropagation();
+      beginFreehandStroke(event);
       return;
     }
     if (event.button !== 0) return;
+
+    if (activeTool === 'freehand') {
+      event.preventDefault();
+      event.stopPropagation();
+      lastPointerRef.current = { x: event.clientX, y: event.clientY };
+      beginFreehandStroke(event);
+      return;
+    }
+
     event.preventDefault();
     event.stopPropagation();
     lastPointerRef.current = { x: event.clientX, y: event.clientY };
@@ -3713,6 +3801,241 @@ const ViewerPage: React.FC = () => {
     ]
   );
 
+  // ---------------------------------------------------------------------
+  // Freehand tracing
+  //
+  // The stroke lives in a ref and is painted by FreehandStrokeLayer from a rAF
+  // loop. React state is touched twice per stroke: once for the live area
+  // readout (throttled to whole samples) and once on commit.
+  // ---------------------------------------------------------------------
+
+  // finishPolygon is declared below; a ref breaks the definition cycle without
+  // reordering the file.
+  const finishPolygonRef = useRef<(() => void) | null>(null);
+
+  /**
+   * Build a luminance sampler over the frame currently on screen.
+   *
+   * The frame is drawn once into an offscreen canvas per call; snapping happens
+   * on stroke commit, so this runs at most once per traced contour.
+   * Returns null when the frame is not decoded yet or the canvas is tainted.
+   */
+  const createFrameSampler = useCallback(() => {
+    const image = frameImageRef.current;
+    if (!image || !image.complete || image.naturalWidth === 0) return null;
+
+    let canvas = snapCanvasRef.current;
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      snapCanvasRef.current = canvas;
+    }
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) return null;
+
+    try {
+      context.drawImage(image, 0, 0);
+      const data = context.getImageData(0, 0, canvas.width, canvas.height);
+      return createLuminanceSampler(data, imageDimensions.columns, imageDimensions.rows);
+    } catch {
+      // A tainted canvas (cross-origin frame source) cannot be read. Snapping
+      // is a convenience, so this degrades to leaving the trace as drawn.
+      return null;
+    }
+  }, [imageDimensions.columns, imageDimensions.rows]);
+
+  const clearFreehandStroke = useCallback(() => {
+    const stroke = freehandStrokeRef.current;
+    stroke.points = [];
+    stroke.active = false;
+    stroke.splicing = false;
+    stroke.version += 1;
+    freehandLastScreenRef.current = null;
+    freehandSpliceTargetRef.current = null;
+    setFreehandLiveArea(null);
+  }, []);
+
+  type PointerLike = { clientX: number; clientY: number };
+
+  const beginFreehandStroke = useCallback(
+    (event: PointerLike) => {
+      if (!currentInstanceUid) return false;
+      if (!isPointInImage(event.clientX, event.clientY)) return false;
+      if (effectiveMeasurementScope === 'frame' && !frameKey) return false;
+      if (effectiveMeasurementScope === 'cine' && !seriesKey) return false;
+
+      const point = screenToImage(event.clientX, event.clientY);
+      if (!point) return false;
+
+      if (isPlaying) setIsPlaying(false);
+
+      const clamped = {
+        x: clamp(point.x, 0, imageDimensions.columns),
+        y: clamp(point.y, 0, imageDimensions.rows),
+      };
+
+      // Starting on an existing contour means the user is correcting it rather
+      // than drawing a new one.
+      const spliceTarget =
+        visiblePolygons.find(
+          (polygon) =>
+            polygon.points.length >= 3 &&
+            polygon.id !== activePolygonRef.current?.id &&
+            isNearContour(polygon.points, clamped, FREEHAND_SPLICE_DISTANCE)
+        ) ?? null;
+
+      freehandSpliceTargetRef.current = spliceTarget;
+
+      const stroke = freehandStrokeRef.current;
+      stroke.points = [clamped];
+      stroke.active = true;
+      stroke.splicing = spliceTarget !== null;
+      stroke.version += 1;
+      freehandLastScreenRef.current = { x: event.clientX, y: event.clientY };
+      return true;
+    },
+    [
+      currentInstanceUid,
+      isPointInImage,
+      effectiveMeasurementScope,
+      frameKey,
+      seriesKey,
+      screenToImage,
+      isPlaying,
+      imageDimensions,
+      visiblePolygons,
+    ]
+  );
+
+  const extendFreehandStroke = useCallback(
+    (event: PointerLike) => {
+      const stroke = freehandStrokeRef.current;
+      if (!stroke.active) return;
+
+      // Sample on screen-space distance so a stroke has the same feel at every
+      // zoom level. Thresholding in image space made tracing dense at 400% and
+      // coarse at fit-to-window.
+      const last = freehandLastScreenRef.current;
+      if (last) {
+        const travelled = Math.hypot(event.clientX - last.x, event.clientY - last.y);
+        if (travelled < freehandScreenSpacing) return;
+      }
+
+      const point = screenToImage(event.clientX, event.clientY);
+      if (!point) return;
+
+      stroke.points.push({
+        x: clamp(point.x, 0, imageDimensions.columns),
+        y: clamp(point.y, 0, imageDimensions.rows),
+      });
+      stroke.version += 1;
+      freehandLastScreenRef.current = { x: event.clientX, y: event.clientY };
+
+      // Live readout, only once the shape is closed enough to have an area.
+      if (!stroke.splicing && stroke.points.length >= 3) {
+        setFreehandLiveArea(
+          calculatePolygonAreaMm2(stroke.points, spacingForGeometry(calibration))
+        );
+      }
+    },
+    [screenToImage, imageDimensions, freehandScreenSpacing, calibration]
+  );
+
+  const commitFreehandStroke = useCallback(() => {
+    const stroke = freehandStrokeRef.current;
+    if (!stroke.active) return;
+
+    const raw = stroke.points;
+    const spliceTarget = freehandSpliceTargetRef.current;
+
+    // A splice replaces the shorter arc of an existing contour, so a border the
+    // tracker got slightly wrong can be corrected without retracing it.
+    if (spliceTarget && raw.length >= 2) {
+      const merged = spliceStroke(spliceTarget.points, raw);
+      clearFreehandStroke();
+      if (merged) {
+        const pixelSpacing = spacingForGeometry(calibration);
+        const smoothed = finishFreehandStroke(merged, {
+          tolerance: FREEHAND_SIMPLIFY_TOLERANCE,
+          smoothing: smoothContoursEnabled ? smoothContoursIterations : 0,
+        });
+        updatePolygonMeasurementLocal(
+          spliceTarget.id,
+          smoothed,
+          calculatePolygonAreaMm2(smoothed, pixelSpacing),
+          calculatePerimeterMm(smoothed, pixelSpacing, true)
+        );
+        clearTrackingStateFor([spliceTarget.id]);
+        setSnackbarMessage('Contour updated. Re-track to propagate the change.');
+      }
+      return;
+    }
+
+    if (raw.length < 3) {
+      clearFreehandStroke();
+      return;
+    }
+
+    // Simplify and smooth once, on commit. Smoothing mid-stroke fights the
+    // user's hand and makes the line feel like it lags behind the cursor.
+    let points = finishFreehandStroke(raw, {
+      tolerance: FREEHAND_SIMPLIFY_TOLERANCE,
+      smoothing: smoothContoursEnabled ? smoothContoursIterations : 0,
+    });
+
+    // Optional magnetic snap onto the blood-tissue boundary. Points with no
+    // gradient within the search radius stay exactly where they were drawn.
+    if (edgeSnapEnabled) {
+      const sampler = createFrameSampler();
+      if (sampler) {
+        const snapped = snapContourToEdges(points, sampler);
+        const coverage = snapCoverage(points, snapped);
+        points = snapped;
+        if (coverage < 0.3) {
+          setSnackbarMessage(
+            'Edge snap found little contrast along this border; the trace is mostly as drawn.'
+          );
+        }
+      }
+    }
+
+    const id =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+    clearFreehandStroke();
+    setActivePolygon({
+      id,
+      points,
+      areaMm2: null,
+      perimeterMm: null,
+      instanceUid: currentInstanceUid ?? null,
+    });
+    // activePolygonRef trails setActivePolygon by a render; finishPolygon reads
+    // the ref, so set it here rather than waiting for the effect.
+    activePolygonRef.current = {
+      id,
+      points,
+      areaMm2: null,
+      perimeterMm: null,
+      instanceUid: currentInstanceUid ?? null,
+    };
+    finishPolygonRef.current?.();
+  }, [
+    calibration,
+    smoothContoursEnabled,
+    smoothContoursIterations,
+    currentInstanceUid,
+    clearFreehandStroke,
+    updatePolygonMeasurementLocal,
+    clearTrackingStateFor,
+    edgeSnapEnabled,
+    createFrameSampler,
+  ]);
+
   // Finish polygon drawing
   const finishPolygon = useCallback(() => {
     const polygon = activePolygonRef.current ?? activePolygon;
@@ -3805,6 +4128,8 @@ const ViewerPage: React.FC = () => {
     currentInstanceUid,
   ]);
 
+  finishPolygonRef.current = finishPolygon;
+
   // Handle polygon click (adding points)
   const handlePolygonClick = useCallback(
     (event: React.MouseEvent) => {
@@ -3889,6 +4214,12 @@ const ViewerPage: React.FC = () => {
         return;
       }
 
+      // Cancel an in-progress freehand stroke with Escape
+      if (event.key === 'Escape' && freehandStrokeRef.current.active) {
+        clearFreehandStroke();
+        return;
+      }
+
       // Cancel polygon drawing with Escape
       if (event.key === 'Escape' && activePolygon) {
         setActivePolygon(null);
@@ -3970,7 +4301,14 @@ const ViewerPage: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activePolygon, editingMeasurement, selectedMeasurementIdLocal, measurementStore, clearTrackingStateFor]);
+  }, [
+    activePolygon,
+    editingMeasurement,
+    selectedMeasurementIdLocal,
+    measurementStore,
+    clearTrackingStateFor,
+    clearFreehandStroke,
+  ]);
 
   const handleMouseMove = useCallback(
     (event: MouseEvent) => {
@@ -4026,33 +4364,14 @@ const ViewerPage: React.FC = () => {
         return;
       }
 
-      if (freehandPolygonRef.current.active && activeTool === 'polygon') {
-        if ((event.buttons & 2) !== 2) {
+      // Freehand stroke in progress: append to the ref, never to React state.
+      if (freehandStrokeRef.current.active) {
+        const heldButton = activeTool === 'freehand' ? 1 : 2;
+        if ((event.buttons & heldButton) !== heldButton) {
           return;
         }
-        const currentPoint = screenToImage(event.clientX, event.clientY);
-        if (!currentPoint || !isPointInImage(event.clientX, event.clientY)) {
-          return;
-        }
-        const clampedPoint = {
-          x: clamp(currentPoint.x, 0, imageDimensions.columns),
-          y: clamp(currentPoint.y, 0, imageDimensions.rows),
-        };
-        const lastPoint = freehandPolygonRef.current.lastPoint;
-        const dist = lastPoint
-          ? Math.hypot(clampedPoint.x - lastPoint.x, clampedPoint.y - lastPoint.y)
-          : Infinity;
-        if (!lastPoint || dist >= freehandPointSpacing) {
-          setActivePolygon((prev) =>
-            prev
-              ? {
-                  ...prev,
-                  points: [...prev.points, clampedPoint],
-                }
-              : prev
-          );
-          freehandPolygonRef.current.lastPoint = clampedPoint;
-        }
+        if (!isPointInImage(event.clientX, event.clientY)) return;
+        extendFreehandStroke(event);
         return;
       }
 
@@ -4114,13 +4433,13 @@ const ViewerPage: React.FC = () => {
       if (dragState.tool === 'measure' && dragState.measureStart) {
         const point = screenToImage(event.clientX, event.clientY);
         if (!point) return;
-        const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
+        const measureSpacing = spacingForGeometry(calibration);
         const measureDrag = dragState as MeasureDragState;
         const updated = updateMeasureDrag({
           dragState: measureDrag,
           currentPoint: point,
           imageDimensions,
-          pixelSpacing: [spacing[0], spacing[1]],
+          pixelSpacing: [measureSpacing.rowSpacing, measureSpacing.columnSpacing],
         });
         setActiveMeasurement((prev) => (prev ? { ...prev, end: updated.end, lengthMm: updated.lengthMm } : updated));
       }
@@ -4128,7 +4447,8 @@ const ViewerPage: React.FC = () => {
     [
       imageDimensions,
       screenToImage,
-      currentInstanceMeta,
+      calibration,
+      extendFreehandStroke,
       clampPan,
       applyZoomAt,
       canPan,
@@ -4136,22 +4456,26 @@ const ViewerPage: React.FC = () => {
       editingMeasurement,
       activeTool,
       activePolygon,
-      freehandPointSpacing,
     ]
   );
 
   const handleMouseUp = useCallback(() => {
-    if (freehandPolygonRef.current.active) {
-      freehandPolygonRef.current.active = false;
-      freehandPolygonRef.current.lastPoint = null;
-      finishPolygon();
+    if (freehandStrokeRef.current.active) {
+      commitFreehandStroke();
       return;
+    }
+
+    // A window/level drag previews through a CSS filter; committing here is
+    // what asks the server for a real render, once, instead of once per
+    // mouse-move across every prefetched frame.
+    if (dragStateRef.current?.tool === 'wwwl') {
+      setCommittedWindowLevel(windowLevel);
     }
     // Handle pointer tool editing completion
     if (editingMeasurement) {
       // Recalculate measurement values after editing
-      const spacing = currentInstanceMeta?.pixel_spacing ?? [1, 1];
-      const pixelSpacing = { rowSpacing: spacing[0], columnSpacing: spacing[1] };
+      const pixelSpacing = spacingForGeometry(calibration);
+      const spacing: [number, number] = [pixelSpacing.rowSpacing, pixelSpacing.columnSpacing];
 
       if (editingMeasurement.type === 'line') {
         setMeasurementsByFrame((prev) =>
@@ -4251,11 +4575,13 @@ const ViewerPage: React.FC = () => {
     measurementStore,
     seriesKey,
     editingMeasurement,
-    currentInstanceMeta,
     currentInstanceUid,
     screenToImage,
     imageDimensions,
     cineGrouping,
+    commitFreehandStroke,
+    calibration,
+    windowLevel,
   ]);
 
   useEffect(() => {
@@ -4319,6 +4645,7 @@ const ViewerPage: React.FC = () => {
     setRotation(0);
     if (selectedSeries) {
       setWindowLevel(getWindowDefaults(selectedSeries));
+      setCommittedWindowLevel(getWindowDefaults(selectedSeries));
     }
   };
 
@@ -4931,14 +5258,28 @@ const ViewerPage: React.FC = () => {
     clearMprVolume();
   }, [layoutMode, has3dData, clearMprVolume]);
 
+  // A new study is a new set of series; allow their details to be fetched again.
+  useEffect(() => {
+    smartHangAttemptedRef.current = new Set();
+    setSmartHangDetails({});
+  }, [studyUid]);
+
   useEffect(() => {
     if (layoutMode !== 'smart') return;
     let active = true;
 
     const loadDetails = async () => {
+      // Attempted series are tracked in a ref rather than by inspecting
+      // smartHangDetails: a series whose fetch fails never lands in that map,
+      // so keying the retry off it re-requests failures forever.
       const targets = smartHangSeries.filter(
-        (series) => !smartHangDetails[series.series_instance_uid]
+        (series) => !smartHangAttemptedRef.current.has(series.series_instance_uid)
       );
+      if (targets.length === 0) return;
+      targets.forEach((series) =>
+        smartHangAttemptedRef.current.add(series.series_instance_uid)
+      );
+
       await Promise.all(
         targets.map(async (series) => {
           try {
@@ -4959,7 +5300,7 @@ const ViewerPage: React.FC = () => {
     return () => {
       active = false;
     };
-  }, [layoutMode, smartHangSeries, smartHangDetails]);
+  }, [layoutMode, smartHangSeries]);
 
   useEffect(() => {
     if (activeTool !== 'polygon') {
@@ -4985,19 +5326,43 @@ const ViewerPage: React.FC = () => {
     [seriesKey, windowLevel.center, windowLevel.width]
   );
 
+  // Aborts in-flight job polling when the study changes or the page unmounts.
+  // The previous loop had no cancellation: navigating away left it polling
+  // until the job finished or the timeout elapsed.
+  const jobPollAbortRef = useRef<AbortController | null>(null);
+
+  useEffect(
+    () => () => {
+      jobPollAbortRef.current?.abort();
+      jobPollAbortRef.current = null;
+    },
+    []
+  );
+
+  useEffect(() => {
+    jobPollAbortRef.current?.abort();
+    jobPollAbortRef.current = null;
+  }, [studyUid]);
+
   const waitForJobWithProgress = useCallback(async (jobId: string) => {
-    const startTime = Date.now();
-    while (Date.now() - startTime < AI_JOB_TIMEOUT_MS) {
-      const job = await api.ai.getJob(jobId);
-      if (typeof job.progress === 'number') {
-        setAiJobProgress(job.progress);
+    jobPollAbortRef.current?.abort();
+    const controller = new AbortController();
+    jobPollAbortRef.current = controller;
+
+    try {
+      return await waitForJob({
+        jobId,
+        fetchJob: (id) => api.ai.getJob(id),
+        onProgress: setAiJobProgress,
+        timeoutMs: AI_JOB_TIMEOUT_MS,
+        pollIntervalMs: AI_JOB_POLL_INTERVAL_MS,
+        signal: controller.signal,
+      });
+    } finally {
+      if (jobPollAbortRef.current === controller) {
+        jobPollAbortRef.current = null;
       }
-      if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
-        return job;
-      }
-      await new Promise((resolve) => setTimeout(resolve, AI_JOB_POLL_INTERVAL_MS));
     }
-    throw new Error(`Job ${jobId} timed out after ${AI_JOB_TIMEOUT_MS}ms`);
   }, []);
 
   const runAiModel = useCallback(
@@ -5054,12 +5419,16 @@ const ViewerPage: React.FC = () => {
           setSnackbarMessage(`AI analysis failed: ${completedJob.error_message || 'Unknown error'}`);
         }
       } catch (err) {
-        const detail = getApiErrorDetail(err);
-        const message = err instanceof Error ? err.message : '';
-        if (message.includes('timed out')) {
+        // The user navigated away; the job carries on server-side and there is
+        // nothing to report.
+        if (err instanceof JobCancelledError) {
+          return;
+        }
+        if (err instanceof JobTimeoutError) {
           setSnackbarMessage('AI job is still running. Results will appear when it finishes.');
           return;
         }
+        const detail = getApiErrorDetail(err);
         console.error('AI job failed:', err);
         setSnackbarMessage(detail ? `AI analysis failed: ${detail}` : 'AI analysis failed');
       } finally {
@@ -5208,6 +5577,130 @@ const ViewerPage: React.FC = () => {
     () => getAiViewLabelForInstance(activeInstanceUid),
     [activeInstanceUid, getAiViewLabelForInstance]
   );
+
+  // Traced contours offered as ED/ES sources for Simpson's method. Each carries
+  // the view and calibration of its source instance. Use the whole selected
+  // series so a complementary A4C/A2C cine remains available while the other
+  // view is active.
+  const volumeContourOptions = useMemo<ContourOption[]>(() => {
+    const options: ContourOption[] = [];
+    const instancesByUid = new Map(
+      (selectedSeries?.instances ?? []).map((instance) => [instance.sop_instance_uid, instance])
+    );
+
+    for (const measurement of newStoreMeasurements) {
+      if (measurement.type !== 'polygon') continue;
+      if (!isPolygonMeasurement(measurement)) continue;
+      if (measurement.points.length < 8) continue;
+
+      const instanceUid =
+        resolveMeasurementInstanceUid(measurement) ?? currentInstanceUid ?? null;
+      const contourCalibration = getCalibration(
+        instanceUid ? instancesByUid.get(instanceUid) ?? instanceCacheRef.current.get(instanceUid) : null
+      );
+      const track = measurementStore.trackingData.get(measurement.id);
+
+      options.push({
+        id: measurement.id,
+        label: measurement.label || 'Contour',
+        points: measurement.points,
+        calibration: contourCalibration,
+        instanceUid,
+        frameIndex: null,
+        view: getAiViewLabelForInstance(instanceUid),
+        viewConfidence: null,
+        provenance: track ? 'tracked' : measurement.label === 'Smart Segment' ? 'ai' : 'manual',
+      });
+
+      // A tracked contour also offers its own ED and ES frames, chosen within a
+      // single beat rather than across the whole clip.
+      if (track && track.frames.length > 2) {
+        const analysis = analyseCardiacPhases(
+          track.frames.map((frame) => ({
+            frameIndex: frame.frameIndex,
+            value: frame.areaMm2 ?? frame.lengthMm ?? NaN,
+            valid: frame.valid,
+          }))
+        );
+        const beat = analysis.selectedBeat;
+        if (beat) {
+          for (const [phase, frameIndex] of [
+            ['ED', beat.edFrame],
+            ['ES', beat.esFrame],
+          ] as const) {
+            const frame = track.frames.find((f) => f.frameIndex === frameIndex);
+            if (!frame || frame.points.length < 8) continue;
+            options.push({
+              id: `${measurement.id}:${phase}`,
+              label: `${measurement.label || 'Contour'} · ${phase}`,
+              points: frame.points,
+              calibration: contourCalibration,
+              instanceUid,
+              frameIndex,
+              view: getAiViewLabelForInstance(instanceUid),
+              viewConfidence: null,
+              provenance: 'tracked',
+            });
+          }
+        }
+      }
+    }
+
+    return options;
+  }, [
+    selectedSeries,
+    newStoreMeasurements,
+    resolveMeasurementInstanceUid,
+    currentInstanceUid,
+    measurementStore.trackingData,
+    getAiViewLabelForInstance,
+  ]);
+
+  // Whether Simpson's method applies to the cine on screen.
+  const volumeGate = useMemo(
+    () =>
+      gateVolumeTools({
+        view: activeAiViewLabel,
+        // The classifier reports per-instance labels; a label present at all
+        // means it cleared the backend's own gate.
+        confidence: activeAiViewLabel ? 1 : null,
+        calibrated: calibration.spacing !== null,
+      }),
+    [activeAiViewLabel, calibration]
+  );
+
+  // The instance that would complete a biplane pair with the current view.
+  const biplanePartnerUid = useMemo(() => {
+    if (!selectedSeries?.instances?.length) return null;
+    const partner = findBiplanePartner(
+      activeAiViewLabel,
+      selectedSeries.instances.map((instance) => ({
+        instanceUid: instance.sop_instance_uid,
+        view: getAiViewLabelForInstance(instance.sop_instance_uid),
+        confidence: getAiViewLabelForInstance(instance.sop_instance_uid) ? 1 : null,
+      }))
+    );
+    return partner?.instanceUid ?? null;
+  }, [selectedSeries, activeAiViewLabel, getAiViewLabelForInstance]);
+
+  // When the study holds a complementary apical view, preselect its contours for
+  // the second plane so biplane is one click rather than a hunt through a list.
+  useEffect(() => {
+    if (volumeMethod !== 'biplane' || !biplanePartnerUid) return;
+    if (volumeEdIdB || volumeEsIdB) return;
+
+    const partnerContours = volumeContourOptions.filter(
+      (option) => option.instanceUid === biplanePartnerUid
+    );
+    if (partnerContours.length === 0) return;
+
+    const ed = partnerContours.find((option) => option.label.endsWith('ED'));
+    const es = partnerContours.find((option) => option.label.endsWith('ES'));
+    if (ed) setVolumeEdIdB(ed.id);
+    if (es) setVolumeEsIdB(es.id);
+  }, [volumeMethod, biplanePartnerUid, volumeContourOptions, volumeEdIdB, volumeEsIdB]);
+
+
   const handleTrackMeasurement = useCallback(async () => {
     if (!seriesKey) {
       setSnackbarMessage('Please select a series first');
@@ -5480,7 +5973,7 @@ const ViewerPage: React.FC = () => {
                   setSnackbarMessage('Cine measurements are disabled for this series.');
                   return;
                 }
-                setMeasurementScope((prev) => (prev === 'cine' ? 'frame' : 'cine'));
+                setMeasurementScope(measurementScope === 'cine' ? 'frame' : 'cine');
               }}
               color={effectiveMeasurementScope === 'cine' ? 'primary' : 'default'}
               aria-label="Toggle measurement scope"
@@ -5550,6 +6043,7 @@ const ViewerPage: React.FC = () => {
               key={preset.name}
               onClick={() => {
                 setWindowLevel({ center: preset.center, width: preset.width });
+                setCommittedWindowLevel({ center: preset.center, width: preset.width });
                 setWlMenuAnchor(null);
               }}
             >
@@ -5561,6 +6055,7 @@ const ViewerPage: React.FC = () => {
             onClick={() => {
               if (selectedSeries) {
                 setWindowLevel(getWindowDefaults(selectedSeries));
+                setCommittedWindowLevel(getWindowDefaults(selectedSeries));
               }
               setWlMenuAnchor(null);
             }}
@@ -6226,21 +6721,38 @@ const ViewerPage: React.FC = () => {
                   willChange: 'transform',
                 }}
               >
-                <img
-                  src={displayedImageUrl || imageUrl || ''}
-                  alt={`Slice ${currentSlice + 1}`}
-                  style={{
-                    width: '100%',
-                    height: '100%',
-                    display: 'block',
-                    userSelect: 'none',
-                    pointerEvents: 'none',
-                    filter: colorFilter,
-                  }}
-                  draggable={false}
-                  onDragStart={(event) => event.preventDefault()}
-                  onError={() => setImageError('Unable to render this image. Check transfer syntax support.')}
-                />
+                {usingClipSheet ? (
+                  <canvas
+                    ref={clipCanvasRef}
+                    data-testid="clip-canvas"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'block',
+                      userSelect: 'none',
+                      pointerEvents: 'none',
+                      filter: colorFilter,
+                    }}
+                  />
+                ) : (
+                  <img
+                    ref={frameImageRef}
+                    src={displayedImageUrl || imageUrl || ''}
+                    alt={`Slice ${currentSlice + 1}`}
+                    crossOrigin="anonymous"
+                    style={{
+                      width: '100%',
+                      height: '100%',
+                      display: 'block',
+                      userSelect: 'none',
+                      pointerEvents: 'none',
+                      filter: colorFilter,
+                    }}
+                    draggable={false}
+                    onDragStart={(event) => event.preventDefault()}
+                    onError={() => setImageError('Unable to render this image. Check transfer syntax support.')}
+                  />
+                )}
                 <svg
                   ref={overlayRef}
                   width="100%"
@@ -6248,6 +6760,10 @@ const ViewerPage: React.FC = () => {
                   viewBox={`0 0 ${imageDimensions.columns} ${imageDimensions.rows}`}
                   style={{ position: 'absolute', left: 0, top: 0, pointerEvents: 'none' }}
                 >
+                  <FreehandStrokeLayer
+                    strokeRef={freehandStrokeRef}
+                    strokeWidth={2 / Math.max(scale, 0.01)}
+                  />
                   {showLegacyAiOverlays && showAiOverlay &&
                     segmentationOverlays.map((overlay) => (
                       <image
@@ -6596,6 +7112,54 @@ const ViewerPage: React.FC = () => {
             </Box>
           )}
 
+          {layoutMode === 'single' && clipLoading && !clipSheet && (
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 12,
+                right: 12,
+                px: 1.5,
+                py: 0.5,
+                borderRadius: 1,
+                bgcolor: 'rgba(0, 0, 0, 0.6)',
+                color: 'common.white',
+                pointerEvents: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+              }}
+              data-testid="clip-loading"
+            >
+              <CircularProgress size={12} color="inherit" />
+              <Typography variant="caption">Loading cine</Typography>
+            </Box>
+          )}
+
+          {layoutMode === 'single' && freehandLiveArea !== null && (
+            <Box
+              sx={{
+                position: 'absolute',
+                top: 12,
+                left: 12,
+                px: 1.5,
+                py: 0.75,
+                borderRadius: 1,
+                bgcolor: 'rgba(0, 0, 0, 0.72)',
+                color: 'common.white',
+                pointerEvents: 'none',
+                fontVariantNumeric: 'tabular-nums',
+              }}
+              data-testid="freehand-live-area"
+            >
+              <Typography variant="caption" sx={{ display: 'block', opacity: 0.75 }}>
+                Area
+              </Typography>
+              <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                {formatArea(freehandLiveArea, calibration)}
+              </Typography>
+            </Box>
+          )}
+
           {layoutMode === 'single' && imageError && (
             <Box
               sx={{
@@ -6808,6 +7372,13 @@ const ViewerPage: React.FC = () => {
                       />
                     ))}
                 </Box>
+              )}
+
+              {calibrationWarning && (
+                <Alert severity="warning" sx={{ mt: 2 }} data-testid="calibration-warning">
+                  <AlertTitle>Uncalibrated image</AlertTitle>
+                  {calibrationWarning}
+                </Alert>
               )}
 
               <Divider sx={{ my: 2 }} />
@@ -7449,6 +8020,18 @@ const ViewerPage: React.FC = () => {
 
         {cinePhaseFrames && (
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mr: 2 }}>
+            {cinePhaseFrames.multipleBeats && (
+              <Tooltip
+                title={`${cinePhaseFrames.beatCount} beats detected. ED and ES are taken from the best-tracked beat so they describe one cardiac cycle.`}
+              >
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={`${cinePhaseFrames.beatCount} beats`}
+                  data-testid="beat-count-chip"
+                />
+              </Tooltip>
+            )}
             <Tooltip title={`Jump to ED (${cinePhaseFrames.label})`}>
               <Button
                 size="small"
@@ -8011,6 +8594,34 @@ const ViewerPage: React.FC = () => {
           <FormControlLabel
             control={
               <Switch
+                checked={clipSheetEnabled}
+                onChange={(event) => setClipSheetEnabled(event.target.checked)}
+              />
+            }
+            label="Load cines in one request"
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', pl: 3, mb: 1 }}>
+            Fetches the whole cine as a single image, so scrubbing and playback need no network.
+            {clipUnavailable
+              ? ' This cine could not be loaded that way; frames are being fetched individually.'
+              : ' Turn off to fetch frames one at a time.'}
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
+                checked={edgeSnapEnabled}
+                onChange={(event) => setEdgeSnapEnabled(event.target.checked)}
+              />
+            }
+            label="Snap traces to the nearest border"
+          />
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', pl: 3, mb: 1 }}>
+            Nudges each traced point onto the strongest nearby intensity edge. Points with no
+            contrast in range are left where you drew them.
+          </Typography>
+          <FormControlLabel
+            control={
+              <Switch
                 checked={smoothTrackingEnabled}
                 onChange={(event) => setSmoothTrackingEnabled(event.target.checked)}
               />
@@ -8160,88 +8771,35 @@ const ViewerPage: React.FC = () => {
         <DialogTitle>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <FavoriteIcon color="error" />
-            Cardiac Function Calculator
+            Cardiac Function
           </Box>
         </DialogTitle>
         <DialogContent>
           <Box sx={{ display: 'flex', gap: 2, flexWrap: 'wrap' }}>
-            {/* EF Calculator Section */}
-            <Box sx={{ flex: 1, minWidth: 280 }}>
+            {/* LV volumes by Simpson's method of disks. */}
+            <Box sx={{ flex: 1, minWidth: 320 }}>
               <Typography variant="h6" gutterBottom>
-                Ejection Fraction (EF)
+                LV Volumes &amp; Ejection Fraction
               </Typography>
-              <Alert severity="info" sx={{ mb: 2 }}>
-                <strong>EF = (EDV - ESV) / EDV x 100%</strong>
-                <br />
-                Select area measurements (polygons)
-              </Alert>
-
-              <Typography variant="subtitle2" gutterBottom>
-                End-Diastolic (EDV):
-              </Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {contextMeasurements
-                  .filter((m) => m.type === 'polygon')
-                  .map((m) => (
-                    <Chip
-                      key={m.id}
-                      label={`${m.label || 'Area'} (${('areaMm2' in m && m.areaMm2) ? m.areaMm2.toFixed(0) : 'N/A'} mm^2)`}
-                      size="small"
-                      color={efEdvMeasurementId === m.id ? 'primary' : 'default'}
-                      onClick={() => setEfEdvMeasurementId(m.id)}
-                    />
-                  ))}
-                {contextMeasurements.filter((m) => m.type === 'polygon').length === 0 && (
-                  <Typography variant="body2" color="text.secondary">
-                    Draw polygon areas first
-                  </Typography>
-                )}
-              </Box>
-
-              <Typography variant="subtitle2" gutterBottom>
-                End-Systolic (ESV):
-              </Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {contextMeasurements
-                  .filter((m) => m.type === 'polygon')
-                  .map((m) => (
-                    <Chip
-                      key={m.id}
-                      label={`${m.label || 'Area'} (${('areaMm2' in m && m.areaMm2) ? m.areaMm2.toFixed(0) : 'N/A'} mm^2)`}
-                      size="small"
-                      color={efEsvMeasurementId === m.id ? 'secondary' : 'default'}
-                      onClick={() => setEfEsvMeasurementId(m.id)}
-                    />
-                  ))}
-              </Box>
-
-              {/* EF Result */}
-              {efEdvMeasurementId && efEsvMeasurementId && (() => {
-                const edvMeasurement = contextMeasurements.find((m) => m.id === efEdvMeasurementId);
-                const esvMeasurement = contextMeasurements.find((m) => m.id === efEsvMeasurementId);
-                const edv = edvMeasurement && 'areaMm2' in edvMeasurement ? edvMeasurement.areaMm2 : null;
-                const esv = esvMeasurement && 'areaMm2' in esvMeasurement ? esvMeasurement.areaMm2 : null;
-                if (edv && esv && edv > 0) {
-                  const ef = ((edv - esv) / edv) * 100;
-                  return (
-                    <Paper sx={{ p: 2, bgcolor: ef >= 55 ? 'success.dark' : ef >= 35 ? 'warning.dark' : 'error.dark', color: 'white' }}>
-                      <Typography variant="h4" align="center">
-                        EF: {ef.toFixed(1)}%
-                      </Typography>
-                      <Typography variant="body2" align="center" sx={{ mt: 1 }}>
-                        EDV: {edv.toFixed(0)} mm^2 | ESV: {esv.toFixed(0)} mm^2
-                      </Typography>
-                      <Typography variant="caption" align="center" sx={{ display: 'block', mt: 1 }}>
-                        {ef >= 55 ? 'OK Normal (>=55%)' :
-                         ef >= 45 ? 'WARN Mildly Reduced (45-54%)' :
-                         ef >= 35 ? 'WARN Moderately Reduced (35-44%)' :
-                         'WARN Severely Reduced (<35%)'}
-                      </Typography>
-                    </Paper>
-                  );
-                }
-                return null;
-              })()}
+              <LvVolumePanel
+                method={volumeMethod}
+                onMethodChange={setVolumeMethod}
+                contours={volumeContourOptions}
+                edContourId={volumeEdId}
+                esContourId={volumeEsId}
+                onEdContourChange={setVolumeEdId}
+                onEsContourChange={setVolumeEsId}
+                edContourIdB={volumeEdIdB}
+                esContourIdB={volumeEsIdB}
+                onEdContourBChange={setVolumeEdIdB}
+                onEsContourBChange={setVolumeEsIdB}
+                calibration={calibration}
+                gate={volumeGate}
+                heightCm={patientHeightCm}
+                weightKg={patientWeightKg}
+                onHeightChange={setPatientHeightCm}
+                onWeightChange={setPatientWeightKg}
+              />
             </Box>
 
             <Divider orientation="vertical" flexItem />
@@ -8312,7 +8870,7 @@ const ViewerPage: React.FC = () => {
                         FS: {fs.toFixed(1)}%
                       </Typography>
                       <Typography variant="body2" align="center" sx={{ mt: 1 }}>
-                        LVEDD: {edd.toFixed(1)} mm | LVESD: {esd.toFixed(1)} mm
+                        LVEDD: {formatLength(edd, calibration)} | LVESD: {formatLength(esd, calibration)}
                       </Typography>
                       <Typography variant="caption" align="center" sx={{ display: 'block', mt: 1 }}>
                         {fs >= 25 ? 'OK Normal (>=25%)' :

@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.api.v1.endpoints.auth import get_current_active_user, require_roles
 from app.core.logging import audit_logger
@@ -335,8 +336,12 @@ async def delete_patient(
 
     This action permanently removes all patient data and is logged for audit.
     """
+    # Studies are loaded explicitly because the patient -> study FK is
+    # ON DELETE SET NULL; the delete has to cascade through the ORM.
     patient_result = await db.execute(
-        select(Patient).where(Patient.patient_id == patient_id)
+        select(Patient)
+        .options(selectinload(Patient.studies))
+        .where(Patient.patient_id == patient_id)
     )
     patient = patient_result.scalar_one_or_none()
     if not patient:
@@ -378,7 +383,9 @@ async def merge_patients(
         )
 
     source_result = await db.execute(
-        select(Patient).where(Patient.patient_id == source_patient_id)
+        select(Patient)
+        .options(selectinload(Patient.studies))
+        .where(Patient.patient_id == source_patient_id)
     )
     source_patient = source_result.scalar_one_or_none()
     if not source_patient:

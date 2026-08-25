@@ -57,11 +57,6 @@ vi.mock('./services/apiClient', async () => {
   };
 });
 
-// Mock Cornerstone initialization
-vi.mock('./utils/cornerstone', () => ({
-  initializeCornerstone: vi.fn(),
-}));
-
 const createQueryClient = () =>
   new QueryClient({
     defaultOptions: {
@@ -351,8 +346,10 @@ describe('Study List Page', () => {
       </TestWrapper>
     );
 
+    // The study description ("CT Chest") also matches /CT/, so assert on the
+    // modality chip specifically -- that is what modalities_in_study renders.
     await waitFor(() => {
-      expect(screen.getByText(/CT/)).toBeTruthy();
+      expect(screen.getByText('CT')).toBeTruthy();
     });
   });
 });

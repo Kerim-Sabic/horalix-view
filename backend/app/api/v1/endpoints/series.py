@@ -158,6 +158,14 @@ class TrackMeasurementResponse(BaseModel):
     total_frames: int
     frames: list[TrackMeasurementFrame]
     summary: TrackMeasurementSummary
+    calibrated: bool = Field(
+        True,
+        description=(
+            "False when the series carries no spatial calibration. All length "
+            "and area values are then null -- the geometry is still tracked, "
+            "but it cannot be expressed in millimetres."
+        ),
+    )
 
 
 def _polygon_area_px(points: list[TrackPoint]) -> float:
@@ -753,20 +761,13 @@ async def track_measurement(
 
     points = np.array([[p.x, p.y] for p in payload.points], dtype=np.float32).reshape(-1, 1, 2)
 
-    spacing_row = 1.0
-    spacing_col = 1.0
+    # Tracking geometry runs in pixels; the millimetre figures are only
+    # reported when the instance is actually calibrated. Falling back to
+    # 1 mm/px here would have every tracked length and area come back labelled
+    # in millimetres while being a pixel count.
+    is_calibrated = instances[0].is_spatially_calibrated
     spacing_tuple = instances[0].pixel_spacing_tuple
-    if spacing_tuple:
-        spacing_row, spacing_col = spacing_tuple
-    elif instances[0].pixel_spacing:
-        try:
-            parts = str(instances[0].pixel_spacing).split("\\")
-            if len(parts) >= 2:
-                spacing_row = float(parts[0])
-                spacing_col = float(parts[1])
-        except (ValueError, TypeError):
-            spacing_row = 1.0
-            spacing_col = 1.0
+    spacing_row, spacing_col = spacing_tuple if (is_calibrated and spacing_tuple) else (1.0, 1.0)
 
     def _load_frame_pixel(instance: Instance, frame_idx: int, cached: dict) -> np.ndarray:
         if cached.get("instance_uid") != instance.sop_instance_uid:
@@ -998,7 +999,7 @@ async def track_measurement(
                         j = (i + 1) % n
                         area_sum += pts_mm[i][0] * pts_mm[j][1]
                         area_sum -= pts_mm[j][0] * pts_mm[i][1]
-                    area_mm2 = abs(area_sum) / 2.0
+                    area_mm2 = abs(area_sum) / 2.0 if is_calibrated else None
 
                 results[idx] = TrackMeasurementFrame(
                     frame_index=idx,
@@ -1030,6 +1031,7 @@ async def track_measurement(
             total_frames=total_frames,
             frames=tracked_frames,
             summary=summary,
+            calibrated=is_calibrated,
         )
 
     def _track_indices(indices: list[int]) -> dict[int, TrackMeasurementFrame]:
@@ -1097,12 +1099,12 @@ async def track_measurement(
                     j = (i + 1) % n
                     area_sum += pts_mm[i][0] * pts_mm[j][1]
                     area_sum -= pts_mm[j][0] * pts_mm[i][1]
-                area_mm2 = abs(area_sum) / 2.0
+                area_mm2 = abs(area_sum) / 2.0 if is_calibrated else None
 
             results[idx] = TrackMeasurementFrame(
                 frame_index=idx,
                 points=tracked_points,
-                length_mm=length_mm,
+                length_mm=length_mm if is_calibrated else None,
                 area_mm2=area_mm2,
                 valid=status_ok,
             )
@@ -1138,4 +1140,5 @@ async def track_measurement(
         total_frames=total_frames,
         frames=tracked_frames,
         summary=summary,
+        calibrated=is_calibrated,
     )

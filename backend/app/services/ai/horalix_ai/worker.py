@@ -65,8 +65,10 @@ from app.services.ai.horalix_ai.postprocessing import (
     CoordinateTransformer,
     extract_contours_from_mask,
     postprocess_segmentation_mask,
+    simpson_single_plane,
 )
 from app.services.ai.horalix_ai.caching import FrameCache, EmbeddingCache
+from app.services.dicom.calibration import get_calibration
 from app.services.ai.horalix_ai.utils import (
     extract_dicom_metadata,
     get_pixel_spacing,
@@ -1419,21 +1421,21 @@ class HoralixAIWorker:
                         if not rgb_frames:
                             continue
 
-                        # Get pixel spacing
-                        ps = getattr(ds, "PixelSpacing", None)
-                        if ps:
-                            pixel_spacing = (float(ps[0]), float(ps[1]))
-                        else:
-                            # Try SequenceOfUltrasoundRegions for US-specific spacing
-                            regions = getattr(ds, "SequenceOfUltrasoundRegions", None)
-                            if regions and len(regions) > 0:
-                                region = regions[0]
-                                dx = getattr(region, "PhysicalDeltaX", 0.015)
-                                dy = getattr(region, "PhysicalDeltaY", 0.015)
-                                # Convert cm to mm
-                                pixel_spacing = (float(dy) * 10.0, float(dx) * 10.0)
-                            else:
-                                pixel_spacing = (0.15, 0.15)  # Default fallback
+                        # Spatial calibration, via the shared resolver so the AI
+                        # pipeline and the viewer measure with the same numbers.
+                        # A cine with no usable calibration is skipped rather
+                        # than measured against a guessed spacing: every length,
+                        # area and volume downstream would inherit that guess
+                        # while being reported as a measurement.
+                        calibration = get_calibration(ds)
+                        if not calibration.is_calibrated:
+                            logger.warning(
+                                "Skipping %s: no spatial calibration "
+                                "(no PixelSpacing and no usable 2D ultrasound region)",
+                                instance_uid,
+                            )
+                            continue
+                        pixel_spacing = calibration.as_tuple
 
                         # Get frame time
                         frame_time = getattr(ds, "FrameTime", None)
@@ -2132,12 +2134,32 @@ class HoralixAIWorker:
                                 )
                         prev_area_ratio = area_ratio
 
-                        area_cm2 = area_px * (bundle.pixel_spacing[0] / 10.0) * (bundle.pixel_spacing[1] / 10.0)
+                        # Simpson's method of disks, with the long axis measured
+                        # from the mask rather than assumed from its area. The
+                        # previous estimate supplied L as sqrt(A) * 1.5, a fixed
+                        # shape constant, which made the millilitre figures an
+                        # assumption about LV geometry rather than a measurement.
+                        frame_contours = extract_contours_from_mask(mask_dicom)
+                        volume_ml = 0.0
+                        if frame_contours:
+                            largest = max(frame_contours, key=len)
+                            simpson = simpson_single_plane(
+                                np.asarray(largest, dtype=float),
+                                (bundle.pixel_spacing[0], bundle.pixel_spacing[1]),
+                            )
+                            if simpson is not None:
+                                volume_ml = simpson.volume_ml
 
-                        # Estimate volume using Simpson's method (simplified)
-                        # V = (8/3pi) x A^2 / L, assume L ~= sqrt(A) x 1.5 for apical views
-                        length_cm = np.sqrt(area_cm2) * 1.5
-                        volume_ml = (8 / (3 * np.pi)) * (area_cm2**2) / length_cm if length_cm > 0 else 0
+                        if volume_ml <= 0:
+                            # The disk stack could not be fitted (a fragmented or
+                            # near-degenerate mask). Record the frame as having no
+                            # volume rather than substituting a guess.
+                            logger.debug(
+                                "Simpson's fit failed for %s frame %s; no volume recorded",
+                                bundle.instance_uid,
+                                frame_idx,
+                            )
+                            continue
 
                         volumes_ml.append(volume_ml)
                         frame_numbers.append(frame_idx)

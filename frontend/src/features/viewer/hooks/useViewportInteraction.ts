@@ -115,12 +115,10 @@ function getCursorForTool(tool: ViewerTool, isDragging: boolean): string {
       return 'crosshair';
     case 'rotate':
       return 'grab';
-    case 'line':
+    case 'measure':
     case 'polygon':
-    case 'polyline':
     case 'freehand':
-    case 'ellipse':
-    case 'rectangle':
+    case 'segment':
       return 'crosshair';
     default:
       return 'default';
@@ -282,11 +280,9 @@ export function useViewportInteraction(
           break;
         }
 
-        case 'line':
-        case 'polyline':
+        case 'measure':
+        case 'polygon':
         case 'freehand':
-        case 'ellipse':
-        case 'rectangle':
           onMeasurementMove?.(imagePoint);
           break;
 

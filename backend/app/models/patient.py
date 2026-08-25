@@ -54,11 +54,15 @@ class Patient(Base):
     other_patient_ids: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
 
     # Relationships
+    # lazy="raise" -- the head of the cascade that made a 20-row patient page
+    # load every instance in those patients' studies. Deleting a patient must
+    # cascade through the ORM (the FK is ON DELETE SET NULL), so delete paths
+    # load this collection explicitly with selectinload.
     studies: Mapped[list["Study"]] = relationship(
         "Study",
         back_populates="patient",
         cascade="all, delete-orphan",
-        lazy="selectin",
+        lazy="raise",
     )
 
     # Indexes for common queries

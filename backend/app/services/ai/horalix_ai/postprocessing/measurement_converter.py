@@ -9,6 +9,10 @@ Replicates logic from Echocardiology_App/backend/app/AI_models/measurements/runn
 import numpy as np
 from typing import Tuple
 
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 def compute_length_cm(
     point1: np.ndarray,
@@ -130,28 +134,42 @@ def compute_distance_statistics(
 def compute_volume_from_area(
     area_cm2: float,
     length_cm: float,
-    method: str = "simpson",
+    method: str = "area_length",
 ) -> float:
     """
-    Estimate volume from area and length (for LV volume calculation).
+    Estimate volume from a cross-sectional area and a long-axis length.
 
     Args:
         area_cm2: Cross-sectional area in cm²
-        length_cm: Length in cm
-        method: Volume estimation method ("simpson", "ellipsoid")
+        length_cm: Measured long-axis length in cm
+        method: "area_length" or "ellipsoid"
 
     Returns:
         Volume in mL
 
     Note:
-        Simpson's rule: V = (8/3π) × A² / L
-        Ellipsoid: V = (4/3π) × (A / π)^(3/2)
+        Area-length (Dodge): V = (8/3π) × A² / L
+        Ellipsoid:           V = (4/3π) × (A / π)^(3/2)
+
+        This is *not* Simpson's method, despite what this function was
+        previously named. Simpson's divides the ventricle into a stack of disks
+        and sums them; see ``postprocessing/simpson.py``. Both formulas need
+        ``length_cm`` to be measured -- passing a value derived from the area
+        (for instance ``sqrt(A) * 1.5``) makes the result an assumption about
+        ventricular shape rather than a measurement of one.
     """
-    if method == "simpson":
-        # Simpson's biplane method
+    if length_cm <= 0:
+        raise ValueError("length_cm must be a positive measured length")
+
+    if method in ("area_length", "simpson"):
+        if method == "simpson":
+            logger.warning(
+                "compute_volume_from_area(method='simpson') is the area-length "
+                "formula, not Simpson's method of disks. Use 'area_length', or "
+                "postprocessing.simpson for a real disk summation."
+            )
         volume_ml = (8 / (3 * np.pi)) * (area_cm2**2) / length_cm
     elif method == "ellipsoid":
-        # Ellipsoid approximation
         radius = np.sqrt(area_cm2 / np.pi)
         volume_ml = (4 / 3) * np.pi * (radius**3)
     else:

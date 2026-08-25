@@ -130,6 +130,13 @@ export interface SeriesListResponse {
   details?: SeriesWithInstances[] | null;
 }
 
+/** How an image's millimetres-per-pixel was resolved. */
+export type PixelSpacingSource =
+  | 'pixel_spacing'
+  | 'ultrasound_region'
+  | 'imager_pixel_spacing'
+  | 'none';
+
 export interface Instance {
   sop_instance_uid: string;
   instance_number: number | null;
@@ -139,7 +146,15 @@ export interface Instance {
   bits_allocated: number | null;
   bits_stored?: number | null;
   photometric_interpretation?: string | null;
+  /** Millimetres per pixel as [row, column]. Null when uncalibrated. */
   pixel_spacing?: [number, number] | null;
+  /**
+   * How pixel_spacing was resolved. 'none' means the image carries no spatial
+   * calibration and must not be measured in millimetres.
+   */
+  pixel_spacing_source?: PixelSpacingSource | null;
+  /** Calibrated region bounds [minX, minY, maxX, maxY] in pixels, ultrasound only. */
+  ultrasound_region?: [number, number, number, number] | null;
   window_center?: number | null;
   window_width?: number | null;
   rescale_intercept?: number | null;
@@ -447,16 +462,38 @@ export interface UploadProgress {
 // API Service
 // ============================================================================
 
-const getAuthToken = (): string | null => {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem('access_token');
+/**
+ * Open a media session so image requests authenticate by cookie.
+ *
+ * `<img>` elements cannot send an Authorization header. Putting the token in
+ * the URL instead made it part of the browser's cache key, so every token
+ * refresh invalidated every cached frame in the study at once -- and it wrote
+ * the token into access logs and browser history.
+ *
+ * Call this after login and after any token refresh. Image URLs then carry no
+ * credential and stay byte-identical across sessions, which is what lets the
+ * browser cache actually do its job.
+ */
+let mediaSessionPromise: Promise<void> | null = null;
+
+export const ensureMediaSession = async (force = false): Promise<void> => {
+  if (force) mediaSessionPromise = null;
+  if (!mediaSessionPromise) {
+    mediaSessionPromise = apiClient
+      .post('/auth/media-session')
+      .then(() => undefined)
+      .catch((error) => {
+        // Reset so a later attempt can retry rather than caching the failure.
+        mediaSessionPromise = null;
+        throw error;
+      });
+  }
+  return mediaSessionPromise;
 };
 
-const appendAuthToken = (params: URLSearchParams): void => {
-  const token = getAuthToken();
-  if (token) {
-    params.set('token', token);
-  }
+/** Forget the current media session, e.g. on logout. */
+export const clearMediaSession = (): void => {
+  mediaSessionPromise = null;
 };
 
 export const api = {
@@ -642,7 +679,6 @@ export const api = {
       if (options?.windowCenter !== undefined) params.set('window_center', options.windowCenter.toString());
       if (options?.windowWidth !== undefined) params.set('window_width', options.windowWidth.toString());
       if (options?.format) params.set('format', options.format);
-      appendAuthToken(params);
       const queryString = params.toString();
       return `/api/v1/series/${seriesUid}/mpr${queryString ? `?${queryString}` : ''}`;
     },
@@ -698,7 +734,6 @@ export const api = {
       if (options?.windowWidth !== undefined) params.set('window_width', options.windowWidth.toString());
       if (options?.format) params.set('format', options.format);
       if (options?.quality !== undefined) params.set('quality', options.quality.toString());
-      appendAuthToken(params);
 
       const queryString = params.toString();
       return `/api/v1/instances/${instanceUid}/pixel-data${queryString ? `?${queryString}` : ''}`;
@@ -710,7 +745,6 @@ export const api = {
     getThumbnailUrl(instanceUid: string, size?: number): string {
       const params = new URLSearchParams();
       if (size) params.set('size', size.toString());
-      appendAuthToken(params);
       const queryString = params.toString();
       return `/api/v1/instances/${instanceUid}/thumbnail${queryString ? `?${queryString}` : ''}`;
     },
@@ -912,7 +946,6 @@ export const api = {
       if (classId !== undefined) {
         params.set('class_id', classId.toString());
       }
-      appendAuthToken(params);
       return `/api/v1/ai/results/${studyUid}/masks/${filename}/render?${params.toString()}`;
     },
 

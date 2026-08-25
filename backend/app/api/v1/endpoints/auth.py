@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -115,13 +115,29 @@ async def get_current_user(
     return await _resolve_user_from_token(token, db)
 
 
+#: Cookie carrying the media session, scoped to the pixel/render routes.
+MEDIA_SESSION_COOKIE = "horalix_media"
+
+
 async def get_current_user_with_token(
     token_header: Annotated[str | None, Depends(oauth2_scheme_optional)],
     db: Annotated[AsyncSession, Depends(get_db)],
     token_query: Annotated[str | None, Query(alias="token")] = None,
+    media_cookie: Annotated[str | None, Cookie(alias=MEDIA_SESSION_COOKIE)] = None,
 ) -> TokenData:
-    """Validate JWT token from header or query parameter."""
-    token = token_query or token_header
+    """Validate a JWT from the Authorization header, a media cookie, or a query
+    parameter.
+
+    Image routes are consumed by ``<img>`` tags, which cannot set headers. The
+    cookie is preferred over the query parameter because a token in the URL
+    becomes part of the browser's cache key -- so every token refresh
+    invalidated every cached frame in the study at once -- and because URLs are
+    recorded in access logs, browser history, and referrer headers.
+
+    The query parameter is still accepted so that previously issued links and
+    exported reports keep working.
+    """
+    token = token_header or media_cookie or token_query
     return await _resolve_user_from_token(token, db)
 
 
@@ -346,6 +362,7 @@ async def get_current_user_info(
 @router.post("/logout")
 async def logout(
     request: Request,
+    response: Response,
     current_user: Annotated[TokenData, Depends(get_current_active_user)],
 ) -> dict:
     """Logout current user.
@@ -363,7 +380,43 @@ async def logout(
         method="logout",
     )
 
+    response.delete_cookie(MEDIA_SESSION_COOKIE, path="/api/v1")
     return {"message": "Successfully logged out"}
+
+
+@router.post("/media-session", status_code=status.HTTP_204_NO_CONTENT)
+async def create_media_session(
+    response: Response,
+    current_user: Annotated[TokenData, Depends(get_current_active_user)],
+    token: Annotated[str | None, Depends(oauth2_scheme_optional)] = None,
+) -> None:
+    """Issue a media session cookie for image requests.
+
+    ``<img>`` elements cannot send an Authorization header, so image routes need
+    the credential somewhere the browser will attach automatically. Putting it
+    in the URL made the token part of the cache key -- every refresh discarded
+    every cached frame -- and leaked it into logs and history. A cookie keeps
+    image URLs stable and identical across sessions, so the browser cache
+    actually survives.
+
+    Scoped to /api/v1 and marked HttpOnly + SameSite=Strict so it is not
+    readable from script and is not sent cross-site.
+    """
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="A bearer token is required to open a media session",
+        )
+
+    response.set_cookie(
+        key=MEDIA_SESSION_COOKIE,
+        value=token,
+        max_age=settings.access_token_expire_minutes * 60,
+        httponly=True,
+        samesite="strict",
+        secure=settings.environment == "production",
+        path="/api/v1",
+    )
 
 
 @router.post("/change-password")

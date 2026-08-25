@@ -30,6 +30,7 @@ from app.models.instance import Instance
 from app.models.patient import Patient
 from app.models.series import Series
 from app.models.study import Study, StudyStatus
+from app.services.dicom.calibration import get_calibration
 
 router = APIRouter()
 
@@ -146,6 +147,33 @@ def _normalize_optional_str(value: str | None) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+
+def _first_numeric(value) -> float | None:
+    """Read a DICOM value that may be single- or multi-valued.
+
+    WindowCenter (0028,1050) and WindowWidth (0028,1051) are VM 1-n: pydicom
+    hands back a bare DSfloat for a single value and a MultiValue for several.
+    Indexing [0] works only for the second case and raises
+    "'DSfloat' object is not subscriptable" for the first, which failed the
+    whole upload.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+    try:
+        candidate = value[0]
+    except (TypeError, KeyError, IndexError):
+        candidate = value
+    try:
+        return float(candidate)
+    except (TypeError, ValueError):
+        return None
 
 
 @router.get("", response_model=StudyListResponse)
@@ -511,20 +539,13 @@ async def upload_study(
                     "institution_name": str(ds.get("InstitutionName", "")),
                 }
 
+            # Resolve spatial calibration once per file. For ultrasound this
+            # reads SequenceOfUltrasoundRegions; PixelSpacing is usually absent.
+            calibration = get_calibration(ds)
+            pixel_spacing_value = calibration.as_tuple
+
             # Extract series data
             if series_uid not in series_map:
-                pixel_spacing_value = None
-                if hasattr(ds, "PixelSpacing") and ds.PixelSpacing:
-                    pixel_spacing_value = (
-                        float(ds.PixelSpacing[0]),
-                        float(ds.PixelSpacing[1]),
-                    )
-                elif hasattr(ds, "ImagerPixelSpacing") and ds.ImagerPixelSpacing:
-                    pixel_spacing_value = (
-                        float(ds.ImagerPixelSpacing[0]),
-                        float(ds.ImagerPixelSpacing[1]),
-                    )
-
                 series_map[series_uid] = {
                     "series_instance_uid": series_uid,
                     "series_number": ds.get("SeriesNumber"),
@@ -550,16 +571,8 @@ async def upload_study(
                         if pixel_spacing_value
                         else None
                     ),
-                    "window_center": (
-                        float(ds.WindowCenter[0])
-                        if hasattr(ds, "WindowCenter") and ds.WindowCenter
-                        else None
-                    ),
-                    "window_width": (
-                        float(ds.WindowWidth[0])
-                        if hasattr(ds, "WindowWidth") and ds.WindowWidth
-                        else None
-                    ),
+                    "window_center": _first_numeric(getattr(ds, "WindowCenter", None)),
+                    "window_width": _first_numeric(getattr(ds, "WindowWidth", None)),
                     "instances": [],
                 }
 
@@ -586,8 +599,22 @@ async def upload_study(
                     else None
                 ),
                 "pixel_spacing": (
-                    f"{float(ds.PixelSpacing[0])}\\{float(ds.PixelSpacing[1])}"
-                    if hasattr(ds, "PixelSpacing") and ds.PixelSpacing
+                    f"{pixel_spacing_value[0]}\\{pixel_spacing_value[1]}"
+                    if pixel_spacing_value
+                    else None
+                ),
+                "pixel_spacing_source": calibration.source,
+                "ultrasound_region": (
+                    "\\".join(
+                        str(v)
+                        for v in (
+                            calibration.region.min_x,
+                            calibration.region.min_y,
+                            calibration.region.max_x,
+                            calibration.region.max_y,
+                        )
+                    )
+                    if calibration.region is not None
                     else None
                 ),
                 "image_position_patient": (
@@ -600,16 +627,8 @@ async def upload_study(
                     if hasattr(ds, "ImageOrientationPatient") and ds.ImageOrientationPatient
                     else None
                 ),
-                "window_center": (
-                    float(ds.WindowCenter[0])
-                    if hasattr(ds, "WindowCenter") and ds.WindowCenter
-                    else None
-                ),
-                "window_width": (
-                    float(ds.WindowWidth[0])
-                    if hasattr(ds, "WindowWidth") and ds.WindowWidth
-                    else None
-                ),
+                "window_center": _first_numeric(getattr(ds, "WindowCenter", None)),
+                "window_width": _first_numeric(getattr(ds, "WindowWidth", None)),
                 "rescale_intercept": (
                     float(ds.RescaleIntercept) if hasattr(ds, "RescaleIntercept") else 0.0
                 ),
