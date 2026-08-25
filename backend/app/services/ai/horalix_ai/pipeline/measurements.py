@@ -29,7 +29,12 @@ from app.services.ai.horalix_ai.utils import (
 logger = get_logger(__name__)
 
 def compute_teichholz_ef(measurements: List[MeasurementRecord]) -> List[MeasurementRecord]:
-    """Derive LVEF using Teichholz formula from LVIDd/LVIDs measurements."""
+    """Legacy compatibility helper; not emitted by the clinical pipeline.
+
+    ASE chamber guidance no longer recommends deriving LV volumes or EF from a
+    single linear dimension because the fixed-shape assumption fails in
+    remodelled ventricles. New results use reviewed Simpson A4C/A2C contours.
+    """
     by_instance: Dict[Optional[str], Dict[str, MeasurementRecord]] = {}
     for record in measurements:
         measurement_type = record.measurement_type.lower()
@@ -256,11 +261,6 @@ def run_measurements_stage(
         logger.error(f"Stage 5 failed: {exc}", exc_info=True)
 
     logger.info(f"Stage 5 complete: {len(measurements)} measurements, {len(overlays)} overlays")
-
-    teichholz_measurements = compute_teichholz_ef(measurements)
-    if teichholz_measurements:
-        measurements.extend(teichholz_measurements)
-        logger.info(f"Derived {len(teichholz_measurements)} Teichholz EF measurements")
 
     # Attach clinical validation metadata (hospital-grade)
     validated: List[MeasurementRecord] = []

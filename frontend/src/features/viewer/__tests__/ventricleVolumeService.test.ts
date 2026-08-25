@@ -30,7 +30,7 @@ function ellipseContour(
   semiMajor: number,
   count = 180,
   cx = 0,
-  cy = 0
+  cy = 0,
 ): Point2D[] {
   return Array.from({ length: count }, (_, i) => {
     const angle = (i / count) * Math.PI * 2;
@@ -146,7 +146,7 @@ describe('biplaneVolume', () => {
     const single = singlePlaneVolume(contour, axis, unitSpacing)!;
     const bi = biplaneVolume(
       { contour, axis, spacing: unitSpacing },
-      { contour, axis, spacing: unitSpacing }
+      { contour, axis, spacing: unitSpacing },
     )!;
     expect(bi.volumeMl).toBeCloseTo(single.volumeMl, 5);
   });
@@ -160,7 +160,7 @@ describe('biplaneVolume', () => {
 
     const bi = biplaneVolume(
       { contour: wide, axis, spacing: unitSpacing },
-      { contour: narrow, axis, spacing: unitSpacing }
+      { contour: narrow, axis, spacing: unitSpacing },
     )!;
     const singleWide = singlePlaneVolume(wide, axis, unitSpacing)!;
 
@@ -169,13 +169,13 @@ describe('biplaneVolume', () => {
     expect(bi.volumeMl / singleWide.volumeMl).toBeCloseTo(12 / 20, 1);
   });
 
-  it('uses the shorter long axis for disk height', () => {
+  it('uses the longer measured LV length for disk height', () => {
     const contour = ellipseContour(20, 50);
     const bi = biplaneVolume(
       { contour, axis: ellipseAxis(50), spacing: unitSpacing },
-      { contour, axis: { base: { x: 0, y: -40 }, apex: { x: 0, y: 40 } }, spacing: unitSpacing }
+      { contour, axis: { base: { x: 0, y: -40 }, apex: { x: 0, y: 40 } }, spacing: unitSpacing },
     )!;
-    expect(bi.longAxisMm).toBeCloseTo(80);
+    expect(bi.longAxisMm).toBeCloseTo(100);
     expect(bi.a4cLongAxisMm).toBeCloseTo(100);
     expect(bi.a2cLongAxisMm).toBeCloseTo(80);
   });
@@ -184,7 +184,7 @@ describe('biplaneVolume', () => {
     const contour = ellipseContour(20, 50);
     const bi = biplaneVolume(
       { contour, axis: ellipseAxis(50), spacing: unitSpacing },
-      { contour, axis: { base: { x: 0, y: -45 }, apex: { x: 0, y: 45 } }, spacing: unitSpacing }
+      { contour, axis: { base: { x: 0, y: -45 }, apex: { x: 0, y: 45 } }, spacing: unitSpacing },
     )!;
     expect(bi.longAxisDiscrepancy).toBeCloseTo(0.1, 2);
   });
@@ -195,7 +195,7 @@ describe('isForeshortened', () => {
     const contour = ellipseContour(20, 50);
     const mismatched = biplaneVolume(
       { contour, axis: ellipseAxis(50), spacing: unitSpacing },
-      { contour, axis: { base: { x: 0, y: -35 }, apex: { x: 0, y: 35 } }, spacing: unitSpacing }
+      { contour, axis: { base: { x: 0, y: -35 }, apex: { x: 0, y: 35 } }, spacing: unitSpacing },
     )!;
     expect(isForeshortened(mismatched)).toBe(true);
   });
@@ -204,7 +204,7 @@ describe('isForeshortened', () => {
     const contour = ellipseContour(20, 50);
     const matched = biplaneVolume(
       { contour, axis: ellipseAxis(50), spacing: unitSpacing },
-      { contour, axis: { base: { x: 0, y: -48 }, apex: { x: 0, y: 48 } }, spacing: unitSpacing }
+      { contour, axis: { base: { x: 0, y: -48 }, apex: { x: 0, y: 48 } }, spacing: unitSpacing },
     )!;
     expect(isForeshortened(matched)).toBe(false);
   });
@@ -311,7 +311,12 @@ describe('estimateLongAxisFromContour', () => {
   });
 
   it('returns null for a contour with too few points', () => {
-    expect(estimateLongAxisFromContour([{ x: 0, y: 0 }, { x: 1, y: 1 }])).toBeNull();
+    expect(
+      estimateLongAxisFromContour([
+        { x: 0, y: 0 },
+        { x: 1, y: 1 },
+      ]),
+    ).toBeNull();
   });
 });
 

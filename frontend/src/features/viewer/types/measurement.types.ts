@@ -46,6 +46,36 @@ export type MeasurementType =
 export type MeasurementScope = 'frame' | 'series' | 'volume';
 
 /**
+ * Clinical meaning assigned by the operator.
+ *
+ * Geometry alone is not enough to identify an echocardiographic measurement:
+ * two lines can be LVEDD and LVESD, and two contours can be ED and ES. Keeping
+ * the role on the measurement prevents downstream calculations from guessing
+ * from a free-text label or from whichever object happens to be on screen.
+ */
+export type ClinicalMeasurementRole =
+  | 'lv_lvid_cycle'
+  | 'lv_lvid_ed'
+  | 'lv_lvid_es'
+  | 'lv_ivs_ed'
+  | 'lv_lvpw_ed'
+  | 'lv_endocardial_ed'
+  | 'lv_endocardial_es'
+  | 'lvot_diameter'
+  | 'la_endocardial_es'
+  | 'rv_endocardial_ed'
+  | 'rv_endocardial_es'
+  | 'rv_base_ed'
+  | 'tapse'
+  | 'aortic_root_diameter'
+  | 'ivc_expiration'
+  | 'ivc_inspiration';
+
+export type CardiacPhase = 'end-diastole' | 'end-systole' | 'mid-systole' | 'cycle' | 'unspecified';
+
+export type MeasurementReviewStatus = 'unreviewed' | 'accepted' | 'modified' | 'rejected';
+
+/**
  * Result of hit-testing a point against measurements
  */
 export interface HitTestResult {
@@ -150,6 +180,21 @@ export interface BaseMeasurement {
 
   /** SOP Instance UID for cine/instance-specific measurements */
   instanceUid?: string | null;
+
+  /** Operator-confirmed clinical role; never inferred from geometry alone. */
+  clinicalRole?: ClinicalMeasurementRole | null;
+
+  /** Acquisition phase required by the clinical protocol. */
+  cardiacPhase?: CardiacPhase | null;
+
+  /** View recorded when the role was assigned (EchoPrime or manual). */
+  sourceView?: string | null;
+
+  /** EchoPrime confidence for sourceView, when available. */
+  viewConfidence?: number | null;
+
+  /** Human review state for AI-assisted or tracked geometry. */
+  reviewStatus?: MeasurementReviewStatus;
 }
 
 // ============================================================================
@@ -316,18 +361,14 @@ export function isPolygonMeasurement(m: Measurement): m is PolygonMeasurement {
 /**
  * Type guard for PolylineMeasurement
  */
-export function isPolylineMeasurement(
-  m: Measurement
-): m is PolylineMeasurement {
+export function isPolylineMeasurement(m: Measurement): m is PolylineMeasurement {
   return m.type === 'polyline';
 }
 
 /**
  * Type guard for FreehandMeasurement
  */
-export function isFreehandMeasurement(
-  m: Measurement
-): m is FreehandMeasurement {
+export function isFreehandMeasurement(m: Measurement): m is FreehandMeasurement {
   return m.type === 'freehand';
 }
 
@@ -341,9 +382,7 @@ export function isEllipseMeasurement(m: Measurement): m is EllipseMeasurement {
 /**
  * Type guard for RectangleMeasurement
  */
-export function isRectangleMeasurement(
-  m: Measurement
-): m is RectangleMeasurement {
+export function isRectangleMeasurement(m: Measurement): m is RectangleMeasurement {
   return m.type === 'rectangle';
 }
 
@@ -351,22 +390,17 @@ export function isRectangleMeasurement(
  * Check if measurement has area (polygon, freehand, ellipse, rectangle)
  */
 export function hasArea(
-  m: Measurement
+  m: Measurement,
 ): m is PolygonMeasurement | FreehandMeasurement | EllipseMeasurement | RectangleMeasurement {
   return (
-    m.type === 'polygon' ||
-    m.type === 'freehand' ||
-    m.type === 'ellipse' ||
-    m.type === 'rectangle'
+    m.type === 'polygon' || m.type === 'freehand' || m.type === 'ellipse' || m.type === 'rectangle'
   );
 }
 
 /**
  * Check if measurement supports cine tracking
  */
-export function supportsTracking(
-  m: Measurement
-): m is LineMeasurement | PolygonMeasurement {
+export function supportsTracking(m: Measurement): m is LineMeasurement | PolygonMeasurement {
   return m.type === 'line' || m.type === 'polygon';
 }
 
@@ -389,7 +423,7 @@ export function createBaseMeasurementProps(
   seriesUid: string,
   scope: MeasurementScope = 'series',
   frameKey: string | null = null,
-  instanceUid: string | null = null
+  instanceUid: string | null = null,
 ): Omit<BaseMeasurement, 'id'> {
   const now = Date.now();
   return {
@@ -404,5 +438,10 @@ export function createBaseMeasurementProps(
     seriesUid,
     frameKey: scope === 'frame' ? frameKey : null,
     instanceUid: instanceUid ?? null,
+    clinicalRole: null,
+    cardiacPhase: null,
+    sourceView: null,
+    viewConfidence: null,
+    reviewStatus: 'unreviewed',
   };
 }

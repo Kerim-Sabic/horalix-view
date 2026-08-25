@@ -12,6 +12,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   Box,
+  Chip,
   Collapse,
   IconButton,
   ListItem,
@@ -35,6 +36,7 @@ import {
 
 import type { Measurement, TrackingData } from '../../types';
 import { isLineMeasurement, isPolygonMeasurement } from '../../types';
+import { getEchoMeasurementProtocol } from '../../domain/echoMeasurementProtocol';
 
 // =========================================================
 // Types
@@ -149,15 +151,14 @@ const TrackingGraph: React.FC<{
   const buildSmoothPath = (points: typeof pathPoints) => {
     if (points.length < 3) {
       return points
-        .map((point, index) =>
-          `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)},${point.y.toFixed(1)}`
+        .map(
+          (point, index) =>
+            `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(1)},${point.y.toFixed(1)}`,
         )
         .join(' ');
     }
 
-    const segments: string[] = [
-      `M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`,
-    ];
+    const segments: string[] = [`M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`];
     for (let i = 0; i < points.length - 1; i += 1) {
       const p0 = points[i - 1] ?? points[i];
       const p1 = points[i];
@@ -168,7 +169,7 @@ const TrackingGraph: React.FC<{
       const cp2x = p2.x - (p3.x - p1.x) / 6;
       const cp2y = p2.y - (p3.y - p1.y) / 6;
       segments.push(
-        `C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`
+        `C ${cp1x.toFixed(1)},${cp1y.toFixed(1)} ${cp2x.toFixed(1)},${cp2y.toFixed(1)} ${p2.x.toFixed(1)},${p2.y.toFixed(1)}`,
       );
     }
     return segments.join(' ');
@@ -180,7 +181,7 @@ const TrackingGraph: React.FC<{
   } L ${paddingLeft},${paddingTop + chartHeight} Z`;
 
   // Calculate change percentage
-  const changePercent = max > 0 ? ((max - min) / max * 100).toFixed(1) : '0';
+  const changePercent = max > 0 ? (((max - min) / max) * 100).toFixed(1) : '0';
   const summaryMean = data.summary.meanMm ?? data.summary.meanAreaMm2;
   const currentX =
     currentIndex !== null
@@ -188,12 +189,15 @@ const TrackingGraph: React.FC<{
       : null;
   const currentPoint =
     currentIndex !== null
-      ? pathPoints.reduce((closest, point) => {
-        if (!closest) return point;
-        const currentDistance = Math.abs(point.frameIndex - currentIndex);
-        const bestDistance = Math.abs(closest.frameIndex - currentIndex);
-        return currentDistance < bestDistance ? point : closest;
-      }, null as (typeof pathPoints[number] | null))
+      ? pathPoints.reduce(
+          (closest, point) => {
+            if (!closest) return point;
+            const currentDistance = Math.abs(point.frameIndex - currentIndex);
+            const bestDistance = Math.abs(closest.frameIndex - currentIndex);
+            return currentDistance < bestDistance ? point : closest;
+          },
+          null as (typeof pathPoints)[number] | null,
+        )
       : null;
 
   const handlePointerAt = useCallback(
@@ -206,7 +210,7 @@ const TrackingGraph: React.FC<{
       const frameIndex = Math.round(minFrame + ratio * frameRange);
       onFrameSelect(frameIndex);
     },
-    [chartWidth, frameRange, hasData, minFrame, onFrameSelect, paddingLeft, paddingRight, width]
+    [chartWidth, frameRange, hasData, minFrame, onFrameSelect, paddingLeft, paddingRight, width],
   );
 
   const handlePointerDown = (event: React.PointerEvent<SVGSVGElement>) => {
@@ -380,7 +384,9 @@ const TrackingGraph: React.FC<{
         {/* ED marker (max value - end diastole) */}
         <g
           style={{ cursor: canScrub ? 'pointer' : 'default' }}
-          onClick={canScrub ? () => onFrameSelect?.(pathPoints[maxIdx]?.frameIndex ?? maxFrame) : undefined}
+          onClick={
+            canScrub ? () => onFrameSelect?.(pathPoints[maxIdx]?.frameIndex ?? maxFrame) : undefined
+          }
         >
           <circle
             cx={pathPoints[maxIdx].x}
@@ -405,7 +411,9 @@ const TrackingGraph: React.FC<{
         {/* ES marker (min value - end systole) */}
         <g
           style={{ cursor: canScrub ? 'pointer' : 'default' }}
-          onClick={canScrub ? () => onFrameSelect?.(pathPoints[minIdx]?.frameIndex ?? minFrame) : undefined}
+          onClick={
+            canScrub ? () => onFrameSelect?.(pathPoints[minIdx]?.frameIndex ?? minFrame) : undefined
+          }
         >
           <circle
             cx={pathPoints[minIdx].x}
@@ -428,13 +436,7 @@ const TrackingGraph: React.FC<{
         </g>
 
         {/* X-axis label */}
-        <text
-          x={width / 2}
-          y={height - 4}
-          textAnchor="middle"
-          fontSize="9"
-          fill="#9ca3af"
-        >
+        <text x={width / 2} y={height - 4} textAnchor="middle" fontSize="9" fill="#9ca3af">
           Frame
         </text>
       </svg>
@@ -481,167 +483,182 @@ const TrackingGraph: React.FC<{
   );
 };
 
+export const MeasurementListItem: React.FC<MeasurementListItemProps> = React.memo(
+  ({
+    measurement,
+    isSelected,
+    cineLabel,
+    frameLabel,
+    trackingData,
+    currentFrameIndex,
+    onJumpToFrame,
+    onSelect,
+    onDelete,
+    onToggleVisibility,
+    onEditLabel,
+    onTrack,
+  }) => {
+    const [expanded, setExpanded] = useState(false);
 
-export const MeasurementListItem: React.FC<MeasurementListItemProps> = React.memo(({
-  measurement,
-  isSelected,
-  cineLabel,
-  frameLabel,
-  trackingData,
-  currentFrameIndex,
-  onJumpToFrame,
-  onSelect,
-  onDelete,
-  onToggleVisibility,
-  onEditLabel,
-  onTrack,
-}) => {
-  const [expanded, setExpanded] = useState(false);
+    // Check if tracking data is available
+    const hasTracking = trackingData && trackingData.frames.length > 0;
+    const displayLabel = measurement.label || getMeasurementTypeLabel(measurement);
+    const clinicalProtocol = getEchoMeasurementProtocol(measurement.clinicalRole);
+    const displayValue = getMeasurementValue(measurement);
+    const unit = isLineMeasurement(measurement) ? 'mm' : 'mm^2';
+    const secondaryParts = [displayValue, cineLabel, frameLabel].filter(
+      (value) => value && value.length > 0,
+    );
+    const secondaryText = secondaryParts.join(' · ');
 
-  // Check if tracking data is available
-  const hasTracking = trackingData && trackingData.frames.length > 0;
-  const displayLabel = measurement.label || getMeasurementTypeLabel(measurement);
-  const displayValue = getMeasurementValue(measurement);
-  const unit = isLineMeasurement(measurement) ? 'mm' : 'mm^2';
-  const secondaryParts = [displayValue, cineLabel, frameLabel].filter(
-    (value) => value && value.length > 0
-  );
-  const secondaryText = secondaryParts.join(' · ');
+    const handleDelete = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onDelete();
+    };
 
-  const handleDelete = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onDelete();
-  };
+    const handleToggleVisibility = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onToggleVisibility();
+    };
 
-  const handleToggleVisibility = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onToggleVisibility();
-  };
+    const handleEditLabel = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onEditLabel?.();
+    };
 
-  const handleEditLabel = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onEditLabel?.();
-  };
+    const handleToggleExpand = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setExpanded(!expanded);
+    };
 
-  const handleToggleExpand = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    setExpanded(!expanded);
-  };
+    const handleTrack = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onTrack?.();
+    };
 
-  const handleTrack = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    onTrack?.();
-  };
-
-  return (
-    <>
-      <ListItem
-        disablePadding
-        secondaryAction={
-          <Box sx={{ display: 'flex', gap: 0.5 }}>
-            {hasTracking && (
-              <Tooltip title={expanded ? 'Hide graph' : 'Show graph'}>
-                <IconButton size="small" onClick={handleToggleExpand}>
-                  {expanded ? <CollapseIcon fontSize="small" /> : <ExpandIcon fontSize="small" />}
+    return (
+      <>
+        <ListItem
+          disablePadding
+          secondaryAction={
+            <Box sx={{ display: 'flex', gap: 0.5 }}>
+              {hasTracking && (
+                <Tooltip title={expanded ? 'Hide graph' : 'Show graph'}>
+                  <IconButton size="small" onClick={handleToggleExpand}>
+                    {expanded ? <CollapseIcon fontSize="small" /> : <ExpandIcon fontSize="small" />}
+                  </IconButton>
+                </Tooltip>
+              )}
+              {!hasTracking && onTrack && (
+                <Tooltip title="Track across frames">
+                  <IconButton size="small" onClick={handleTrack}>
+                    <TrackingIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              )}
+              {onEditLabel && (
+                <Tooltip title="Edit label">
+                  <IconButton size="small" onClick={handleEditLabel}>
+                    <EditIcon fontSize="small" />
+                  </IconButton>
+                </Tooltip>
+              )}
+              <Tooltip title={measurement.visible ? 'Hide' : 'Show'}>
+                <IconButton size="small" onClick={handleToggleVisibility}>
+                  {measurement.visible ? (
+                    <VisibleIcon fontSize="small" />
+                  ) : (
+                    <HiddenIcon fontSize="small" />
+                  )}
                 </IconButton>
               </Tooltip>
-            )}
-            {!hasTracking && onTrack && (
-              <Tooltip title="Track across frames">
-                <IconButton size="small" onClick={handleTrack}>
-                  <TrackingIcon fontSize="small" />
+              <Tooltip title="Delete">
+                <IconButton size="small" onClick={handleDelete} disabled={measurement.locked}>
+                  <DeleteIcon fontSize="small" />
                 </IconButton>
               </Tooltip>
-            )}
-            {onEditLabel && (
-              <Tooltip title="Edit label">
-                <IconButton size="small" onClick={handleEditLabel}>
-                  <EditIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            )}
-            <Tooltip title={measurement.visible ? 'Hide' : 'Show'}>
-              <IconButton size="small" onClick={handleToggleVisibility}>
-                {measurement.visible ? (
-                  <VisibleIcon fontSize="small" />
-                ) : (
-                  <HiddenIcon fontSize="small" />
-                )}
-              </IconButton>
-            </Tooltip>
-            <Tooltip title="Delete">
-              <IconButton size="small" onClick={handleDelete} disabled={measurement.locked}>
-                <DeleteIcon fontSize="small" />
-              </IconButton>
-            </Tooltip>
-          </Box>
-        }
-      >
-        <ListItemButton
-          selected={isSelected}
-          onClick={onSelect}
-          sx={{
-            mx: 1,
-            my: 0.5,
-            borderRadius: 2,
-            border: '1px solid',
-            borderColor: isSelected ? 'primary.main' : 'transparent',
-            bgcolor: isSelected ? 'action.selected' : 'transparent',
-            opacity: measurement.visible ? 1 : 0.5,
-            '&:hover': {
-              bgcolor: 'action.hover',
-            },
-          }}
+            </Box>
+          }
         >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            {getMeasurementIcon(measurement)}
-          </ListItemIcon>
-          <ListItemText
-            primary={
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <Typography variant="body2" noWrap>
-                  {displayLabel}
+          <ListItemButton
+            selected={isSelected}
+            onClick={onSelect}
+            sx={{
+              mx: 1,
+              my: 0.5,
+              borderRadius: 2,
+              border: '1px solid',
+              borderColor: isSelected ? 'primary.main' : 'transparent',
+              bgcolor: isSelected ? 'action.selected' : 'transparent',
+              opacity: measurement.visible ? 1 : 0.5,
+              '&:hover': {
+                bgcolor: 'action.hover',
+              },
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 36 }}>{getMeasurementIcon(measurement)}</ListItemIcon>
+            <ListItemText
+              primary={
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                  <Typography variant="body2" noWrap>
+                    {displayLabel}
+                  </Typography>
+                  {hasTracking && (
+                    <Tooltip title="Has tracking data">
+                      <TrackingIcon fontSize="small" sx={{ color: 'success.main', fontSize: 14 }} />
+                    </Tooltip>
+                  )}
+                  {clinicalProtocol && (
+                    <Tooltip
+                      title={`${clinicalProtocol.allowedViews.join(' / ')} · ${clinicalProtocol.phase} · ${measurement.reviewStatus ?? 'unreviewed'}`}
+                    >
+                      <Chip
+                        size="small"
+                        label={clinicalProtocol.shortLabel}
+                        color={
+                          measurement.reviewStatus === 'accepted' ||
+                          measurement.reviewStatus === 'modified'
+                            ? 'success'
+                            : 'warning'
+                        }
+                        variant="outlined"
+                        sx={{ height: 20, '& .MuiChip-label': { px: 0.75, fontSize: 10 } }}
+                      />
+                    </Tooltip>
+                  )}
+                </Box>
+              }
+              secondary={
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  component="span"
+                  sx={{ fontFamily: 'monospace' }}
+                >
+                  {secondaryText}
                 </Typography>
-                {hasTracking && (
-                  <Tooltip title="Has tracking data">
-                    <TrackingIcon
-                      fontSize="small"
-                      sx={{ color: 'success.main', fontSize: 14 }}
-                    />
-                  </Tooltip>
-                )}
-              </Box>
-            }
-            secondary={
-              <Typography
-                variant="caption"
-                color="text.secondary"
-                component="span"
-                sx={{ fontFamily: 'monospace' }}
-              >
-                {secondaryText}
-              </Typography>
-            }
-          />
-        </ListItemButton>
-      </ListItem>
-
-      {/* Expandable tracking graph */}
-      <Collapse in={expanded && !!hasTracking}>
-        <Box sx={{ pl: 2, pr: 1, pb: 1 }}>
-          {hasTracking && trackingData && (
-            <TrackingGraph
-              data={trackingData}
-              unit={unit}
-              currentFrameIndex={currentFrameIndex}
-              onFrameSelect={onJumpToFrame}
+              }
             />
-          )}
-        </Box>
-      </Collapse>
-    </>
-  );
-});
+          </ListItemButton>
+        </ListItem>
+
+        {/* Expandable tracking graph */}
+        <Collapse in={expanded && !!hasTracking}>
+          <Box sx={{ pl: 2, pr: 1, pb: 1 }}>
+            {hasTracking && trackingData && (
+              <TrackingGraph
+                data={trackingData}
+                unit={unit}
+                currentFrameIndex={currentFrameIndex}
+                onFrameSelect={onJumpToFrame}
+              />
+            )}
+          </Box>
+        </Collapse>
+      </>
+    );
+  },
+);
 
 MeasurementListItem.displayName = 'MeasurementListItem';
 

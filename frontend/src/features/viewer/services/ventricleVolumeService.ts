@@ -52,7 +52,7 @@ export interface SinglePlaneVolumeResult {
 export interface BiplaneVolumeResult {
   method: 'biplane';
   volumeMl: number;
-  /** The shorter of the two long axes, per ASE. */
+  /** The longer measured LV length from A4C/A2C, per ASE chamber guidance. */
   longAxisMm: number;
   a4cLongAxisMm: number;
   a2cLongAxisMm: number;
@@ -100,7 +100,6 @@ export function findApex(contour: Point2D[], base: Point2D): Point2D | null {
   }
   return apex;
 }
-
 
 /**
  * Estimate the long axis of a traced apical contour, with no landmarks placed.
@@ -192,7 +191,7 @@ export function flipLongAxis(axis: LongAxis): LongAxis {
 export function buildLongAxis(
   contour: Point2D[],
   annulusA: Point2D,
-  annulusB: Point2D
+  annulusB: Point2D,
 ): LongAxis | null {
   const base = { x: (annulusA.x + annulusB.x) / 2, y: (annulusA.y + annulusB.y) / 2 };
   const apex = findApex(contour, base);
@@ -207,7 +206,7 @@ export function buildLongAxis(
 function contourChord(
   contour: Point2D[],
   origin: Point2D,
-  direction: Point2D
+  direction: Point2D,
 ): { min: Point2D; max: Point2D } | null {
   // Perpendicular to the long axis; the chord runs along it.
   const nx = -direction.y;
@@ -248,7 +247,7 @@ export function measureDisks(
   contour: Point2D[],
   axis: LongAxis,
   spacing: PixelSpacing,
-  diskCount: number = SIMPSON_DISK_COUNT
+  diskCount: number = SIMPSON_DISK_COUNT,
 ): DiskMeasurement[] {
   if (contour.length < 3 || diskCount < 1) return [];
 
@@ -291,7 +290,7 @@ export function singlePlaneVolume(
   contour: Point2D[],
   axis: LongAxis,
   spacing: PixelSpacing,
-  diskCount: number = SIMPSON_DISK_COUNT
+  diskCount: number = SIMPSON_DISK_COUNT,
 ): SinglePlaneVolumeResult | null {
   const disks = measureDisks(contour, axis, spacing, diskCount);
   if (disks.length === 0) return null;
@@ -302,7 +301,7 @@ export function singlePlaneVolume(
   const height = longAxisMm / diskCount;
   const volumeMm3 = disks.reduce(
     (sum, disk) => sum + (Math.PI / 4) * disk.diameterMm * disk.diameterMm * height,
-    0
+    0,
   );
 
   return {
@@ -324,14 +323,14 @@ export interface BiplaneInput {
  * Biplane Simpson's volume from matched A4C and A2C traces.
  *
  * Disks are paired by fractional position along each view's own long axis, so
- * disk *i* describes the same anatomical level in both views even when the two
- * traces differ slightly in length. The disk height uses the shorter of the two
- * long axes, per ASE.
+ * disk *i* describes the same fractional anatomical level in both views even
+ * when the two traces differ slightly in length. ASE chamber guidance specifies
+ * the longer measured LV length from A4C/A2C for the biplane calculation.
  */
 export function biplaneVolume(
   a4c: BiplaneInput,
   a2c: BiplaneInput,
-  diskCount: number = SIMPSON_DISK_COUNT
+  diskCount: number = SIMPSON_DISK_COUNT,
 ): BiplaneVolumeResult | null {
   const a4cDisks = measureDisks(a4c.contour, a4c.axis, a4c.spacing, diskCount);
   const a2cDisks = measureDisks(a2c.contour, a2c.axis, a2c.spacing, diskCount);
@@ -341,7 +340,7 @@ export function biplaneVolume(
   const a2cLongAxisMm = longAxisLengthMm(a2c.axis, a2c.spacing);
   if (a4cLongAxisMm <= 0 || a2cLongAxisMm <= 0) return null;
 
-  const longAxisMm = Math.min(a4cLongAxisMm, a2cLongAxisMm);
+  const longAxisMm = Math.max(a4cLongAxisMm, a2cLongAxisMm);
   const longer = Math.max(a4cLongAxisMm, a2cLongAxisMm);
   const height = longAxisMm / diskCount;
 

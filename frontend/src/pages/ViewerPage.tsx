@@ -121,6 +121,7 @@ import {
 
 // New modular viewer components
 import { MeasurementPanel } from '../features/viewer/components/MeasurementPanel';
+import { EchoQuantificationPanel } from '../features/viewer/components/EchoQuantificationPanel';
 import { AIResultsPanel, type PatientContext } from '../features/viewer/components/AIResultsPanel';
 import { MPRLayout } from '../features/viewer/components/MPR/MPRLayout';
 import { buildFrameIndex, type FrameIndex } from '../features/viewer/app/cine/frameIndex';
@@ -172,6 +173,10 @@ import {
 import { COPILOT_TEMPLATES, type CopilotRequirement } from '../features/viewer/domain/copilot';
 import { clamp, lerp } from '../features/viewer/domain/math';
 import { HORALIX_MEASUREMENT_OPTIONS } from '../features/viewer/domain/measurementOptions';
+import {
+  getEchoMeasurementProtocol,
+  protocolsForMeasurement,
+} from '../features/viewer/domain/echoMeasurementProtocol';
 import type { ViewerToolId } from '../features/viewer/domain/tools';
 import { inferEchoView, labelHasKeyword, normalizeLabel, normalizeText, parseOptionalNumber } from '../features/viewer/domain/text';
 import { normalizeTrackingPoints, resampleClosedPolygon } from '../features/viewer/domain/tracking';
@@ -184,6 +189,7 @@ import type {
   LineMeasurement as NewLineMeasurement,
   PolygonMeasurement as NewPolygonMeasurement,
   Point2D,
+  ClinicalMeasurementRole,
 } from '../features/viewer/types';
 import { isLineMeasurement, isPolygonMeasurement, smoothPolygon } from '../features/viewer/types';
 import { calculatePolygonAreaMm2, calculatePerimeterMm } from '../features/viewer/services/geometryService';
@@ -201,10 +207,16 @@ import type {
 } from '../features/viewer/hooks/useViewerPreferences';
 import { drawClipFrame } from '../features/viewer/infra/dicom/clipSheet';
 import { LvVolumePanel } from '../features/viewer/components/VolumePanel';
-import type { ContourOption } from '../features/viewer/components/VolumePanel';
-import { gateVolumeTools, findBiplanePartner } from '../features/viewer/services/viewGatingService';
+import type {
+  ContourOption,
+  LvQuantificationResult,
+} from '../features/viewer/components/VolumePanel';
+import { gateVolumeTools, normalizeView } from '../features/viewer/services/viewGatingService';
 import { analyseCardiacPhases } from '../features/viewer/services/cardiacPhaseService';
 import type { VolumeMethod } from '../features/viewer/services/ventricleVolumeService';
+import {
+  deriveLvLinearQuantification,
+} from '../features/viewer/services/echoQuantificationService';
 import { FreehandStrokeLayer } from '../features/viewer/components/Viewport/FreehandStrokeLayer';
 import {
   createStrokeState,
@@ -566,6 +578,9 @@ const ViewerPage: React.FC = () => {
   const [labelEditDialogOpen, setLabelEditDialogOpen] = useState(false);
   const [labelEditMeasurementId, setLabelEditMeasurementId] = useState<string | null>(null);
   const [labelEditValue, setLabelEditValue] = useState('');
+  const [labelEditClinicalRole, setLabelEditClinicalRole] =
+    useState<ClinicalMeasurementRole | null>(null);
+  const [labelEditSourceView, setLabelEditSourceView] = useState<string | null>(null);
 
   // EF Calculator dialog state
   const [efCalculatorOpen, setEfCalculatorOpen] = useState(false);
@@ -588,7 +603,6 @@ const ViewerPage: React.FC = () => {
     if (polygonSamplingPreset === 'sparse') return 8;
     return 4;
   }, [polygonSamplingPreset]);
-  const [efEdvMeasurementId, setEfEdvMeasurementId] = useState<string | null>(null);
   const [volumeMethod, setVolumeMethod] = useState<VolumeMethod>('biplane');
   const [volumeEdId, setVolumeEdId] = useState<string | null>(null);
   const [volumeEsId, setVolumeEsId] = useState<string | null>(null);
@@ -596,7 +610,10 @@ const ViewerPage: React.FC = () => {
   const [volumeEsIdB, setVolumeEsIdB] = useState<string | null>(null);
   const [patientHeightCm, setPatientHeightCm] = useState<number | null>(null);
   const [patientWeightKg, setPatientWeightKg] = useState<number | null>(null);
-  const [efEsvMeasurementId, setEfEsvMeasurementId] = useState<string | null>(null);
+  const [lvQuantificationResult, setLvQuantificationResult] =
+    useState<LvQuantificationResult | null>(null);
+  const [lvotVtiCm, setLvotVtiCm] = useState<number | null>(null);
+  const [heartRateBpm, setHeartRateBpm] = useState<number | null>(null);
 
   // New measurement store integration
   const measurementStore = useMeasurementStore();
@@ -1235,15 +1252,6 @@ const ViewerPage: React.FC = () => {
     [contextMeasurements]
   );
 
-  const lineMeasurements = useMemo(
-    () => contextMeasurements.filter((measurement) => isLineMeasurement(measurement)),
-    [contextMeasurements]
-  );
-  const polygonMeasurements = useMemo(
-    () => contextMeasurements.filter((measurement) => isPolygonMeasurement(measurement)),
-    [contextMeasurements]
-  );
-
   const findMeasurementByKeywords = useCallback(
     (keywords: string[], type: 'line' | 'polygon' | 'any') => {
       const match = normalizedMeasurements.find(({ measurement, normalizedLabel }) => {
@@ -1253,58 +1261,28 @@ const ViewerPage: React.FC = () => {
         return labelHasKeyword(normalizedLabel, keywords);
       });
       if (match?.measurement) return match.measurement;
-
-      if (type === 'line' && lineMeasurements.length === 1) {
-        return lineMeasurements[0];
-      }
-      if (type === 'polygon' && polygonMeasurements.length === 1) {
-        return polygonMeasurements[0];
-      }
-      if (type === 'any' && contextMeasurements.length === 1) {
-        return contextMeasurements[0];
-      }
-
       return null;
     },
-    [normalizedMeasurements, lineMeasurements, polygonMeasurements, contextMeasurements]
+    [normalizedMeasurements]
+  );
+
+  const lvLinearQuantification = useMemo(
+    () => deriveLvLinearQuantification(contextMeasurements, measurementStore.trackingData),
+    [contextMeasurements, measurementStore.trackingData]
   );
 
   const derivedMetrics = useMemo(() => {
-    const lvedd = findMeasurementByKeywords(
-      ['lvedd', 'lv end diastolic', 'lv end-diastolic', 'lv diastolic'],
-      'line'
-    );
-    const lvesd = findMeasurementByKeywords(
-      ['lvesd', 'lv end systolic', 'lv end-systolic', 'lv systolic'],
-      'line'
-    );
-    const edv = findMeasurementByKeywords(
-      ['edv', 'end diastolic volume', 'end-diastolic volume'],
-      'polygon'
-    );
-    const esv = findMeasurementByKeywords(
-      ['esv', 'end systolic volume', 'end-systolic volume'],
-      'polygon'
-    );
-
-    const efPercent =
-      edv && esv && isPolygonMeasurement(edv) && isPolygonMeasurement(esv) && edv.areaMm2 && esv.areaMm2 && edv.areaMm2 > 0
-        ? ((edv.areaMm2 - esv.areaMm2) / edv.areaMm2) * 100
-        : null;
-    const fsPercent =
-      lvedd && lvesd && isLineMeasurement(lvedd) && isLineMeasurement(lvesd) && lvedd.lengthMm && lvesd.lengthMm && lvedd.lengthMm > 0
-        ? ((lvedd.lengthMm - lvesd.lengthMm) / lvedd.lengthMm) * 100
-        : null;
-
     return {
-      lvedd,
-      lvesd,
-      edv,
-      esv,
-      efPercent,
-      fsPercent,
+      lveddMm: lvLinearQuantification.lveddMm,
+      lvesdMm: lvLinearQuantification.lvesdMm,
+      efPercent: lvQuantificationResult?.reportable
+        ? lvQuantificationResult.efPercent
+        : null,
+      edvMl: lvQuantificationResult?.reportable ? lvQuantificationResult.edvMl : null,
+      esvMl: lvQuantificationResult?.reportable ? lvQuantificationResult.esvMl : null,
+      fsPercent: lvLinearQuantification.fractionalShorteningPercent,
     };
-  }, [findMeasurementByKeywords]);
+  }, [lvLinearQuantification, lvQuantificationResult]);
 
   const copilotMatches = useMemo(() => {
     const derivedLookup: Record<string, number | null> = {
@@ -1363,14 +1341,19 @@ const ViewerPage: React.FC = () => {
     const studyLabelText = study?.study_description || 'Imaging study';
     lines.push(`Study: ${studyLabelText} (${modalityLabel}).`);
 
-    if (derivedMetrics.lvedd && isLineMeasurement(derivedMetrics.lvedd) && derivedMetrics.lvedd.lengthMm) {
-      lines.push(`LVEDD ${formatLength(derivedMetrics.lvedd.lengthMm, calibration)}.`);
+    if (derivedMetrics.lveddMm !== null) {
+      lines.push(`LVEDD ${formatLength(derivedMetrics.lveddMm, calibration)}.`);
     }
-    if (derivedMetrics.lvesd && isLineMeasurement(derivedMetrics.lvesd) && derivedMetrics.lvesd.lengthMm) {
-      lines.push(`LVESD ${formatLength(derivedMetrics.lvesd.lengthMm, calibration)}.`);
+    if (derivedMetrics.lvesdMm !== null) {
+      lines.push(`LVESD ${formatLength(derivedMetrics.lvesdMm, calibration)}.`);
     }
     if (derivedMetrics.efPercent !== null) {
-      lines.push(`Estimated EF ${derivedMetrics.efPercent.toFixed(1)}%.`);
+      lines.push(`Reviewed Simpson EF ${derivedMetrics.efPercent.toFixed(1)}%.`);
+    }
+    if (derivedMetrics.edvMl !== null && derivedMetrics.esvMl !== null) {
+      lines.push(
+        `Reviewed Simpson LVEDV ${derivedMetrics.edvMl.toFixed(0)} mL; LVESV ${derivedMetrics.esvMl.toFixed(0)} mL.`
+      );
     }
     if (derivedMetrics.fsPercent !== null) {
       lines.push(`Fractional shortening ${derivedMetrics.fsPercent.toFixed(1)}%.`);
@@ -5022,6 +5005,26 @@ const ViewerPage: React.FC = () => {
       });
     }
 
+    if (derivedMetrics.edvMl !== null && derivedMetrics.esvMl !== null) {
+      for (const [id, label, value] of [
+        ['derived-lvedv', 'Left ventricular end-diastolic volume (Simpson)', derivedMetrics.edvMl],
+        ['derived-lvesv', 'Left ventricular end-systolic volume (Simpson)', derivedMetrics.esvMl],
+      ] as const) {
+        observationEntries.push({
+          fullUrl: `urn:uuid:${id}`,
+          resource: {
+            resourceType: 'Observation',
+            id,
+            status: 'final',
+            code: { text: label },
+            subject: { display: subjectDisplay },
+            effectiveDateTime: toIsoDate(study?.study_date),
+            valueQuantity: { value: Number(value.toFixed(1)), unit: 'mL' },
+          },
+        });
+      }
+    }
+
     if (derivedMetrics.fsPercent !== null) {
       observationEntries.push({
         fullUrl: 'urn:uuid:derived-fs',
@@ -5069,6 +5072,8 @@ const ViewerPage: React.FC = () => {
   }, [
     contextMeasurements,
     derivedMetrics.efPercent,
+    derivedMetrics.edvMl,
+    derivedMetrics.esvMl,
     derivedMetrics.fsPercent,
     patientDetails?.patient_name,
     study?.patient_name,
@@ -5111,24 +5116,95 @@ const ViewerPage: React.FC = () => {
     const measurement = measurementStore.getMeasurement(measurementId);
     setLabelEditMeasurementId(measurementId);
     setLabelEditValue(measurement?.label || '');
+    setLabelEditClinicalRole(measurement?.clinicalRole ?? null);
+    setLabelEditSourceView(measurement?.sourceView ?? null);
     setLabelEditDialogOpen(true);
   }, [measurementStore]);
 
   const handleSaveLabelEdit = useCallback(() => {
     if (labelEditMeasurementId) {
-      measurementStore.updateMeasurement(labelEditMeasurementId, { label: labelEditValue || null });
-      setSnackbarMessage('Measurement label updated.');
+      const protocol = getEchoMeasurementProtocol(labelEditClinicalRole);
+      const measurement = measurementStore.getMeasurement(labelEditMeasurementId);
+      const instanceUid =
+        (measurement ? resolveMeasurementInstanceUid(measurement) : null) ??
+        currentInstanceUid ??
+        null;
+      const latestCardiacOutput = [...(aiResults?.jobs ?? [])]
+        .filter((job) => job.task_type === 'cardiac')
+        .sort((a, b) => Date.parse(a.completed_at ?? '') - Date.parse(b.completed_at ?? ''))
+        .at(-1)?.results?.output as
+        | {
+            view_predictions?: Record<string, string>;
+            view_confidences?: Record<string, number>;
+          }
+        | undefined;
+      const aiSourceView = instanceUid
+        ? latestCardiacOutput?.view_predictions?.[instanceUid] ?? null
+        : null;
+      const sourceView = labelEditSourceView ?? aiSourceView ?? measurement?.sourceView ?? null;
+      const viewConfidence =
+        labelEditSourceView && labelEditSourceView !== aiSourceView
+          ? null
+          : instanceUid
+            ? latestCardiacOutput?.view_confidences?.[instanceUid] ??
+              measurement?.viewConfidence ??
+              null
+            : measurement?.viewConfidence ?? null;
+      measurementStore.updateMeasurement(labelEditMeasurementId, {
+        label: labelEditValue || protocol?.label || null,
+        clinicalRole: labelEditClinicalRole,
+        cardiacPhase: protocol?.phase ?? null,
+        sourceView,
+        viewConfidence,
+        reviewStatus: 'unreviewed',
+      });
+      setSnackbarMessage(
+        protocol ? `${protocol.shortLabel} protocol assigned. Review view and placement.` : 'Measurement label updated.'
+      );
     }
     setLabelEditDialogOpen(false);
     setLabelEditMeasurementId(null);
     setLabelEditValue('');
-  }, [labelEditMeasurementId, labelEditValue, measurementStore]);
+    setLabelEditClinicalRole(null);
+    setLabelEditSourceView(null);
+  }, [
+    aiResults?.jobs,
+    currentInstanceUid,
+    labelEditClinicalRole,
+    labelEditMeasurementId,
+    labelEditSourceView,
+    labelEditValue,
+    measurementStore,
+    resolveMeasurementInstanceUid,
+  ]);
 
   const handleCancelLabelEdit = useCallback(() => {
     setLabelEditDialogOpen(false);
     setLabelEditMeasurementId(null);
     setLabelEditValue('');
+    setLabelEditClinicalRole(null);
+    setLabelEditSourceView(null);
   }, []);
+
+  const labelEditMeasurement = labelEditMeasurementId
+    ? newMeasurements.get(labelEditMeasurementId) ?? null
+    : null;
+  const labelEditProtocols = labelEditMeasurement
+    ? protocolsForMeasurement(labelEditMeasurement)
+    : [];
+  const selectedLabelEditProtocol = getEchoMeasurementProtocol(labelEditClinicalRole);
+
+  const handleAcceptClinicalMeasurements = useCallback(
+    (measurementIds: string[]) => {
+      measurementIds.forEach((id) =>
+        measurementStore.updateMeasurement(id, { reviewStatus: 'accepted' })
+      );
+      setSnackbarMessage(
+        `${measurementIds.length} clinical measurement${measurementIds.length === 1 ? '' : 's'} accepted.`
+      );
+    },
+    [measurementStore]
+  );
 
   const handleFullscreen = async () => {
     try {
@@ -5548,6 +5624,16 @@ const ViewerPage: React.FC = () => {
     return predictions as Record<string, string>;
   }, [latestCardiacJob]);
 
+  const aiViewConfidences = useMemo(() => {
+    const output = latestCardiacJob?.results?.output as
+      | { view_confidences?: Record<string, number> }
+      | undefined;
+    if (!output || typeof output !== 'object') return {} as Record<string, number>;
+    const confidences = output.view_confidences;
+    if (!confidences || typeof confidences !== 'object') return {} as Record<string, number>;
+    return confidences as Record<string, number>;
+  }, [latestCardiacJob]);
+
   const getAiViewLabelForInstance = useCallback(
     (instanceUid?: string | null) => {
       if (!instanceUid) return null;
@@ -5555,6 +5641,15 @@ const ViewerPage: React.FC = () => {
       return typeof label === 'string' && label.trim().length > 0 ? label : null;
     },
     [aiViewPredictions]
+  );
+
+  const getAiViewConfidenceForInstance = useCallback(
+    (instanceUid?: string | null) => {
+      if (!instanceUid) return null;
+      const confidence = aiViewConfidences[instanceUid];
+      return typeof confidence === 'number' && Number.isFinite(confidence) ? confidence : null;
+    },
+    [aiViewConfidences]
   );
 
   const getAiViewLabelForSeries = useCallback(
@@ -5576,6 +5671,10 @@ const ViewerPage: React.FC = () => {
   const activeAiViewLabel = useMemo(
     () => getAiViewLabelForInstance(activeInstanceUid),
     [activeInstanceUid, getAiViewLabelForInstance]
+  );
+  const activeAiViewConfidence = useMemo(
+    () => getAiViewConfidenceForInstance(activeInstanceUid),
+    [activeInstanceUid, getAiViewConfidenceForInstance]
   );
 
   // Traced contours offered as ED/ES sources for Simpson's method. Each carries
@@ -5599,6 +5698,14 @@ const ViewerPage: React.FC = () => {
         instanceUid ? instancesByUid.get(instanceUid) ?? instanceCacheRef.current.get(instanceUid) : null
       );
       const track = measurementStore.trackingData.get(measurement.id);
+      const provenance: ContourOption['provenance'] = track
+        ? 'tracked'
+        : measurement.label === 'Smart Segment'
+          ? 'ai'
+          : 'manual';
+      const isLvEndocardialRole =
+        measurement.clinicalRole === 'lv_endocardial_ed' ||
+        measurement.clinicalRole === 'lv_endocardial_es';
 
       options.push({
         id: measurement.id,
@@ -5607,9 +5714,14 @@ const ViewerPage: React.FC = () => {
         calibration: contourCalibration,
         instanceUid,
         frameIndex: null,
-        view: getAiViewLabelForInstance(instanceUid),
-        viewConfidence: null,
-        provenance: track ? 'tracked' : measurement.label === 'Smart Segment' ? 'ai' : 'manual',
+        beatKey: null,
+        view: measurement.sourceView ?? getAiViewLabelForInstance(instanceUid),
+        viewConfidence:
+          measurement.viewConfidence ?? getAiViewConfidenceForInstance(instanceUid),
+        phase: measurement.cardiacPhase ?? null,
+        reviewStatus: measurement.reviewStatus ?? 'unreviewed',
+        hasAnnulusEndpoints: isLvEndocardialRole && provenance !== 'ai',
+        provenance,
       });
 
       // A tracked contour also offers its own ED and ES frames, chosen within a
@@ -5637,8 +5749,13 @@ const ViewerPage: React.FC = () => {
               calibration: contourCalibration,
               instanceUid,
               frameIndex,
-              view: getAiViewLabelForInstance(instanceUid),
-              viewConfidence: null,
+              beatKey: `${beat.startIndex}:${beat.endIndex}`,
+              view: measurement.sourceView ?? getAiViewLabelForInstance(instanceUid),
+              viewConfidence:
+                measurement.viewConfidence ?? getAiViewConfidenceForInstance(instanceUid),
+              phase: phase === 'ED' ? 'end-diastole' : 'end-systole',
+              reviewStatus: 'unreviewed',
+              hasAnnulusEndpoints: isLvEndocardialRole,
               provenance: 'tracked',
             });
           }
@@ -5654,51 +5771,62 @@ const ViewerPage: React.FC = () => {
     currentInstanceUid,
     measurementStore.trackingData,
     getAiViewLabelForInstance,
+    getAiViewConfidenceForInstance,
   ]);
 
-  // Whether Simpson's method applies to the cine on screen.
+  const bestApicalVolumeView = useMemo(() => {
+    const candidates = (selectedSeries?.instances ?? [])
+      .map((instance) => ({
+        view: getAiViewLabelForInstance(instance.sop_instance_uid),
+        confidence: getAiViewConfidenceForInstance(instance.sop_instance_uid),
+      }))
+      .filter((candidate) => {
+        const view = normalizeView(candidate.view);
+        return view === 'A4C' || view === 'A2C';
+      })
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+    return candidates[0] ?? { view: activeAiViewLabel, confidence: activeAiViewConfidence };
+  }, [
+    activeAiViewConfidence,
+    activeAiViewLabel,
+    getAiViewConfidenceForInstance,
+    getAiViewLabelForInstance,
+    selectedSeries,
+  ]);
+
+  // Whether Simpson's method applies anywhere in the selected echo series.
   const volumeGate = useMemo(
     () =>
       gateVolumeTools({
-        view: activeAiViewLabel,
-        // The classifier reports per-instance labels; a label present at all
-        // means it cleared the backend's own gate.
-        confidence: activeAiViewLabel ? 1 : null,
-        calibrated: calibration.spacing !== null,
+        view: bestApicalVolumeView.view,
+        confidence: bestApicalVolumeView.confidence,
+        calibrated:
+          calibration.spacing !== null ||
+          volumeContourOptions.some((option) => option.calibration.spacing !== null),
       }),
-    [activeAiViewLabel, calibration]
+    [bestApicalVolumeView, calibration.spacing, volumeContourOptions]
   );
 
-  // The instance that would complete a biplane pair with the current view.
-  const biplanePartnerUid = useMemo(() => {
-    if (!selectedSeries?.instances?.length) return null;
-    const partner = findBiplanePartner(
-      activeAiViewLabel,
-      selectedSeries.instances.map((instance) => ({
-        instanceUid: instance.sop_instance_uid,
-        view: getAiViewLabelForInstance(instance.sop_instance_uid),
-        confidence: getAiViewLabelForInstance(instance.sop_instance_uid) ? 1 : null,
-      }))
-    );
-    return partner?.instanceUid ?? null;
-  }, [selectedSeries, activeAiViewLabel, getAiViewLabelForInstance]);
-
-  // When the study holds a complementary apical view, preselect its contours for
-  // the second plane so biplane is one click rather than a hunt through a list.
+  // Fill each biplane slot by its actual view and phase, regardless of which
+  // cine happened to be active when the calculator opened.
   useEffect(() => {
-    if (volumeMethod !== 'biplane' || !biplanePartnerUid) return;
-    if (volumeEdIdB || volumeEsIdB) return;
-
-    const partnerContours = volumeContourOptions.filter(
-      (option) => option.instanceUid === biplanePartnerUid
-    );
-    if (partnerContours.length === 0) return;
-
-    const ed = partnerContours.find((option) => option.label.endsWith('ED'));
-    const es = partnerContours.find((option) => option.label.endsWith('ES'));
-    if (ed) setVolumeEdIdB(ed.id);
-    if (es) setVolumeEsIdB(es.id);
-  }, [volumeMethod, biplanePartnerUid, volumeContourOptions, volumeEdIdB, volumeEsIdB]);
+    if (volumeMethod !== 'biplane') return;
+    const findSlot = (view: 'A4C' | 'A2C', phase: 'end-diastole' | 'end-systole') =>
+      volumeContourOptions.find(
+        (option) => normalizeView(option.view) === view && option.phase === phase
+      );
+    if (!volumeEdId) setVolumeEdId(findSlot('A4C', 'end-diastole')?.id ?? null);
+    if (!volumeEsId) setVolumeEsId(findSlot('A4C', 'end-systole')?.id ?? null);
+    if (!volumeEdIdB) setVolumeEdIdB(findSlot('A2C', 'end-diastole')?.id ?? null);
+    if (!volumeEsIdB) setVolumeEsIdB(findSlot('A2C', 'end-systole')?.id ?? null);
+  }, [
+    volumeMethod,
+    volumeContourOptions,
+    volumeEdId,
+    volumeEsId,
+    volumeEdIdB,
+    volumeEsIdB,
+  ]);
 
 
   const handleTrackMeasurement = useCallback(async () => {
@@ -8708,7 +8836,7 @@ const ViewerPage: React.FC = () => {
 
       {/* Label Edit Dialog */}
       <Dialog open={labelEditDialogOpen} onClose={handleCancelLabelEdit} maxWidth="sm" fullWidth>
-        <DialogTitle>Rename Measurement</DialogTitle>
+        <DialogTitle>Measurement Protocol</DialogTitle>
         <DialogContent>
           <TextField
             autoFocus
@@ -8719,7 +8847,7 @@ const ViewerPage: React.FC = () => {
             value={labelEditValue}
             onChange={(e) => setLabelEditValue(e.target.value)}
             placeholder="e.g., LV End-Diastolic, LVOT Diameter"
-            helperText="Enter a descriptive name or select from presets below"
+            helperText="The clinical role, not this free-text label, controls calculations."
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 handleSaveLabelEdit();
@@ -8727,36 +8855,70 @@ const ViewerPage: React.FC = () => {
             }}
             sx={{ mb: 2 }}
           />
-          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-            Echocardiography Presets:
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            Clinical role
           </Typography>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
-            {/* LV Dimensions */}
-            <Chip label="LVEDD" size="small" onClick={() => setLabelEditValue('LV End-Diastolic Diameter')} />
-            <Chip label="LVESD" size="small" onClick={() => setLabelEditValue('LV End-Systolic Diameter')} />
-            <Chip label="LVEDV" size="small" onClick={() => setLabelEditValue('LV End-Diastolic Volume')} />
-            <Chip label="LVESV" size="small" onClick={() => setLabelEditValue('LV End-Systolic Volume')} />
-            <Chip label="IVSd" size="small" onClick={() => setLabelEditValue('Interventricular Septum (Diastole)')} />
-            <Chip label="PWd" size="small" onClick={() => setLabelEditValue('Posterior Wall (Diastole)')} />
+          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.75, mb: 2 }}>
+            {labelEditProtocols.map((protocol) => (
+              <Chip
+                key={protocol.role}
+                label={protocol.shortLabel}
+                size="small"
+                color={labelEditClinicalRole === protocol.role ? 'primary' : 'default'}
+                variant={labelEditClinicalRole === protocol.role ? 'filled' : 'outlined'}
+                onClick={() => {
+                  setLabelEditClinicalRole(protocol.role);
+                  setLabelEditValue(protocol.label);
+                  if (protocol.allowedViews.length === 1) {
+                    setLabelEditSourceView(protocol.allowedViews[0]);
+                  } else if (
+                    !labelEditSourceView ||
+                    !protocol.allowedViews.some((view) => view === labelEditSourceView)
+                  ) {
+                    setLabelEditSourceView(null);
+                  }
+                }}
+              />
+            ))}
+            <Chip
+              label="No clinical role"
+              size="small"
+              variant={labelEditClinicalRole === null ? 'filled' : 'outlined'}
+              onClick={() => {
+                setLabelEditClinicalRole(null);
+                setLabelEditSourceView(null);
+              }}
+            />
           </Box>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 1 }}>
-            {/* Other chambers */}
-            <Chip label="LA" size="small" onClick={() => setLabelEditValue('Left Atrium Diameter')} />
-            <Chip label="RA" size="small" onClick={() => setLabelEditValue('Right Atrium')} />
-            <Chip label="RV" size="small" onClick={() => setLabelEditValue('Right Ventricle')} />
-            <Chip label="Ao Root" size="small" onClick={() => setLabelEditValue('Aortic Root')} />
-            <Chip label="LVOT" size="small" onClick={() => setLabelEditValue('LVOT Diameter')} />
-            <Chip label="TAPSE" size="small" onClick={() => setLabelEditValue('TAPSE')} />
-          </Box>
-          <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-            {/* Valves */}
-            <Chip label="MV" size="small" onClick={() => setLabelEditValue('Mitral Valve')} />
-            <Chip label="AV" size="small" onClick={() => setLabelEditValue('Aortic Valve')} />
-            <Chip label="TV" size="small" onClick={() => setLabelEditValue('Tricuspid Valve')} />
-            <Chip label="PV" size="small" onClick={() => setLabelEditValue('Pulmonary Valve')} />
-            <Chip label="MVA" size="small" onClick={() => setLabelEditValue('Mitral Valve Area')} />
-            <Chip label="AVA" size="small" onClick={() => setLabelEditValue('Aortic Valve Area')} />
-          </Box>
+          {selectedLabelEditProtocol && (
+            <Stack spacing={1.5}>
+              <FormControl fullWidth size="small">
+                <InputLabel id="measurement-source-view-label">Confirmed source view</InputLabel>
+                <Select
+                  labelId="measurement-source-view-label"
+                  label="Confirmed source view"
+                  value={labelEditSourceView ?? ''}
+                  onChange={(event) =>
+                    setLabelEditSourceView(event.target.value ? String(event.target.value) : null)
+                  }
+                >
+                  <MenuItem value="">
+                    <em>Not confirmed</em>
+                  </MenuItem>
+                  {selectedLabelEditProtocol.allowedViews.map((view) => (
+                    <MenuItem key={view} value={view}>{view}</MenuItem>
+                  ))}
+                </Select>
+                <FormHelperText>
+                  EchoPrime may prefill this; the operator remains responsible for confirmation.
+                </FormHelperText>
+              </FormControl>
+              <Alert severity="info" variant="outlined">
+                <AlertTitle>{selectedLabelEditProtocol.phase}</AlertTitle>
+                {selectedLabelEditProtocol.instruction}
+              </Alert>
+            </Stack>
+          )}
         </DialogContent>
         <DialogActions>
           <Button onClick={handleCancelLabelEdit}>Cancel</Button>
@@ -8799,100 +8961,39 @@ const ViewerPage: React.FC = () => {
                 weightKg={patientWeightKg}
                 onHeightChange={setPatientHeightCm}
                 onWeightChange={setPatientWeightKg}
+                onResultChange={setLvQuantificationResult}
               />
             </Box>
 
             <Divider orientation="vertical" flexItem />
 
-            {/* FS Calculator Section */}
-            <Box sx={{ flex: 1, minWidth: 280 }}>
-              <Typography variant="h6" gutterBottom>
-                Fractional Shortening (FS)
-              </Typography>
-              <Alert severity="info" sx={{ mb: 2 }}>
-                <strong>FS = (LVEDD - LVESD) / LVEDD x 100%</strong>
-                <br />
-                Select line measurements
-              </Alert>
-
-              <Typography variant="subtitle2" gutterBottom>
-                LV End-Diastolic (LVEDD):
-              </Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {contextMeasurements
-                  .filter((m) => m.type === 'line')
-                  .map((m) => (
-                    <Chip
-                      key={m.id}
-                      label={`${m.label || 'Line'} (${('lengthMm' in m && m.lengthMm) ? m.lengthMm.toFixed(1) : 'N/A'} mm)`}
-                      size="small"
-                      color={efEdvMeasurementId === `fs_ed_${m.id}` ? 'primary' : 'default'}
-                      onClick={() => setEfEdvMeasurementId(`fs_ed_${m.id}`)}
-                    />
-                  ))}
-                {contextMeasurements.filter((m) => m.type === 'line').length === 0 && (
-                  <Typography variant="body2" color="text.secondary">
-                    Draw line measurements first
-                  </Typography>
-                )}
-              </Box>
-
-              <Typography variant="subtitle2" gutterBottom>
-                LV End-Systolic (LVESD):
-              </Typography>
-              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, mb: 2 }}>
-                {contextMeasurements
-                  .filter((m) => m.type === 'line')
-                  .map((m) => (
-                    <Chip
-                      key={m.id}
-                      label={`${m.label || 'Line'} (${('lengthMm' in m && m.lengthMm) ? m.lengthMm.toFixed(1) : 'N/A'} mm)`}
-                      size="small"
-                      color={efEsvMeasurementId === `fs_es_${m.id}` ? 'secondary' : 'default'}
-                      onClick={() => setEfEsvMeasurementId(`fs_es_${m.id}`)}
-                    />
-                  ))}
-              </Box>
-
-              {/* FS Result */}
-              {efEdvMeasurementId?.startsWith('fs_ed_') && efEsvMeasurementId?.startsWith('fs_es_') && (() => {
-                const edId = efEdvMeasurementId.replace('fs_ed_', '');
-                const esId = efEsvMeasurementId.replace('fs_es_', '');
-                const lvedd = contextMeasurements.find((m) => m.id === edId);
-                const lvesd = contextMeasurements.find((m) => m.id === esId);
-                const edd = lvedd && 'lengthMm' in lvedd ? lvedd.lengthMm : null;
-                const esd = lvesd && 'lengthMm' in lvesd ? lvesd.lengthMm : null;
-                if (edd && esd && edd > 0) {
-                  const fs = ((edd - esd) / edd) * 100;
-                  return (
-                    <Paper sx={{ p: 2, bgcolor: fs >= 25 ? 'success.dark' : fs >= 15 ? 'warning.dark' : 'error.dark', color: 'white' }}>
-                      <Typography variant="h4" align="center">
-                        FS: {fs.toFixed(1)}%
-                      </Typography>
-                      <Typography variant="body2" align="center" sx={{ mt: 1 }}>
-                        LVEDD: {formatLength(edd, calibration)} | LVESD: {formatLength(esd, calibration)}
-                      </Typography>
-                      <Typography variant="caption" align="center" sx={{ display: 'block', mt: 1 }}>
-                        {fs >= 25 ? 'OK Normal (>=25%)' :
-                         fs >= 15 ? 'WARN Mildly Reduced (15-24%)' :
-                         'WARN Severely Reduced (<15%)'}
-                      </Typography>
-                    </Paper>
-                  );
-                }
-                return null;
-              })()}
+            <Box sx={{ flex: 1, minWidth: 320 }}>
+              <EchoQuantificationPanel
+                measurements={contextMeasurements}
+                trackingById={measurementStore.trackingData}
+                heightCm={patientHeightCm}
+                weightKg={patientWeightKg}
+                lvotVtiCm={lvotVtiCm}
+                heartRateBpm={heartRateBpm}
+                onLvotVtiChange={setLvotVtiCm}
+                onHeartRateChange={setHeartRateBpm}
+                onAcceptMeasurements={handleAcceptClinicalMeasurements}
+              />
             </Box>
           </Box>
         </DialogContent>
         <DialogActions>
           <Button
             onClick={() => {
-              setEfEdvMeasurementId(null);
-              setEfEsvMeasurementId(null);
+              setVolumeEdId(null);
+              setVolumeEsId(null);
+              setVolumeEdIdB(null);
+              setVolumeEsIdB(null);
+              setLvotVtiCm(null);
+              setHeartRateBpm(null);
             }}
           >
-            Clear All
+            Clear selections
           </Button>
           <Button onClick={() => setEfCalculatorOpen(false)} variant="contained">
             Close

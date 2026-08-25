@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 These change numbers a clinician would act on.
 
+- **Clinical roles now gate every echo calculation.** Measurements persist an
+  operator-confirmed role, cardiac phase, source view, EchoPrime confidence,
+  and review state. The old fallback that treated the only line or polygon on
+  screen as whichever LV input was missing is gone, as is the remaining
+  area-ratio EF path. The measurement panel exposes protocol/review status.
+- **Simpson biplane now enforces an A4C/A2C ED/ES protocol.** Pickers filter by
+  view and phase; ED/ES must come from the same cine and tracked beat; the two
+  planes must be different cines; every contour must be calibrated; low model
+  confidence, unclassified views, and possible foreshortening are explicit.
+  Manual hinge-to-hinge traces use their endpoints as mitral-annular landmarks,
+  and the biplane disk height now uses the longer measured LV length specified
+  by ASE chamber guidance. EF/LVEDV/LVESV reach Copilot/FHIR only after review.
+- **PLAX and LVOT workflows are protocol-aware.** A tracked LVID cycle selects
+  ED and ES from one beat; separate reviewed LVEDD/LVESD calipers remain
+  supported. The viewer derives fractional shortening, ASE cube-formula LV
+  mass, and relative wall thickness. A reviewed LVOT diameter plus a manually
+  verified PW Doppler VTI produces area, stroke volume, cardiac output, SVI,
+  and cardiac index. Doppler VTI is not falsely calibrated with spatial mm/px.
+- **EchoPrime confidence is no longer replaced with 100%.** Per-instance
+  `view_confidences` now flows into gating and partner selection, while the
+  operator can explicitly confirm an allowed view when classification is low
+  confidence or unavailable.
+- **New clinical results no longer emit Teichholz EF.** The compatibility helper
+  remains for reading legacy results, but the AI measurement stage no longer
+  promotes a single-diameter fixed-shape estimate into current findings.
+
 - **Ultrasound images are now spatially calibrated.** The DICOM parser read only
   `PixelSpacing` (0028,0030), which echo studies usually do not carry - their
   calibration lives in `SequenceOfUltrasoundRegions`. `instance.pixel_spacing`
