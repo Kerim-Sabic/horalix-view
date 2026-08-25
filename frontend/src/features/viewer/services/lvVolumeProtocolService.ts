@@ -15,6 +15,11 @@ export interface LvContourProtocolInput {
   viewConfidence: number | null;
   phase: CardiacPhase | null;
   reviewStatus: MeasurementReviewStatus;
+  /** Original contour that produced an automatically tracked phase. */
+  sourceMeasurementId?: string;
+  phaseSource?: 'manual' | 'ai' | 'tracked-auto';
+  trackingQuality?: number | null;
+  cycleLengthFrames?: number | null;
 }
 
 export interface LvVolumeSelectionSet {
@@ -67,6 +72,39 @@ function assessContour(
       `${label} EchoPrime view confidence is ${(contour.viewConfidence * 100).toFixed(0)}%; confirm manually.`,
     );
   }
+  if (contour.phaseSource === 'tracked-auto') {
+    if (
+      contour.trackingQuality !== null &&
+      contour.trackingQuality !== undefined &&
+      contour.trackingQuality < 0.8
+    ) {
+      cautions.push(
+        `${label} contour tracking retained ${(contour.trackingQuality * 100).toFixed(0)}% valid frames; inspect the border through the selected beat.`,
+      );
+    }
+    if (contour.cycleLengthFrames === null) {
+      cautions.push(
+        `${label} cardiac periodicity was not confidently detected; verify valve timing.`,
+      );
+    }
+  }
+}
+
+function assessSameTrackedSource(
+  ed: LvContourProtocolInput | null,
+  es: LvContourProtocolInput | null,
+  label: string,
+  blocking: string[],
+): void {
+  if (!ed || !es) return;
+  if (ed.phaseSource !== 'tracked-auto' && es.phaseSource !== 'tracked-auto') return;
+  if (!ed.sourceMeasurementId || !es.sourceMeasurementId) {
+    blocking.push(`${label} automatic ED and ES are missing their source contour.`);
+    return;
+  }
+  if (ed.sourceMeasurementId !== es.sourceMeasurementId) {
+    blocking.push(`${label} automatic ED and ES must come from the same tracked contour.`);
+  }
 }
 
 export function assessLvVolumeProtocol(
@@ -90,6 +128,7 @@ export function assessLvVolumeProtocol(
     blocking.push(`${primaryView} ED and ES cannot be the same contour.`);
   }
   if (selections.a4cEd && selections.a4cEs) {
+    assessSameTrackedSource(selections.a4cEd, selections.a4cEs, primaryView, blocking);
     if (
       selections.a4cEd.beatKey &&
       selections.a4cEs.beatKey &&
@@ -115,6 +154,7 @@ export function assessLvVolumeProtocol(
       blocking.push('A2C ED and ES cannot be the same contour.');
     }
     if (selections.a2cEd && selections.a2cEs) {
+      assessSameTrackedSource(selections.a2cEd, selections.a2cEs, 'A2C', blocking);
       if (
         selections.a2cEd.beatKey &&
         selections.a2cEs.beatKey &&

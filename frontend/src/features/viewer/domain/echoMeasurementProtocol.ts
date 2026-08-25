@@ -72,6 +72,17 @@ export const ECHO_MEASUREMENT_PROTOCOLS: readonly EchoMeasurementProtocol[] = [
     tracked: false,
   },
   {
+    role: 'lv_endocardial_cycle',
+    shortLabel: 'LV auto ED/ES',
+    label: 'LV endocardial contour · tracked cardiac cycle',
+    geometry: 'polygon',
+    phase: 'cycle',
+    allowedViews: ['A4C', 'A2C'],
+    instruction:
+      'Trace once from one mitral hinge through the compacted endocardial border and apex to the opposite hinge. The viewer tracks the contour through one beat and proposes the largest cavity as ED and the smallest as ES; verify both frames before reporting.',
+    tracked: true,
+  },
+  {
     role: 'lv_endocardial_ed',
     shortLabel: 'LV ED contour',
     label: 'LV endocardial contour · end-diastole',

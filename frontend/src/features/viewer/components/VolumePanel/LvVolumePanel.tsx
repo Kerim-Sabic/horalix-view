@@ -1,9 +1,14 @@
 import {
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Alert,
   AlertTitle,
   Box,
+  Button,
   Checkbox,
   Chip,
+  CircularProgress,
   Divider,
   FormControl,
   FormControlLabel,
@@ -18,6 +23,12 @@ import {
   Tooltip,
   Typography,
 } from '@mui/material';
+import {
+  AutoFixHigh as AutoFixHighIcon,
+  CheckCircle as CheckCircleIcon,
+  Draw as DrawIcon,
+  ExpandMore as ExpandMoreIcon,
+} from '@mui/icons-material';
 import React, { useEffect, useMemo, useState } from 'react';
 
 import type { Calibration } from '../../services/calibrationService';
@@ -35,23 +46,17 @@ import {
 import type { VolumeMethod, VolumeResult } from '../../services/ventricleVolumeService';
 import type { GateResult } from '../../services/viewGatingService';
 import { assessLvVolumeProtocol, contourMatchesSlot } from '../../services/lvVolumeProtocolService';
-import type { CardiacPhase, MeasurementReviewStatus, Point2D } from '../../types';
+import { getAutoLvViewState, selectBestAutoLvPhases } from '../../services/autoLvWorkflowService';
+import type {
+  AutoLvContourInput,
+  AutoLvPhasePair,
+  AutoLvViewState,
+  LvAutoView,
+} from '../../services/autoLvWorkflowService';
 
 /** A traced contour offered as an ED or ES source. */
-export interface ContourOption {
-  id: string;
+export interface ContourOption extends AutoLvContourInput {
   label: string;
-  points: Point2D[];
-  /** Calibration for the instance this contour belongs to. */
-  calibration: Calibration;
-  instanceUid: string | null;
-  frameIndex: number | null;
-  beatKey: string | null;
-  /** EchoPrime view label for the instance this was traced on. */
-  view: string | null;
-  viewConfidence: number | null;
-  phase: CardiacPhase | null;
-  reviewStatus: MeasurementReviewStatus;
   /** True when first/last trace points are the two mitral annular hinges. */
   hasAnnulusEndpoints: boolean;
   /** Whether the contour was drawn, tracked, or produced by a model. */
@@ -84,6 +89,9 @@ export interface LvVolumePanelProps {
   onHeightChange: (value: number | null) => void;
   onWeightChange: (value: number | null) => void;
   onResultChange?: (result: LvQuantificationResult | null) => void;
+  trackingMeasurementId: string | null;
+  onStartAutoTrace: (view: LvAutoView) => void;
+  onJumpToFrame: (instanceUid: string | null, frameIndex: number | null) => void;
 }
 
 export interface LvQuantificationResult {
@@ -112,8 +120,7 @@ const formatMm = (value: number | null | undefined) =>
 const axisForContour = (contour: ContourOption) => {
   const first = contour.points[0];
   const last = contour.points[contour.points.length - 1];
-  const hasDistinctEndpoints =
-    first && last && Math.hypot(last.x - first.x, last.y - first.y) > 2;
+  const hasDistinctEndpoints = first && last && Math.hypot(last.x - first.x, last.y - first.y) > 2;
   return contour.hasAnnulusEndpoints && hasDistinctEndpoints
     ? buildLongAxis(contour.points, first, last)
     : estimateLongAxisFromContour(contour.points);
@@ -169,8 +176,20 @@ export const LvVolumePanel: React.FC<LvVolumePanelProps> = ({
   onHeightChange,
   onWeightChange,
   onResultChange,
+  trackingMeasurementId,
+  onStartAutoTrace,
+  onJumpToFrame,
 }) => {
   const byId = useMemo(() => new Map(contours.map((contour) => [contour.id, contour])), [contours]);
+  const autoSelection = useMemo(() => selectBestAutoLvPhases(contours), [contours]);
+  const a4cAutoState = useMemo(
+    () => getAutoLvViewState(contours, 'A4C', trackingMeasurementId),
+    [contours, trackingMeasurementId],
+  );
+  const a2cAutoState = useMemo(
+    () => getAutoLvViewState(contours, 'A2C', trackingMeasurementId),
+    [contours, trackingMeasurementId],
+  );
 
   const compute = React.useCallback(
     (primaryId: string | null, secondaryId: string | null): VolumeResult | null => {
@@ -239,6 +258,10 @@ export const LvVolumePanel: React.FC<LvVolumePanelProps> = ({
   );
   const primaryView: 'A4C' | 'A2C' =
     method === 'single-plane' && gate.view === 'A2C' ? 'A2C' : 'A4C';
+  const automaticPhasesReady =
+    method === 'biplane'
+      ? Boolean(autoSelection.a4c && autoSelection.a2c)
+      : Boolean(primaryView === 'A2C' ? autoSelection.a2c : autoSelection.a4c);
   const protocol = useMemo(
     () => assessLvVolumeProtocol(method, selections, primaryView),
     [method, primaryView, selections],
@@ -342,6 +365,116 @@ export const LvVolumePanel: React.FC<LvVolumePanelProps> = ({
     return Array.from(new Set(labels)).join('; ');
   }, [byId, calibration, edContourId, esContourId, edContourIdB, esContourIdB, method]);
 
+  const applyAutomaticPair = (pair: AutoLvPhasePair) => {
+    if (method === 'single-plane' || pair.view === 'A4C') {
+      onEdContourChange(pair.ed.id);
+      onEsContourChange(pair.es.id);
+      return;
+    }
+    onEdContourBChange(pair.ed.id);
+    onEsContourBChange(pair.es.id);
+  };
+
+  const automaticPairIsSelected = (pair: AutoLvPhasePair) =>
+    method === 'single-plane' || pair.view === 'A4C'
+      ? edContourId === pair.ed.id && esContourId === pair.es.id
+      : edContourIdB === pair.ed.id && esContourIdB === pair.es.id;
+
+  const renderAutomaticViewStep = (state: AutoLvViewState) => {
+    const isReady = state.status === 'ready';
+    const isTracking = state.status === 'tracking';
+    const pair = isReady ? state.pair : null;
+    const selected = pair ? automaticPairIsSelected(pair) : false;
+    const trackingQuality = pair?.ed.trackingQuality ?? null;
+    const beatCount = pair?.ed.trackedBeatCount ?? null;
+
+    return (
+      <Paper
+        key={state.view}
+        variant="outlined"
+        sx={{
+          p: 1.5,
+          borderColor: isReady ? 'success.main' : isTracking ? 'primary.main' : 'divider',
+          bgcolor: isReady ? 'action.hover' : 'background.paper',
+        }}
+      >
+        <Stack direction="row" spacing={1.5} alignItems="center">
+          <Box
+            sx={{
+              width: 34,
+              height: 34,
+              borderRadius: '50%',
+              display: 'grid',
+              placeItems: 'center',
+              color: isReady ? 'success.main' : 'primary.main',
+              bgcolor: 'action.hover',
+              flex: '0 0 auto',
+            }}
+          >
+            {isReady ? (
+              <CheckCircleIcon fontSize="small" />
+            ) : isTracking ? (
+              <CircularProgress size={18} />
+            ) : (
+              <DrawIcon fontSize="small" />
+            )}
+          </Box>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography variant="subtitle2">{state.view}</Typography>
+            {pair ? (
+              <Typography variant="caption" color="text.secondary" component="div">
+                ED frame {(pair.ed.frameIndex ?? 0) + 1} · ES frame {(pair.es.frameIndex ?? 0) + 1}
+                {trackingQuality !== null
+                  ? ` · ${(trackingQuality * 100).toFixed(0)}% valid tracking`
+                  : ''}
+                {beatCount && beatCount > 1 ? ` · best of ${beatCount} beats` : ''}
+              </Typography>
+            ) : (
+              <Typography variant="caption" color="text.secondary">
+                {isTracking
+                  ? 'Tracking the contour through the cine and finding the largest and smallest cavity.'
+                  : 'Trace the LV border once on any clear frame.'}
+              </Typography>
+            )}
+          </Box>
+          {pair ? (
+            <Stack direction="row" spacing={0.5} alignItems="center">
+              <Button
+                size="small"
+                aria-label={`Review ${state.view} automatic end-diastole frame`}
+                onClick={() => onJumpToFrame(pair.ed.instanceUid, pair.ed.frameIndex)}
+              >
+                ED
+              </Button>
+              <Button
+                size="small"
+                aria-label={`Review ${state.view} automatic end-systole frame`}
+                onClick={() => onJumpToFrame(pair.es.instanceUid, pair.es.frameIndex)}
+              >
+                ES
+              </Button>
+              {!selected && (
+                <Button size="small" variant="outlined" onClick={() => applyAutomaticPair(pair)}>
+                  Use
+                </Button>
+              )}
+            </Stack>
+          ) : (
+            <Button
+              size="small"
+              variant="contained"
+              startIcon={isTracking ? undefined : <DrawIcon />}
+              disabled={isTracking || trackingMeasurementId !== null}
+              onClick={() => onStartAutoTrace(state.view)}
+            >
+              {isTracking ? 'Finding ED/ES' : `Trace ${state.view} once`}
+            </Button>
+          )}
+        </Stack>
+      </Paper>
+    );
+  };
+
   if (!gate.allowed) {
     return (
       <Alert severity="warning">
@@ -384,6 +517,40 @@ export const LvVolumePanel: React.FC<LvVolumePanelProps> = ({
 
   return (
     <Stack spacing={2} data-testid="lv-volume-panel">
+      <Paper
+        variant="outlined"
+        sx={{ p: 2, borderColor: automaticPhasesReady ? 'success.main' : 'primary.main' }}
+        data-testid="automatic-lv-workflow"
+      >
+        <Stack spacing={1.5}>
+          <Stack direction="row" spacing={1} alignItems="center">
+            <AutoFixHighIcon color={automaticPhasesReady ? 'success' : 'primary'} />
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+                Automatic LV ED/ES
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                One freehand contour per view. The viewer tracks one cardiac cycle and proposes ED
+                at the largest cavity and ES at the smallest.
+              </Typography>
+            </Box>
+            <Chip
+              size="small"
+              color={automaticPhasesReady ? 'success' : 'primary'}
+              label={automaticPhasesReady ? 'Phases found' : 'Recommended'}
+            />
+          </Stack>
+
+          {renderAutomaticViewStep(primaryView === 'A2C' ? a2cAutoState : a4cAutoState)}
+          {method === 'biplane' && renderAutomaticViewStep(a2cAutoState)}
+
+          <Typography variant="caption" color="text.secondary">
+            Automatic timing is an assistive proposal. Inspect both phase frames, correct any
+            tracked border error, and complete the review check before reporting.
+          </Typography>
+        </Stack>
+      </Paper>
+
       <Box>
         <Typography variant="subtitle2" gutterBottom>
           Method
@@ -420,32 +587,40 @@ export const LvVolumePanel: React.FC<LvVolumePanelProps> = ({
         </Alert>
       )}
 
-      <Alert severity="info" variant="outlined">
-        Trace from one mitral hinge through the compacted LV endocardium and apex to the other
-        hinge, then close across the annulus. Papillary muscles stay outside the cavity. Use the
-        largest cavity after mitral closure for ED and the smallest cavity before mitral opening for
-        ES, from the same beat.
-      </Alert>
+      <Accordion disableGutters variant="outlined" sx={{ '&:before': { display: 'none' } }}>
+        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+          <Box>
+            <Typography variant="subtitle2">Advanced contour selection</Typography>
+            <Typography variant="caption" color="text.secondary">
+              Override the automatic ED/ES frames or use separate manual contours.
+            </Typography>
+          </Box>
+        </AccordionSummary>
+        <AccordionDetails>
+          <Stack spacing={2}>
+            <Alert severity="info" variant="outlined">
+              Trace from one mitral hinge through the compacted LV endocardium and apex to the other
+              hinge, then close across the annulus. Papillary muscles stay outside the cavity. Keep
+              ED and ES within the same beat.
+            </Alert>
+            <Stack spacing={1.5}>
+              <Typography variant="subtitle2">
+                {method === 'biplane' ? 'Apical 4-chamber' : 'Traced view'}
+              </Typography>
+              {renderPicker('End-diastole', edContourId, onEdContourChange, primaryView, 'ED')}
+              {renderPicker('End-systole', esContourId, onEsContourChange, primaryView, 'ES')}
+            </Stack>
 
-      <Divider />
-
-      <Stack spacing={1.5}>
-        <Typography variant="subtitle2">
-          {method === 'biplane' ? 'Apical 4-chamber' : 'Traced view'}
-        </Typography>
-        {renderPicker('End-diastole', edContourId, onEdContourChange, primaryView, 'ED')}
-        {renderPicker('End-systole', esContourId, onEsContourChange, primaryView, 'ES')}
-      </Stack>
-
-      {method === 'biplane' && (
-        <Stack spacing={1.5}>
-          <Typography variant="subtitle2">Apical 2-chamber</Typography>
-          {renderPicker('End-diastole (A2C)', edContourIdB, onEdContourBChange, 'A2C', 'ED')}
-          {renderPicker('End-systole (A2C)', esContourIdB, onEsContourBChange, 'A2C', 'ES')}
-        </Stack>
-      )}
-
-      <Divider />
+            {method === 'biplane' && (
+              <Stack spacing={1.5}>
+                <Typography variant="subtitle2">Apical 2-chamber</Typography>
+                {renderPicker('End-diastole (A2C)', edContourIdB, onEdContourBChange, 'A2C', 'ED')}
+                {renderPicker('End-systole (A2C)', esContourIdB, onEsContourBChange, 'A2C', 'ES')}
+              </Stack>
+            )}
+          </Stack>
+        </AccordionDetails>
+      </Accordion>
 
       <Stack direction="row" spacing={1}>
         <TextField

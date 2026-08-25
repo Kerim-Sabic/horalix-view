@@ -59,6 +59,7 @@ export type ClinicalMeasurementRole =
   | 'lv_lvid_es'
   | 'lv_ivs_ed'
   | 'lv_lvpw_ed'
+  | 'lv_endocardial_cycle'
   | 'lv_endocardial_ed'
   | 'lv_endocardial_es'
   | 'lvot_diameter'

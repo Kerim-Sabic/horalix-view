@@ -213,6 +213,11 @@ import type {
 } from '../features/viewer/components/VolumePanel';
 import { gateVolumeTools, normalizeView } from '../features/viewer/services/viewGatingService';
 import { analyseCardiacPhases } from '../features/viewer/services/cardiacPhaseService';
+import {
+  selectBestAutoLvPhases,
+  trackedLvPhaseValue,
+  type LvAutoView,
+} from '../features/viewer/services/autoLvWorkflowService';
 import type { VolumeMethod } from '../features/viewer/services/ventricleVolumeService';
 import {
   deriveLvLinearQuantification,
@@ -584,6 +589,11 @@ const ViewerPage: React.FC = () => {
 
   // EF Calculator dialog state
   const [efCalculatorOpen, setEfCalculatorOpen] = useState(false);
+  const [pendingAutoLvTrace, setPendingAutoLvTrace] = useState<{
+    view: LvAutoView;
+    instanceUid: string;
+    viewConfidence: number | null;
+  } | null>(null);
 
   useEffect(() => {
     activePolygonRef.current = activePolygon;
@@ -1829,7 +1839,7 @@ const ViewerPage: React.FC = () => {
 
   const jumpToInstanceFrame = useCallback(
     async (instanceUid: string | null, frameIndex: number | null) => {
-      if (!instanceUid) return;
+      if (!instanceUid) return false;
       saveViewportState();
       let detail: SeriesDetailResponse | null = selectedSeries ?? null;
       if (!detail || !detail.instances?.some((instance) => instance.sop_instance_uid === instanceUid)) {
@@ -1837,10 +1847,11 @@ const ViewerPage: React.FC = () => {
       }
       if (!detail) {
         setSnackbarMessage('Unable to locate cine for the selected view.');
-        return;
+        return false;
       }
       seriesCacheRef.current.set(detail.series.series_instance_uid, detail);
       applySeriesSelection(detail, instanceUid, frameIndex);
+      return true;
     },
     [selectedSeries, findSeriesDetailForInstance, applySeriesSelection, saveViewportState]
   );
@@ -2983,8 +2994,56 @@ const ViewerPage: React.FC = () => {
                 : 'Polygon tracked across cine loop with optical flow.'
             );
           }
+
+          if (storeMeasurement.clinicalRole === 'lv_endocardial_cycle') {
+            const analysis = analyseCardiacPhases(
+              framesWithArea.map((frame) => ({
+                frameIndex: frame.frame_index,
+                value: trackedLvPhaseValue(
+                  frame.points,
+                  calibration,
+                  frame.area_mm2,
+                ),
+                valid: frame.valid,
+              }))
+            );
+            const beat = analysis.selectedBeat;
+            const sourceView = normalizeView(storeMeasurement.sourceView);
+            const usableBeat =
+              beat &&
+              beat.edFrame !== beat.esFrame &&
+              beat.edValue > beat.esValue &&
+              (sourceView === 'A4C' || sourceView === 'A2C')
+                ? beat
+                : null;
+
+            if (usableBeat) {
+              if (sourceView === 'A4C') {
+                setVolumeEdId(`${measurementId}:ED`);
+                setVolumeEsId(`${measurementId}:ES`);
+              } else {
+                setVolumeEdIdB(`${measurementId}:ED`);
+                setVolumeEsIdB(`${measurementId}:ES`);
+              }
+              setVolumeMethod('biplane');
+              setEfCalculatorOpen(true);
+              setSnackbarMessage(
+                `${sourceView} ED and ES found automatically from one tracked beat. Review both frames.`
+              );
+            } else {
+              setEfCalculatorOpen(true);
+              setSnackbarMessage(
+                'The contour was tracked, but a reliable ED/ES pair was not found. Review the loop and trace again.'
+              );
+            }
+          }
         } catch (err) {
           console.error('Failed to track polygon with optical flow:', err);
+          if (storeMeasurement.clinicalRole === 'lv_endocardial_cycle') {
+            setEfCalculatorOpen(true);
+            setSnackbarMessage('LV contour tracking failed. Check the cine and trace again.');
+            return;
+          }
           setSnackbarMessage(
             useMedsamHybrid
               ? 'MedSAM hybrid tracking failed. Using static mode.'
@@ -3662,6 +3721,7 @@ const ViewerPage: React.FC = () => {
 
   const clearTrackingStateFor = useCallback((ids: string[]) => {
     if (ids.length === 0) return;
+    setLvQuantificationResult(null);
 
     setMeasurementTracks((prev) => {
       let changed = false;
@@ -4046,6 +4106,12 @@ const ViewerPage: React.FC = () => {
       areaMm2,
       perimeterMm,
     };
+    const autoLvTrace =
+      pendingAutoLvTrace &&
+      finishedPolygon.points.length >= 8 &&
+      (polygon.instanceUid ?? currentInstanceUid ?? null) === pendingAutoLvTrace.instanceUid
+        ? pendingAutoLvTrace
+        : null;
 
     // Add to old state
     if (effectiveMeasurementScope === 'cine' && seriesKey) {
@@ -4077,7 +4143,7 @@ const ViewerPage: React.FC = () => {
         scope: isCineScope ? 'series' : 'frame',
         instanceUid: instanceUidForScope,
         points: finishedPolygon.points,
-        label: null,
+        label: autoLvTrace ? `LV tracked contour · ${autoLvTrace.view}` : null,
         visible: true,
         locked: false,
         color: '#22c55e',
@@ -4085,12 +4151,22 @@ const ViewerPage: React.FC = () => {
         perimeterMm: finishedPolygon.perimeterMm,
         volumeData: null,
         trackingData: null,
+        clinicalRole: autoLvTrace ? 'lv_endocardial_cycle' : null,
+        cardiacPhase: autoLvTrace ? 'cycle' : null,
+        sourceView: autoLvTrace?.view ?? null,
+        viewConfidence: autoLvTrace?.viewConfidence ?? null,
+        reviewStatus: 'unreviewed',
       } as Omit<NewPolygonMeasurement, 'id' | 'createdAt' | 'modifiedAt'>, finishedPolygon.id);
     }
 
     // Note: Polygon tracking is now on-demand (user clicks Track button)
     // No automatic static tracking - allows user to choose when to track
-    if (effectiveMeasurementScope === 'cine' && totalSlices > 1) {
+    if (autoLvTrace) {
+      setSnackbarMessage(`Tracking ${autoLvTrace.view} contour and finding ED/ES…`);
+    } else if (pendingAutoLvTrace) {
+      setEfCalculatorOpen(true);
+      setSnackbarMessage('The LV trace needs at least 8 border points. Trace the contour again.');
+    } else if (effectiveMeasurementScope === 'cine' && totalSlices > 1) {
       setSnackbarMessage('Polygon created. Click Track button for optical flow tracking across frames.');
     } else {
       setSnackbarMessage('Polygon measurement added.');
@@ -4099,6 +4175,8 @@ const ViewerPage: React.FC = () => {
     setSelectedMeasurementIdLocal(finishedPolygon.id);
     setActivePolygon(null);
     setPolygonPreviewPoint(null);
+    if (pendingAutoLvTrace) setPendingAutoLvTrace(null);
+    if (autoLvTrace) void trackMeasurementById(finishedPolygon.id);
   }, [
     activePolygon,
     currentInstanceMeta,
@@ -4109,6 +4187,8 @@ const ViewerPage: React.FC = () => {
     totalSlices,
     cineGrouping,
     currentInstanceUid,
+    pendingAutoLvTrace,
+    trackMeasurementById,
   ]);
 
   finishPolygonRef.current = finishPolygon;
@@ -4200,6 +4280,7 @@ const ViewerPage: React.FC = () => {
       // Cancel an in-progress freehand stroke with Escape
       if (event.key === 'Escape' && freehandStrokeRef.current.active) {
         clearFreehandStroke();
+        setPendingAutoLvTrace(null);
         return;
       }
 
@@ -4209,6 +4290,7 @@ const ViewerPage: React.FC = () => {
         setPolygonPreviewPoint(null);
         freehandPolygonRef.current.active = false;
         freehandPolygonRef.current.lastPoint = null;
+        setPendingAutoLvTrace(null);
         return;
       }
 
@@ -5677,17 +5759,28 @@ const ViewerPage: React.FC = () => {
     [activeInstanceUid, getAiViewConfidenceForInstance]
   );
 
-  // Traced contours offered as ED/ES sources for Simpson's method. Each carries
-  // the view and calibration of its source instance. Use the whole selected
-  // series so a complementary A4C/A2C cine remains available while the other
-  // view is active.
+  // Traced contours offered as ED/ES sources for Simpson's method. Keep all
+  // cines from the study available so A4C and A2C can live in separate series.
+  const studyMeasurementsForVolume = useMemo(() => {
+    const studySeriesUids = new Set(seriesList.map((series) => series.series_instance_uid));
+    return Array.from(newMeasurements.values()).filter((measurement) =>
+      studySeriesUids.has(measurement.seriesUid)
+    );
+  }, [newMeasurements, seriesList]);
+
   const volumeContourOptions = useMemo<ContourOption[]>(() => {
     const options: ContourOption[] = [];
-    const instancesByUid = new Map(
-      (selectedSeries?.instances ?? []).map((instance) => [instance.sop_instance_uid, instance])
-    );
+    const instancesByUid = new Map<string, Instance>();
+    for (const detail of seriesCacheRef.current.values()) {
+      for (const instance of detail.instances ?? []) {
+        instancesByUid.set(instance.sop_instance_uid, instance);
+      }
+    }
+    for (const instance of selectedSeries?.instances ?? []) {
+      instancesByUid.set(instance.sop_instance_uid, instance);
+    }
 
-    for (const measurement of newStoreMeasurements) {
+    for (const measurement of studyMeasurementsForVolume) {
       if (measurement.type !== 'polygon') continue;
       if (!isPolygonMeasurement(measurement)) continue;
       if (measurement.points.length < 8) continue;
@@ -5704,11 +5797,13 @@ const ViewerPage: React.FC = () => {
           ? 'ai'
           : 'manual';
       const isLvEndocardialRole =
+        measurement.clinicalRole === 'lv_endocardial_cycle' ||
         measurement.clinicalRole === 'lv_endocardial_ed' ||
         measurement.clinicalRole === 'lv_endocardial_es';
 
       options.push({
         id: measurement.id,
+        sourceMeasurementId: measurement.id,
         label: measurement.label || 'Contour',
         points: measurement.points,
         calibration: contourCalibration,
@@ -5722,20 +5817,29 @@ const ViewerPage: React.FC = () => {
         reviewStatus: measurement.reviewStatus ?? 'unreviewed',
         hasAnnulusEndpoints: isLvEndocardialRole && provenance !== 'ai',
         provenance,
+        phaseSource: provenance === 'ai' ? 'ai' : 'manual',
+        trackingQuality: null,
+        trackedBeatCount: null,
+        cycleLengthFrames: null,
       });
 
       // A tracked contour also offers its own ED and ES frames, chosen within a
       // single beat rather than across the whole clip.
-      if (track && track.frames.length > 2) {
+      if (track && track.frames.length > 2 && isLvEndocardialRole) {
         const analysis = analyseCardiacPhases(
           track.frames.map((frame) => ({
             frameIndex: frame.frameIndex,
-            value: frame.areaMm2 ?? frame.lengthMm ?? NaN,
+            value: trackedLvPhaseValue(
+              frame.points,
+              contourCalibration,
+              frame.areaMm2,
+              isLvEndocardialRole,
+            ),
             valid: frame.valid,
           }))
         );
         const beat = analysis.selectedBeat;
-        if (beat) {
+        if (beat && beat.edFrame !== beat.esFrame && beat.edValue > beat.esValue) {
           for (const [phase, frameIndex] of [
             ['ED', beat.edFrame],
             ['ES', beat.esFrame],
@@ -5744,6 +5848,7 @@ const ViewerPage: React.FC = () => {
             if (!frame || frame.points.length < 8) continue;
             options.push({
               id: `${measurement.id}:${phase}`,
+              sourceMeasurementId: measurement.id,
               label: `${measurement.label || 'Contour'} · ${phase}`,
               points: frame.points,
               calibration: contourCalibration,
@@ -5757,6 +5862,15 @@ const ViewerPage: React.FC = () => {
               reviewStatus: 'unreviewed',
               hasAnnulusEndpoints: isLvEndocardialRole,
               provenance: 'tracked',
+              phaseSource:
+                measurement.clinicalRole === 'lv_endocardial_cycle'
+                  ? 'tracked-auto'
+                  : provenance === 'ai'
+                    ? 'ai'
+                    : 'manual',
+              trackingQuality: beat.quality,
+              trackedBeatCount: analysis.beats.length,
+              cycleLengthFrames: analysis.cycleLengthFrames,
             });
           }
         }
@@ -5766,7 +5880,7 @@ const ViewerPage: React.FC = () => {
     return options;
   }, [
     selectedSeries,
-    newStoreMeasurements,
+    studyMeasurementsForVolume,
     resolveMeasurementInstanceUid,
     currentInstanceUid,
     measurementStore.trackingData,
@@ -5775,11 +5889,16 @@ const ViewerPage: React.FC = () => {
   ]);
 
   const bestApicalVolumeView = useMemo(() => {
-    const candidates = (selectedSeries?.instances ?? [])
-      .map((instance) => ({
-        view: getAiViewLabelForInstance(instance.sop_instance_uid),
-        confidence: getAiViewConfidenceForInstance(instance.sop_instance_uid),
-      }))
+    const candidates = [
+      ...Object.entries(aiViewPredictions).map(([instanceUid, view]) => ({
+        view,
+        confidence: getAiViewConfidenceForInstance(instanceUid),
+      })),
+      ...volumeContourOptions.map((option) => ({
+        view: option.view,
+        confidence: option.viewConfidence,
+      })),
+    ]
       .filter((candidate) => {
         const view = normalizeView(candidate.view);
         return view === 'A4C' || view === 'A2C';
@@ -5789,9 +5908,9 @@ const ViewerPage: React.FC = () => {
   }, [
     activeAiViewConfidence,
     activeAiViewLabel,
+    aiViewPredictions,
     getAiViewConfidenceForInstance,
-    getAiViewLabelForInstance,
-    selectedSeries,
+    volumeContourOptions,
   ]);
 
   // Whether Simpson's method applies anywhere in the selected echo series.
@@ -5807,26 +5926,89 @@ const ViewerPage: React.FC = () => {
     [bestApicalVolumeView, calibration.spacing, volumeContourOptions]
   );
 
-  // Fill each biplane slot by its actual view and phase, regardless of which
-  // cine happened to be active when the calculator opened.
-  useEffect(() => {
-    if (volumeMethod !== 'biplane') return;
-    const findSlot = (view: 'A4C' | 'A2C', phase: 'end-diastole' | 'end-systole') =>
-      volumeContourOptions.find(
-        (option) => normalizeView(option.view) === view && option.phase === phase
+  const handleOpenEfCalculator = useCallback(() => {
+    const automatic = selectBestAutoLvPhases(volumeContourOptions);
+    if (volumeMethod === 'single-plane') {
+      const primary = normalizeView(bestApicalVolumeView.view) === 'A2C'
+        ? automatic.a2c
+        : automatic.a4c;
+      if (primary) {
+        setVolumeEdId(primary.ed.id);
+        setVolumeEsId(primary.es.id);
+      }
+    } else {
+      if (automatic.a4c) {
+        setVolumeEdId(automatic.a4c.ed.id);
+        setVolumeEsId(automatic.a4c.es.id);
+      }
+      if (automatic.a2c) {
+        setVolumeEdIdB(automatic.a2c.ed.id);
+        setVolumeEsIdB(automatic.a2c.es.id);
+      }
+    }
+    setEfCalculatorOpen(true);
+  }, [bestApicalVolumeView.view, volumeContourOptions, volumeMethod]);
+
+  const handleStartAutoLvTrace = useCallback(
+    async (view: LvAutoView) => {
+      const candidates = Object.entries(aiViewPredictions)
+        .filter(([, label]) => normalizeView(label) === view)
+        .map(([instanceUid]) => ({
+          instanceUid,
+          confidence: getAiViewConfidenceForInstance(instanceUid),
+        }))
+        .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0));
+
+      const activeFallback =
+        (normalizeView(activeAiViewLabel) === view || normalizeView(activeAiViewLabel) === 'Unknown') &&
+        activeInstanceUid
+          ? { instanceUid: activeInstanceUid, confidence: activeAiViewConfidence }
+          : null;
+      const target = candidates[0] ?? activeFallback;
+      if (!target) {
+        setSnackbarMessage(
+          `EchoPrime did not identify an ${view} cine. Open the correct view and confirm its clinical role manually.`
+        );
+        return;
+      }
+
+      const openedTargetCine = await jumpToInstanceFrame(target.instanceUid, 0);
+      if (!openedTargetCine) return;
+      setLvQuantificationResult(null);
+      setEfCalculatorOpen(false);
+      setPendingAutoLvTrace({
+        view,
+        instanceUid: target.instanceUid,
+        viewConfidence: target.confidence,
+      });
+      setMeasurementScope('cine');
+      setActiveTool('freehand');
+      setShowMeasurementPanel(true);
+      setIsPlaying(false);
+      setSnackbarMessage(
+        `${view}: drag once from one mitral hinge, around the LV endocardium and apex, to the other hinge. Release to find ED/ES automatically.`
       );
-    if (!volumeEdId) setVolumeEdId(findSlot('A4C', 'end-diastole')?.id ?? null);
-    if (!volumeEsId) setVolumeEsId(findSlot('A4C', 'end-systole')?.id ?? null);
-    if (!volumeEdIdB) setVolumeEdIdB(findSlot('A2C', 'end-diastole')?.id ?? null);
-    if (!volumeEsIdB) setVolumeEsIdB(findSlot('A2C', 'end-systole')?.id ?? null);
-  }, [
-    volumeMethod,
-    volumeContourOptions,
-    volumeEdId,
-    volumeEsId,
-    volumeEdIdB,
-    volumeEsIdB,
-  ]);
+    },
+    [
+      activeAiViewConfidence,
+      activeAiViewLabel,
+      activeInstanceUid,
+      aiViewPredictions,
+      getAiViewConfidenceForInstance,
+      jumpToInstanceFrame,
+      setActiveTool,
+      setMeasurementScope,
+      setShowMeasurementPanel,
+    ]
+  );
+
+  const handleReviewLvFrame = useCallback(
+    async (instanceUid: string | null, frameIndex: number | null) => {
+      const opened = await jumpToInstanceFrame(instanceUid, frameIndex);
+      if (opened) setEfCalculatorOpen(false);
+    },
+    [jumpToInstanceFrame]
+  );
 
 
   const handleTrackMeasurement = useCallback(async () => {
@@ -6135,7 +6317,7 @@ const ViewerPage: React.FC = () => {
 
         <Tooltip title="Cardiac Function Calculator (EF/FS)">
           <IconButton
-            onClick={() => setEfCalculatorOpen(true)}
+            onClick={handleOpenEfCalculator}
             color={contextMeasurements.length > 0 ? 'primary' : 'default'}
           >
             <FavoriteIcon />
@@ -8962,6 +9144,9 @@ const ViewerPage: React.FC = () => {
                 onHeightChange={setPatientHeightCm}
                 onWeightChange={setPatientWeightKg}
                 onResultChange={setLvQuantificationResult}
+                trackingMeasurementId={trackingMeasurementId}
+                onStartAutoTrace={handleStartAutoLvTrace}
+                onJumpToFrame={handleReviewLvFrame}
               />
             </Box>
 

@@ -67,6 +67,24 @@ describe('assessLvVolumeProtocol', () => {
     expect(result.blocking.join(' ')).toMatch(/different tracked beats/i);
   });
 
+  it('rejects automatic ED and ES from different source contours', () => {
+    const result = assessLvVolumeProtocol('biplane', {
+      ...valid,
+      a4cEd: {
+        ...valid.a4cEd,
+        sourceMeasurementId: 'trace-one',
+        phaseSource: 'tracked-auto',
+      },
+      a4cEs: {
+        ...valid.a4cEs,
+        sourceMeasurementId: 'trace-two',
+        phaseSource: 'tracked-auto',
+      },
+    });
+    expect(result.complete).toBe(false);
+    expect(result.blocking.join(' ')).toMatch(/same tracked contour/i);
+  });
+
   it('rejects one cine being used as both biplane views', () => {
     const result = assessLvVolumeProtocol('biplane', {
       ...valid,
